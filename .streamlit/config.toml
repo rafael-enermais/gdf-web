@@ -1,0 +1,5 @@
+# Tema FIXO ESCURO (mesmo do EGC: todo mundo ve igual, independente da preferencia do sistema/navegador).
+# NAO usar [theme] com so' primaryColor (fixa o CLARO).
+[theme]
+base = "dark"
+primaryColor = "#EA9527"

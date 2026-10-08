@@ -1,0 +1,2 @@
+# So' para rodar os testes localmente: pip install -r requirements.txt -r requirements-dev.txt ; pytest -q app/tests
+pytest>=9

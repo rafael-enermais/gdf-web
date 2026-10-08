@@ -1,0 +1,20 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+**/secrets.toml
+*.log
+Claude outputs/
+# O repositorio e' PUBLICO: nunca commitar dados reais (balancetes, demonstrativos, relatorios)
+dados/
+*.csv
+*.xlsx
+*.pdf
+
+# credencial provisoria colada pelo Rafael (copia do config do git do EGC): NUNCA commitar
+config.txt
+
+# orientacao local da sessao (tem caminho do vault e nomes): fica so no computador
+CLAUDE.md
