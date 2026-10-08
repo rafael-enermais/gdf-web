@@ -25,7 +25,7 @@ with aba_imp:
     else:
         tab = pd.DataFrame([{"#": i["id"], "Tipo": "Mês" if i["tipo"] == "MENSAL" else "Acumulado",
                              "Período": F.mes_br(f"{i['periodo_fim'].year}-{i['periodo_fim'].month:02d}") if i["tipo"] == "MENSAL"
-                             else f"01/{i['periodo_fim']:%m/%Y} a {i['periodo_fim']:%d/%m/%Y}",
+                             else f"{i['periodo_ini']:%d/%m/%Y} a {i['periodo_fim']:%d/%m/%Y}",
                              "Arquivo": i["arquivo_nome"], "Status": i["status"], "Ativa": "sim" if i["ativo"] else "não (desfeita)",
                              "Falhas": int(i["falhas"]), "Importado por": i["importado_por"], "Em": i["importado_em"].strftime("%d/%m/%Y %H:%M")} for i in imps])
         st.dataframe(tab, hide_index=True, use_container_width=True)

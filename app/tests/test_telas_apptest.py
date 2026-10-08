@@ -143,3 +143,15 @@ def test_importar_com_falha_exige_confirmacao(patch_conn):
     with patch("streamlit.file_uploader", return_value=[arq]):
         at.run()
     assert [b for b in at.button if "Importar 1 arquivo" in b.label]
+
+
+def test_historico_mostra_periodo_do_acumulado_com_janeiro(patch_conn):
+    """Acumulado deve aparecer como 01/01 a fim do mes (bug visto em producao: aparecia 01/08 a 31/08)."""
+    emp_id = _semear(patch_conn, meses=(1, 2))
+    cab, contas = I.ler_bytes(csv_texto(MESES["2026-02"], cnpj=CNPJ, ini="01/01/2026", fim="28/02/2026"), "acum.csv")
+    db.inserir_importacao(patch_conn, emp_id, cab, contas, "seed", [])
+    at = _app("3_Historico.py", patch_conn).run()
+    assert not at.exception
+    periodos = [str(v) for df in at.dataframe for v in df.value.get("Período", [])]
+    assert "01/01/2026 a 28/02/2026" in periodos
+    assert not any(p.startswith("01/02/2026 a") for p in periodos)

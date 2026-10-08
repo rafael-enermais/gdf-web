@@ -57,11 +57,11 @@ aba_bp, aba_dre, aba_ind, aba_conf = st.tabs(["Balanço Patrimonial", "DRE", "In
 with aba_bp:
     st.caption(f"Em R$ — posição em 31/12/{int(mes_ref[:4]) - 1}, {tabelas._data_fim_mes(mes_ant)} e {tabelas._data_fim_mes(mes_ref)}. O resultado do período compõe o patrimônio líquido.")
     for df, est in tabelas.tabela_balanco(bp, mes_ref, mes_ant):
-        st.dataframe(tabelas.estilizar(df, est), hide_index=True, use_container_width=True, height=min(38 * (len(df) + 1), 760))
+        st.dataframe(tabelas.estilizar(df, est), hide_index=True, use_container_width=True, height=min(35 * (len(df) + 1) + 3, 760))
 with aba_dre:
     st.caption(f"Em R$ — período de 01/01/{mes_ref[:4]} a {tabelas._data_fim_mes(mes_ref)}.")
     df, est = tabelas.tabela_dre(d, mes_ref)
-    st.dataframe(tabelas.estilizar(df, est), hide_index=True, use_container_width=True, height=min(38 * (len(df) + 1), 1100))
+    st.dataframe(tabelas.estilizar(df, est), hide_index=True, use_container_width=True, height=min(35 * (len(df) + 1) + 3, 1100))
     aj = d["acumulado"]["ajustes"]
     notas = ["A receita de construção e a remuneração do ativo de contrato são reconhecidas ao final do exercício e/ou na entrada em operação da obra "
              "de concessão; o resultado intermediário reflete apenas os custos incorridos e não é representativo do resultado anual."]
@@ -72,7 +72,7 @@ with aba_dre:
 with aba_ind:
     st.caption("Calculados a partir do Balanço e da DRE. Resultados são acumulados no ano.")
     df, est = tabelas.tabela_indicadores(bp, d, mes_ref, mes_ant)
-    st.dataframe(tabelas.estilizar(df, est), hide_index=True, use_container_width=True, height=min(38 * (len(df) + 1), 900))
+    st.dataframe(tabelas.estilizar(df, est), hide_index=True, use_container_width=True, height=min(35 * (len(df) + 1) + 3, 900))
     st.caption("PMR, PMP e ICSD não são calculados enquanto não houver receita de construção/remuneração reconhecida.")
 with aba_conf:
     import pandas as pd
