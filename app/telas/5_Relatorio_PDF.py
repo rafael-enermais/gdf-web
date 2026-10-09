@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """GDF — Relatório PDF: gera o relatório (layout padrão Enermais) do mês escolhido, com textos editáveis, assinantes e histórico de versões."""
 import hashlib
-from datetime import date, datetime
+from datetime import date
 
 import pandas as pd
 import streamlit as st
@@ -13,6 +13,7 @@ import motor
 import relatorio_dados
 import relatorio_pdf
 from auth import usuario_atual
+from fuso import agora_br, fmt_br
 from conexao import empresa_atual, flash, get_conn, mostrar_flash, sidebar_rodape
 
 usuario = usuario_atual()
@@ -80,7 +81,7 @@ st.caption("Quem assina o relatório (até 6). Use a última linha vazia da tabe
            "Clique em **Salvar como padrão** para o GDF lembrar nos próximos relatórios desta empresa.")
 ass0 = [{"Nome": n, "Cargo": c_} for n, c_ in ctx["empresa"]["assinantes"]]
 ed = st.data_editor(pd.DataFrame(ass0 or [{"Nome": "", "Cargo": ""}], columns=["Nome", "Cargo"]), hide_index=True, num_rows="dynamic",
-                    use_container_width=True, key=f"ass_ed_{emp['id']}_{hashlib.md5(str(ass0).encode()).hexdigest()[:6]}")
+                    width="stretch", key=f"ass_ed_{emp['id']}_{hashlib.md5(str(ass0).encode()).hexdigest()[:6]}")
 assinantes = [{"nome": (r["Nome"] or "").strip(), "cargo": (r["Cargo"] or "").strip()} for _, r in ed.iterrows() if (r["Nome"] or "").strip() or (r["Cargo"] or "").strip()][:6]
 if st.button("Salvar como padrão desta empresa", key="ass_salvar"):
     db.salvar_config_empresa(conn, emp["id"], {"assinantes": assinantes}, usuario)
@@ -98,7 +99,7 @@ periodo_rel = date(int(mes_ref[:4]), int(mes_ref[5:7]), 1)
 
 def _gerar(status: str):
     try:
-        agora = datetime.now().strftime("%d/%m/%Y %H:%M")
+        agora = agora_br().strftime("%d/%m/%Y %H:%M")
         ver = db.proxima_versao_relatorio(conn, emp["id"], periodo_rel)
         ctx["empresa"]["assinantes"] = [(a["nome"], a["cargo"]) for a in assinantes]
         pdf = relatorio_pdf.gerar_pdf(ctx, editados, status, agora, ver)
@@ -141,8 +142,8 @@ if rels:
         return "atuais" if usados == ids_usados else "desatualizados (os balancetes mudaram depois)"
     st.markdown("**Relatórios já gerados deste mês**")
     st.dataframe(pd.DataFrame([{"Versão": f"v{r['versao']}", "Status": r["status"], "Dados": _dados(r), "Gerado por": r["gerado_por"],
-                                "Em": r["gerado_em"].strftime("%d/%m/%Y %H:%M"), "Código": (r["pdf_sha256"] or "")[:8]} for r in rels]),
-                 hide_index=True, use_container_width=True)
+                                "Em": fmt_br(r["gerado_em"]), "Código": (r["pdf_sha256"] or "")[:8]} for r in rels]),
+                 hide_index=True, width="stretch")
     finais = [r for r in rels if r["status"] == "REVISADO"]
     if finais:
         with st.expander("Registrar assinatura (PDF que voltou do Autentique)"):

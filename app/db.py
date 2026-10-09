@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import re
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 
 from psycopg2.extras import execute_values
 
@@ -33,16 +33,19 @@ class PeriodoJaImportado(Exception):
 @contextmanager
 def transacao(conn):
     """Transacao atomica (a conexao do app e' autocommit; aqui liga a transacao e devolve o estado)."""
-    antes = conn.autocommit
-    conn.autocommit = False
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.autocommit = antes
+    # Se a conexao tem trava (ConexaoGDF), segura-a durante TODA a transacao: outras sessoes esperam, em vez de se misturarem nela.
+    trava = getattr(conn, "trava", None) or nullcontext()
+    with trava:
+        antes = conn.autocommit
+        conn.autocommit = False
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.autocommit = antes
 
 
 # ---------------------------------------------------------------- empresas e mapa
@@ -170,10 +173,17 @@ def carregar_contas(conn, importacao_id: int) -> list:
 
 
 def _periodos(conn, empresa_id: int, tipo: str) -> dict:
+    """Uma unica consulta (antes eram 1 + N, uma por mes): {'AAAA-MM': contas} das importacoes ativas do tipo."""
     with conn.cursor() as cur:
-        cur.execute("SELECT id, periodo_fim FROM importacao WHERE empresa_id=%s AND tipo=%s AND ativo ORDER BY periodo_fim", (empresa_id, tipo))
-        ims = cur.fetchall()
-    return {f"{fim.year}-{fim.month:02d}": carregar_contas(conn, i) for i, fim in ims}
+        cur.execute("SELECT i.id, i.periodo_fim, l.conta_id, l.sintetica, l.classificacao, l.nome, l.saldo_anterior, l.debito, l.credito, l.saldo_final "
+                    "FROM importacao i JOIN balancete_linha l ON l.importacao_id = i.id "
+                    "WHERE i.empresa_id=%s AND i.tipo=%s AND i.ativo ORDER BY i.periodo_fim, i.id, l.id", (empresa_id, tipo))
+        linhas = cur.fetchall()
+    out: dict = {}
+    for _iid, fim, a, b, c, d, e, f, g, h in linhas:
+        out.setdefault(f"{fim.year}-{fim.month:02d}", []).append(
+            {"id": a, "sint": b, "cl": c, "nome": d, "ant": float(e), "deb": float(f), "cred": float(g), "sal": float(h)})
+    return out
 
 
 def periodos_mensais_ativos(conn, empresa_id: int) -> dict:

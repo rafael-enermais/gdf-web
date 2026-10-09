@@ -68,11 +68,11 @@ aba_bp, aba_dre, aba_ind, aba_comp, aba_conf = st.tabs(["Balanço Patrimonial", 
 with aba_bp:
     st.caption(f"Em R$ — posição em 31/12/{int(mes_ref[:4]) - 1}, {tabelas._data_fim_mes(mes_ant)} e {tabelas._data_fim_mes(mes_ref)}. O resultado do período compõe o patrimônio líquido.")
     for df, est in tabelas.tabela_balanco(bp, mes_ref, mes_ant):
-        st.dataframe(tabelas.estilizar(df, est), hide_index=True, use_container_width=True, height=min(35 * (len(df) + 1) + 3, 760))
+        st.dataframe(tabelas.estilizar(df, est), hide_index=True, width="stretch", height=min(35 * (len(df) + 1) + 3, 760))
 with aba_dre:
     st.caption(f"Em R$ — período de 01/01/{mes_ref[:4]} a {tabelas._data_fim_mes(mes_ref)}.")
     df, est = tabelas.tabela_dre(d, mes_ref)
-    st.dataframe(tabelas.estilizar(df, est), hide_index=True, use_container_width=True, height=min(35 * (len(df) + 1) + 3, 1100))
+    st.dataframe(tabelas.estilizar(df, est), hide_index=True, width="stretch", height=min(35 * (len(df) + 1) + 3, 1100))
     aj = d["acumulado"]["ajustes"]
     notas = ["A receita de construção e a remuneração do ativo de contrato são reconhecidas ao final do exercício e/ou na entrada em operação da obra "
              "de concessão; o resultado intermediário reflete apenas os custos incorridos e não é representativo do resultado anual."]
@@ -83,7 +83,7 @@ with aba_dre:
 with aba_ind:
     st.caption("Calculados a partir do Balanço e da DRE. Resultados são acumulados no ano.")
     df, est = tabelas.tabela_indicadores(bp, d, mes_ref, mes_ant)
-    st.dataframe(tabelas.estilizar(df, est), hide_index=True, use_container_width=True, height=min(35 * (len(df) + 1) + 3, 900))
+    st.dataframe(tabelas.estilizar(df, est), hide_index=True, width="stretch", height=min(35 * (len(df) + 1) + 3, 900))
     st.caption("PMR, PMP e ICSD não são calculados enquanto não houver receita de construção/remuneração reconhecida.")
 with aba_conf:
     import pandas as pd
@@ -91,7 +91,7 @@ with aba_conf:
         tab = pd.DataFrame([{"": "✅" if c["ok"] else "❌", "Período": F.mes_br(c["periodo"]) if c["periodo"][:2] == "20" else c["periodo"],
                              "Grupo": c["grupo"], "Conferência": c["descricao"], "Detalhe": c["detalhe"]} for c in conf])
         so_falhas = st.checkbox("Mostrar só as que falharam", value=bool(falhas), key="dem_so_falhas")
-        st.dataframe(tab[tab[""] == "❌"] if so_falhas else tab, hide_index=True, use_container_width=True)
+        st.dataframe(tab[tab[""] == "❌"] if so_falhas else tab, hide_index=True, width="stretch")
 
 
 # ------------------------------------------------------------------ Composição de Saldos + apelidos
@@ -109,7 +109,7 @@ with aba_comp:
         tot = g["total"]
         df = pd.DataFrame([{"Nome": n, "Saldo (R$)": F.num_br(v), "% do grupo": F.pct_br(v / tot) if abs(tot) >= 0.005 else "–"} for n, v in g["itens"]]
                           + [{"Nome": "Total", "Saldo (R$)": F.num_br(tot), "% do grupo": "100,0%"}])
-        st.dataframe(df, hide_index=True, use_container_width=True, height=35 * (len(df) + 1) + 3)
+        st.dataframe(df, hide_index=True, width="stretch", height=35 * (len(df) + 1) + 3)
     with st.expander("Apelidos — nomes que aparecem no relatório"):
         st.caption("O sistema usa o nome da conta do balancete (às vezes abreviado ou cortado). Digite um apelido para aparecer no relatório; "
                    "ele fica salvo e é reaproveitado todo mês. Apague o apelido para voltar ao nome original.")
@@ -120,7 +120,7 @@ with aba_comp:
                 for nome, _v in composicao.nomes_do_grupo(contas_ref, g_):
                     linhas.setdefault(nome, apelidos.get(composicao.chave_apelido(nome), ""))
         base = pd.DataFrame({"Nome no balancete": list(linhas), "Apelido": list(linhas.values())})
-        editado = st.data_editor(base, hide_index=True, use_container_width=True, disabled=["Nome no balancete"], key=f"apel_{emp['id']}_{mes_ref}", num_rows="fixed")
+        editado = st.data_editor(base, hide_index=True, width="stretch", disabled=["Nome no balancete"], key=f"apel_{emp['id']}_{mes_ref}", num_rows="fixed")
         if st.button("Salvar apelidos", key="apel_salvar"):
             mud = {r["Nome no balancete"]: (r["Apelido"] or "") for _, r in editado.iterrows()}
             n_mud = db.salvar_apelidos(conn, emp["id"], mud, usuario)

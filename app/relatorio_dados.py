@@ -58,6 +58,7 @@ def info_empresa(emp: dict, config: dict | None = None) -> dict:
     curto = cfg.get("curto") or base.get("curto") or emp["razao_social"].split()[0].title()
     ass = [(a.get("nome", "").strip(), a.get("cargo", "").strip()) for a in (cfg.get("assinantes") or []) if isinstance(a, dict)]
     return {"nome": emp["razao_social"], "curto": curto, "cnpj": emp["cnpj"], "logo": cfg.get("logo") or base.get("logo"),
+            "logo_grupo_capa": bool(cfg.get("logo_grupo_capa", base.get("logo_grupo_capa", False))),
             "tipo": cfg.get("tipo") or base.get("tipo", ""), "nota_resultado": cfg.get("nota_resultado", base.get("nota_resultado", "")),
             "assinantes": ass or [("", "Administrador"), ("", "Contador")]}
 

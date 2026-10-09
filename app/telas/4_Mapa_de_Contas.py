@@ -7,6 +7,7 @@ import db
 import formatacao as F
 import motor
 from auth import usuario_atual
+from fuso import fmt_br
 from conexao import empresa_atual, flash, get_conn, mostrar_flash, sidebar_rodape
 
 usuario = usuario_atual()
@@ -21,7 +22,7 @@ mapa = db.mapa_vigente(conn, emp["id"])
 st.caption("Cada chave soma as contas do balancete cujo código começa com os prefixos indicados (vale o prefixo mais específico). "
            "O mapa inicial (v1.0) foi validado com a contabilidade. Ao editar, a linha antiga fica guardada como inativa, com o motivo.")
 st.dataframe(pd.DataFrame([{"Chave": k, "Linha do demonstrativo": r, "Seção": "Balanço" if s == "BP" else "DRE", "Prefixos": ", ".join(p),
-                            "Natureza": {"D": "despesa/custo", "C": "receita", None: ""}[n]} for k, r, s, p, n in mapa]), hide_index=True, use_container_width=True)
+                            "Natureza": {"D": "despesa/custo", "C": "receita", None: ""}[n]} for k, r, s, p, n in mapa]), hide_index=True, width="stretch")
 
 st.subheader("Contas sem chave no mapa")
 meses = db.listar_meses_ativos(conn, emp["id"])
@@ -35,7 +36,7 @@ else:
            ((abs(c["sal"]) > motor.TOL) if c["cl"][0] in "12" else (abs(c["deb"]) > motor.TOL or abs(c["cred"]) > motor.TOL))]
     if sem:
         st.warning(f"{len(sem)} conta(s) com saldo ou movimento sem chave no mapa — não entram nos demonstrativos.")
-        st.dataframe(pd.DataFrame([{"Classificação": c["cl"], "Nome": c["nome"], "Saldo": F.num_br(c["sal"])} for c in sem]), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame([{"Classificação": c["cl"], "Nome": c["nome"], "Saldo": F.num_br(c["sal"])} for c in sem]), hide_index=True, width="stretch")
     else:
         st.success("Toda conta com saldo ou movimento tem chave no mapa.")
 
@@ -61,5 +62,5 @@ with st.form(f"mapa_form_{emp['id']}_{k}"):
 with st.expander("Histórico de alterações do mapa"):
     hist = db.historico_mapa(conn, emp["id"])
     st.dataframe(pd.DataFrame([{"Chave": h["chave"], "Linha": h["rotulo"], "Prefixos": ", ".join(h["prefixos"]), "Situação": "ativa" if h["ativo"] else "anterior (inativa)",
-                                "Por": h["alterado_por"], "Em": h["alterado_em"].strftime("%d/%m/%Y %H:%M"), "Motivo": h["motivo"]} for h in hist]),
-                 hide_index=True, use_container_width=True)
+                                "Por": h["alterado_por"], "Em": fmt_br(h["alterado_em"]), "Motivo": h["motivo"]} for h in hist]),
+                 hide_index=True, width="stretch")

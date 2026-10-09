@@ -34,5 +34,5 @@ with aba_gloss:
     exp = RD.EXPLICACAO
     linhas = [{"Indicador": rot, "Como é calculado": formula, "Para que serve": exp.get(chave, "")}
               for rot, chave, _k, formula in tabelas.INDICADORES_LINHAS if chave]
-    st.dataframe(pd.DataFrame(linhas), hide_index=True, use_container_width=True, height=35 * (len(linhas) + 1) + 3)
+    st.dataframe(pd.DataFrame(linhas), hide_index=True, width="stretch", height=35 * (len(linhas) + 1) + 3)
     st.caption("Resultados são acumulados no ano. A receita de construção e a remuneração do ativo de contrato só entram ao final do exercício e/ou na entrada em operação da obra.")

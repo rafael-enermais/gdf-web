@@ -51,7 +51,7 @@ def _quadro_situacao():
         st.markdown(f"**{emp['razao_social']}** — {situacao.proxima_acao(linhas)}")
         tab = pd.DataFrame([{"Mês": l["rotulo"], "Balancete": "importado" if l["importado"] else "–", "Status": l["status"],
                              "Conferências com falha": "–" if l["falhas"] is None else l["falhas"], "Relatório": l["relatorio"]} for l in linhas])
-        st.dataframe(tab, hide_index=True, use_container_width=True, height=35 * 13 + 3)
+        st.dataframe(tab, hide_index=True, width="stretch", height=35 * 13 + 3)
 
 
 paginas = [

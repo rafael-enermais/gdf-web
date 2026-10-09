@@ -109,7 +109,7 @@ with aba_tab:
     tabela = pd.DataFrame({"Indicador": [P.COLUNAS[k][0] for k in P.COLUNAS]})
     for ln in linhas:
         tabela[ln["rotulo"]] = [P.fmt(ln[k], P.COLUNAS[k][1]) for k in P.COLUNAS]
-    st.dataframe(tabela, hide_index=True, use_container_width=True, height=35 * (len(tabela) + 1) + 3)
+    st.dataframe(tabela, hide_index=True, width="stretch", height=35 * (len(tabela) + 1) + 3)
     bruto = pd.DataFrame([{**{"Mês": ln["periodo"]}, **{P.COLUNAS[k][0]: ln[k] for k in P.COLUNAS}} for ln in linhas])
     st.download_button("Baixar a tabela (CSV)", data=bruto.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig"),
                        file_name=f"GDF_{emp['codigo']}_{ano}_painel.csv", mime="text/csv", key="pn_csv")
@@ -125,7 +125,7 @@ with aba_q:
     outras = {k: v for k, v in falhas_por.items() if k not in dados["b"].ordem}
     for k, v in outras.items():
         rows.append({"Mês": k, "Status": "–", "Conferências com falha": v})
-    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     n_ras = sum(1 for m in dados["b"].ordem if status.get(m) != "REVISADA")
     tot_f = sum(falhas_por.values())
     if n_ras or tot_f:
