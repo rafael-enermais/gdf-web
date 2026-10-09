@@ -5,7 +5,7 @@ from __future__ import annotations
 import psycopg2
 import streamlit as st
 
-APP_VERSION = "0.2.0"        # 0.MAJOR.MINOR ate' o lancamento oficial (mesma regra do EGC)
+APP_VERSION = "0.3.0"        # 0.MAJOR.MINOR ate' o lancamento oficial (mesma regra do EGC)
 NOME_APP = "GDF — Gestão de Demonstrativo Financeiro"
 
 EMPRESA_INICIAL = ("ANASTACIO", "Anastácio Transmissora de Energia S.A.", "54.800.488/0001-60")
@@ -67,10 +67,39 @@ def mostrar_flash() -> None:
         {"ok": st.success, "warn": st.warning, "erro": st.error}.get(nivel, st.info)(texto)
 
 
+def _contato() -> str:
+    """Contato mostrado no rodape. Vem do secret CONTATO_APP (nao fica no codigo: o repositorio e' publico)."""
+    try:
+        return str(st.secrets.get("CONTATO_APP", "") or "").strip()
+    except Exception:
+        return ""
+
+
 def sidebar_rodape() -> None:
+    """Rodape fixo no fundo da coluna cinza (sidebar): nome do app + versao + contato. Mesmo padrao do EGC: a sidebar tem uma cadeia de
+    containers que precisam virar flex column para o 'margin-top: auto' empurrar o ultimo elemento (este) para baixo; 'sticky' segura o
+    rodape no fundo quando o menu e' mais alto que a tela. Esta funcao tem que ser a ULTIMA coisa desenhada na sidebar de cada pagina."""
+    import html
+    contato = _contato()
+    linha_contato = f"<br>{html.escape(contato)}" if contato else ""
     st.sidebar.markdown(
-        f'<div style="margin-top:2rem;padding-top:0.6rem;border-top:1px solid rgba(245,246,250,0.15);'
-        f'font-size:0.7rem;color:rgba(245,246,250,0.5);line-height:1.4;">{NOME_APP} · v{APP_VERSION}</div>', unsafe_allow_html=True)
+        f"""
+        <style>
+        [data-testid="stSidebarContent"] {{ display: flex; flex-direction: column; }}
+        [data-testid="stSidebarUserContent"] {{ display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }}
+        [data-testid="stSidebarUserContent"] > div {{ display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }}
+        [data-testid="stSidebarUserContent"] [data-testid="stVerticalBlock"] {{ flex: 1 1 auto; min-height: 0; }}
+        [data-testid="stSidebarUserContent"] [data-testid="stElementContainer"]:last-child {{
+            margin-top: auto; position: sticky; bottom: 0; background: rgb(38, 39, 48); z-index: 999; padding-bottom: 0.8rem;
+        }}
+        </style>
+        <div style="margin-top:2rem;padding-top:0.6rem;border-top:1px solid rgba(245,246,250,0.15);
+                    font-size:0.7rem;color:rgba(245,246,250,0.5);line-height:1.4;">
+            {NOME_APP} · v{APP_VERSION}{linha_contato}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def empresa_atual(conn):
