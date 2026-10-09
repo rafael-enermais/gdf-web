@@ -63,10 +63,13 @@ def test_demonstrativos_com_dados(patch_conn):
 
 
 def test_demonstrativos_mes_sem_janeiro(patch_conn):
-    _semear(patch_conn, meses=(2, 3))
+    _semear(patch_conn, meses=(2, 3))                    # sem janeiro: nada trava; o que depende de janeiro vira n/d e o aviso explica
     at = _app("2_Demonstrativos.py", patch_conn).run()
-    assert not at.exception
-    assert any("Faltam: 01/2026" in w.value for w in at.warning)
+    assert not at.exception, at.exception
+    assert any("n/d em 3 item(ns)" in w.value for w in at.warning)
+    texto = " ".join(m.value for m in at.markdown)
+    assert "importe o balancete mensal de 01/2026" in texto and "De onde vêm os números" in " ".join(e.label for e in at.expander)
+    assert len(at.tabs) == 5 and len(at.dataframe) >= 4
 
 
 def test_historico_desfazer_e_reativar(patch_conn):
@@ -270,9 +273,17 @@ def test_mapa_editar_linha_pela_tela(patch_conn):
 def test_relatorio_pdf_sem_dados_e_sem_janeiro(patch_conn):
     at = _app("5_Relatorio_PDF.py", patch_conn).run()
     assert not at.exception and any("Ainda não há balancete" in i.value for i in at.info)
-    _semear(patch_conn, meses=(2, 3))
+    emp_id = _semear(patch_conn, meses=(2, 3))
     at = _app("5_Relatorio_PDF.py", patch_conn).run()
-    assert not at.exception and any("Faltam: 01/2026" in w.value for w in at.warning)
+    assert not at.exception, at.exception
+    assert any("n/d em 3 item(ns)" in w.value for w in at.warning)
+    assert not at.button(key="pdf_gerar").disabled                                       # sem trava: gera o rascunho com n/d
+    at.button(key="pdf_gerar").click().run()
+    assert not at.exception, at.exception
+    assert any("gerado e registrado como RASCUNHO" in s_.value for s_ in at.success)
+    rel = db.listar_relatorios(patch_conn, emp_id)[0]
+    assert len(rel["meta"]["lacunas"]) == 3
+    assert any("gerado com n/d em" in e["mensagem"] for e in db.listar_eventos(patch_conn, emp_id) if e["nivel"] == "aviso")
 
 
 def test_relatorio_pdf_troca_de_mes(patch_conn):
@@ -317,7 +328,7 @@ def test_versao_final_bloqueada_ate_revisar_e_ter_assinante(patch_conn):
     assert not at.exception, at.exception
     assert at.button(key="pdf_final").disabled
     texto = " ".join(m.value for m in at.markdown)
-    assert "❌ Balancetes de janeiro a 03/2026 todos **REVISADA**" in texto and "faltam: 01/2026, 02/2026, 03/2026" in texto and "❌ Assinantes" in texto
+    assert "❌ Balancetes usados neste relatório todos **REVISADA**" in texto and "faltam: mensal 01/2026, mensal 02/2026, mensal 03/2026" in texto and "❌ Assinantes" in texto
     _revisar_todas(patch_conn, emp_id)
     at = _app("5_Relatorio_PDF.py", patch_conn).run()
     assert at.button(key="pdf_final").disabled                                  # ainda sem nome de assinante
@@ -648,15 +659,20 @@ def test_meses_faltantes_e_aviso_diz_o_que_importar(patch_conn):
     import contexto
     assert contexto.meses_faltantes(["2026-02", "2026-05"]) == ["2026-01", "2026-03", "2026-04"]
     assert contexto.meses_faltantes(["2026-01", "2026-02"]) == []
-    _semear(patch_conn, meses=(1, 3))                                                        # janeiro vale; março fica de fora e a legenda diz o que importar
+    _semear(patch_conn, meses=(1, 3))                                                        # fevereiro falta: março sai com n/d só na DRE e o aviso diz o que importar
     at = _app("2_Demonstrativos.py", patch_conn).run()
-    assert not at.exception and any("importe os meses que faltam: 02/2026" in c.value for c in at.caption)
+    assert not at.exception, at.exception
+    assert any("n/d em 2 item(ns)" in w.value for w in at.warning)
+    assert "02/2026" in " ".join(m.value for m in at.markdown)
     patch_conn.cursor().execute("DELETE FROM balancete_linha; DELETE FROM conferencia; DELETE FROM importacao")
     _semear(patch_conn, meses=(2, 3))
-    for tela in ("2_Demonstrativos.py", "5_Relatorio_PDF.py", "6_Painel.py"):
+    for tela in ("2_Demonstrativos.py", "5_Relatorio_PDF.py"):
         at = _app(tela, patch_conn).run()
         assert not at.exception, (tela, at.exception)
-        assert any("Faltam: 01/2026" in w.value for w in at.warning), tela
+        assert any("n/d em 3 item(ns)" in w.value for w in at.warning), tela
+    at = _app("6_Painel.py", patch_conn).run()
+    assert not at.exception, at.exception
+    assert any("Meses sem nenhum balancete" in i.value and "01/2026" in i.value for i in at.info)
 
 
 def test_versao_final_nao_trava_com_pendencias_e_fica_registrada(patch_conn):
@@ -677,3 +693,61 @@ def test_demonstrativos_com_um_mes_so(patch_conn):
     _semear(patch_conn, meses=(1,))
     at = _app("2_Demonstrativos.py", patch_conn).run()
     assert not at.exception, at.exception
+
+
+def test_janeiro_sozinho_gera_demonstrativos_painel_e_pdf(patch_conn):
+    """Quem gera o relatório de janeiro só precisa do balancete de janeiro (abertura = saldo anterior de janeiro)."""
+    emp_id = _semear(patch_conn, meses=(1,))
+    for tela in ("2_Demonstrativos.py", "6_Painel.py", "5_Relatorio_PDF.py"):
+        at = _app(tela, patch_conn).run()
+        assert not at.exception, (tela, at.exception)
+    at = _app("5_Relatorio_PDF.py", patch_conn).run()
+    at.button(key="pdf_gerar").click().run()
+    assert not at.exception, at.exception
+    assert any("gerado e registrado" in s.value for s in at.success)
+    assert len(db.listar_relatorios(patch_conn, emp_id)) == 1
+
+
+def _acumulado_ate(patch_conn, emp_id, ate_mes):
+    """Importa um balancete ACUMULADO (01/01 ate o fim de ate_mes) montado somando os mensais sinteticos."""
+    from test_fontes import _acum
+    per = {}
+    for m in range(1, ate_mes + 1):
+        ult = {1: "31", 2: "28", 3: "31"}[m]
+        per[f"2026-{m:02d}"] = I.ler_bytes(csv_texto(MESES[f"2026-{m:02d}"], cnpj=CNPJ, ini=f"01/{m:02d}/2026", fim=f"{ult}/{m:02d}/2026"), f"{m}.csv")[1]
+    ult = {1: "31", 2: "28", 3: "31"}[ate_mes]
+    cab, _ = I.ler_bytes(csv_texto(MESES[f"2026-{ate_mes:02d}"], cnpj=CNPJ, ini="01/01/2026", fim=f"{ult}/{ate_mes:02d}/2026"), "acum.csv")
+    db.inserir_importacao(patch_conn, emp_id, cab, _acum(per, f"2026-{ate_mes:02d}"), "seed", [])
+    return per
+
+
+def test_relatorio_com_acumulado_no_lugar_dos_meses_sai_completo_e_registra_a_fonte(patch_conn):
+    emp_id = _semear(patch_conn, meses=(3,))                                   # so' marco; janeiro e fevereiro vem do acumulado 01-02
+    _acumulado_ate(patch_conn, emp_id, 2)
+    at = _app("2_Demonstrativos.py", patch_conn).run()
+    assert not at.exception, at.exception
+    assert not any("n/d em" in w.value for w in at.warning)
+    assert any("parte vem de balancete acumulado" in i.value for i in at.info)
+    assert any(e.label == "De onde vêm os números" for e in at.expander)
+    at = _app("5_Relatorio_PDF.py", patch_conn).run()
+    at.button(key="pdf_gerar").click().run()
+    assert not at.exception, at.exception
+    rel = db.listar_relatorios(patch_conn, emp_id)[0]
+    ac_id = [i["id"] for i in db.listar_importacoes(patch_conn, emp_id) if i["tipo"] == "ACUMULADO"][0]
+    assert rel["meta"]["fonte"] == "alternativo" and ac_id in rel["meta"]["importacoes"] and "lacunas" not in rel["meta"]
+    tab = [d.value for d in at.dataframe if "Dados" in d.value.columns][0]
+    assert tab.iloc[0]["Dados"] == "atuais"
+    db.definir_ativo(patch_conn, ac_id, False, "t")                            # desfazer o acumulado muda os numeros do relatorio: avisa
+    at = _app("5_Relatorio_PDF.py", patch_conn).run()
+    tab = [d.value for d in at.dataframe if "Dados" in d.value.columns][0]
+    assert "desatualizados" in tab.iloc[0]["Dados"]
+
+
+def test_importar_mostra_cobertura_do_ano(patch_conn):
+    _semear(patch_conn, meses=(1, 3))
+    at = _app("1_Importar_Balancete.py", patch_conn).run()
+    assert not at.exception, at.exception
+    assert any("Cobertura do ano" in s.value for s in at.subheader)
+    cob = [d.value for d in at.dataframe if "Relatório deste mês" in d.value.columns][0]
+    assert list(cob["Mês"]) == ["01/2026", "02/2026", "03/2026"]
+    assert "sem balancete" in cob.iloc[1]["Relatório deste mês"] and "n/d" in cob.iloc[2]["Relatório deste mês"]

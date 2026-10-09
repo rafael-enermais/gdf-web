@@ -7,6 +7,7 @@ import composicao
 import contexto
 import db
 import formatacao as F
+import lacunas
 import motor
 import tabelas
 from auth import usuario_atual
@@ -20,21 +21,12 @@ st.title("Demonstrativos")
 empresas = empresa_atual(conn)
 emp = st.selectbox("Empresa", empresas, format_func=lambda e: e["razao_social"], key="dem_empresa")
 
-meses = db.listar_meses_ativos(conn, emp["id"])
-validos = contexto.meses_validos(meses)
+meses = contexto.meses_com_dados(conn, emp["id"])
 if not meses:
-    st.info("Ainda não há balancete mensal importado para esta empresa. Use **Importar balancete**.")
-    st.stop()
-if not validos:
-    st.warning("Há balancetes importados, mas a sequência de janeiro até o último mês está incompleta. Os números somam os meses do ano, então precisam de todos eles. Faltam: " + ", ".join(F.mes_br(m) for m in contexto.meses_faltantes(meses))
-               + ". Importe o que falta, em qualquer ordem; já importados: " + ", ".join(F.mes_br(m) for m in meses) + ".")
+    st.info("Ainda não há balancete importado para esta empresa. Use **Importar balancete**.")
     st.stop()
 
-mes_ref = st.selectbox("Mês de referência", validos, index=len(validos) - 1, format_func=F.mes_br, key="dem_mes")
-if len(validos) < len(meses):
-    st.caption("Meses que não aparecem na lista não têm todos os meses anteriores importados: " + ", ".join(F.mes_br(m) for m in meses if m not in validos)
-               + ". Para incluí-los, importe os meses que faltam: " + ", ".join(F.mes_br(m) for m in contexto.meses_faltantes(meses)) + ".")
-
+mes_ref = st.selectbox("Mês de referência", meses, index=len(meses) - 1, format_func=F.mes_br, key="dem_mes")
 try:
     ctx_dados = contexto.carregar(conn, emp["id"], mes_ref)
 except motor.ErroDados as exc:
@@ -43,16 +35,13 @@ except motor.ErroDados as exc:
 mapa, periodos, b, mes_ant = ctx_dados["mapa"], ctx_dados["periodos"], ctx_dados["b"], ctx_dados["mes_ant"]
 bp, d, conf = ctx_dados["bp"], ctx_dados["d"], ctx_dados["conf"]
 
-# status das importacoes mensais usadas (RASCUNHO / REVISADA)
-_st = contexto.status_por_mes(conn, emp["id"])
-usados = [m for m in b.ordem if m <= mes_ref]
-n_rev = sum(1 for m in usados if _st.get(m) == "REVISADA")
-n_ras = len(usados) - n_rev
+# status das importacoes usadas (RASCUNHO / REVISADA)
+n_rev, n_ras, pend = contexto.status_usados(ctx_dados, contexto.status_por_periodo(conn, emp["id"]))
 if n_ras == 0:
-    st.success(f"Status dos balancetes: todos os {len(usados)} meses (janeiro a {F.mes_br(mes_ref)}) estão **REVISADA**.")
+    st.success(f"Status dos balancetes usados neste relatório: todos os {n_rev} estão **REVISADA**.")
 else:
-    pend = ", ".join(F.mes_br(m) for m in usados if _st.get(m) != "REVISADA")
-    st.info(f"Status dos balancetes: {n_rev} **REVISADA** e {n_ras} **RASCUNHO** (ainda não revisados: {pend}). Marque como revisada no **Histórico**.")
+    st.info(f"Status dos balancetes usados neste relatório: {n_rev} **REVISADA** e {n_ras} **RASCUNHO** (ainda não revisados: {', '.join(pend)}). Marque como revisada no **Histórico**.")
+lacunas.mostrar_lacunas(ctx_dados)
 
 falhas = ctx_dados["falhas"]
 if falhas:
@@ -74,7 +63,7 @@ with aba_dre:
     st.caption(f"Em R$ — período de 01/01/{mes_ref[:4]} a {tabelas._data_fim_mes(mes_ref)}.")
     df, est = tabelas.tabela_dre(d, mes_ref)
     st.dataframe(tabelas.estilizar(df, est), hide_index=True, width="stretch", height=min(35 * (len(df) + 1) + 3, 1100))
-    aj = d["acumulado"]["ajustes"]
+    aj = d["acumulado"]["ajustes"] if d["acumulado"] else 0.0
     notas = ["A receita de construção e a remuneração do ativo de contrato são reconhecidas ao final do exercício e/ou na entrada em operação da obra "
              "de concessão; o resultado intermediário reflete apenas os custos incorridos e não é representativo do resultado anual."]
     if abs(aj) >= 0.005:
@@ -96,7 +85,7 @@ with aba_conf:
 
 
 # ------------------------------------------------------------------ Composição de Saldos + apelidos
-contas_ref = periodos[mes_ref]
+contas_ref = ctx_dados["contas_ref"]
 apelidos = db.listar_apelidos(conn, emp["id"])
 comp = composicao.calcular(contas_ref, composicao.GRUPOS_PADRAO, apelidos)
 with aba_comp:

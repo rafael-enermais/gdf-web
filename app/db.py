@@ -230,6 +230,16 @@ def ids_importacoes_mensais(conn, empresa_id: int, ate: str) -> list:
         return [r[0] for r in cur.fetchall()]
 
 
+def ids_importacoes_acumuladas(conn, empresa_id: int, periodos: list) -> list:
+    """Ids das importações ACUMULADO ativas cujo mês final está em `periodos` ('AAAA-MM'). O relatório guarda esses ids quando usa um acumulado nas contas."""
+    if not periodos:
+        return []
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM importacao WHERE empresa_id=%s AND tipo='ACUMULADO' AND ativo AND to_char(periodo_fim, 'YYYY-MM') = ANY(%s) ORDER BY id",
+                    (empresa_id, list(periodos)))
+        return [r[0] for r in cur.fetchall()]
+
+
 def ids_regras_ativas(conn, empresa_id: int) -> dict:
     """Ids das linhas ATIVAS do mapa de contas e dos apelidos. Editar uma dessas regras muda os numeros/nomes do relatorio sem mudar nenhum balancete;
     o relatorio guarda esta 'foto' para a lista avisar 'desatualizado' quando as regras mudarem depois."""

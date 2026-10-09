@@ -17,7 +17,8 @@ st.title("Importar balancete")
 mostrar_flash()
 st.caption("Envie o balancete do sistema contábil em **CSV** (relatório *Balancete – Débito/Crédito (Texto)*) ou em **PDF** (*Balancete – Societário*, "
            "inclusive o assinado — o PDF só é lido, nunca alterado). Um arquivo por mês (01/01 a 31/01, 01/02 a 28/02...). "
-           "O acumulado (01/01 até o mês) também é aceito e serve para conferir os meses. Os dois formatos dão os mesmos números e passam pelas mesmas conferências.")
+           "O acumulado (01/01 até o mês) também é aceito: serve para conferir os meses e, se faltar algum mês, o app o usa para completar o relatório. "
+           "Os dois formatos dão os mesmos números e passam pelas mesmas conferências. A ordem do envio não importa e nada trava por falta de mês.")
 
 empresas = empresa_atual(conn)
 st.session_state.setdefault("upl_n", 0)
@@ -62,7 +63,8 @@ for arq in arquivos or []:
                 b = motor.Balancetes({m: mensais[m] for m in precisa}, mapa)
                 conf += motor.conferir_acumulado(b, contas, ate)
             else:
-                acum_info = "Ainda não há todos os balancetes mensais de janeiro até este mês; a conferência mensal × acumulado é feita automaticamente nos Demonstrativos assim que todos os meses estiverem importados (a ordem do envio não importa)."
+                acum_info = ("Ainda não há todos os balancetes mensais de janeiro até este mês: este acumulado será usado para completar o relatório e a conferência mensal × acumulado "
+                             "é feita automaticamente nos Demonstrativos quando todos os meses estiverem importados (a ordem do envio não importa).")
         tipo_txt = "mês isolado" if cab["tipo"] == "MENSAL" else "acumulado do ano"
         st.write(f"{emp['razao_social']} · {cab.get('formato', 'CSV')} · {tipo_txt} · {cab['ini']:%d/%m/%Y} a {cab['fim']:%d/%m/%Y} · {cab['n_contas']} contas")
         st.dataframe(_tabela_conf(conf), hide_index=True, width="stretch")
@@ -145,4 +147,8 @@ if prontos:
         st.session_state["upl_n"] += 1            # troca a chave do uploader para limpar os arquivos
         st.rerun()
 
+import lacunas
+st.divider()
+for _emp in empresas:
+    lacunas.mostrar_cobertura(conn, _emp)
 logui.painel_importacao(conn, empresas)

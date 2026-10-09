@@ -6,6 +6,7 @@ import streamlit as st
 import contexto
 import db
 import formatacao as F
+import fontes
 import motor
 import painel as P
 from auth import usuario_atual
@@ -22,27 +23,26 @@ st.caption("KPIs e evolução mês a mês, calculados pelo mesmo motor dos Demon
 empresas = empresa_atual(conn)
 emp = st.selectbox("Empresa", empresas, format_func=lambda e: e["razao_social"], key="pn_empresa")
 
-meses = db.listar_meses_ativos(conn, emp["id"])
-validos = contexto.meses_validos(meses)
+meses = contexto.meses_com_dados(conn, emp["id"])
 if not meses:
-    st.info("Ainda não há balancete mensal importado para esta empresa. Use **Importar balancete**.")
-    st.stop()
-if not validos:
-    st.warning("Há balancetes importados, mas a sequência de janeiro até o último mês está incompleta. Os números somam os meses do ano, então precisam de todos eles. Faltam: " + ", ".join(F.mes_br(m) for m in contexto.meses_faltantes(meses))
-               + ". Importe o que falta, em qualquer ordem; já importados: " + ", ".join(F.mes_br(m) for m in meses) + ".")
+    st.info("Ainda não há balancete importado para esta empresa. Use **Importar balancete**.")
     st.stop()
 
-anos = sorted({m[:4] for m in validos}, reverse=True)
+anos = sorted({m[:4] for m in meses}, reverse=True)
 ano = st.selectbox("Ano", anos, key="pn_ano") if len(anos) > 1 else anos[0]
-ultimo = max(m for m in validos if m[:4] == ano)
+ultimo = max(m for m in meses if m[:4] == ano)
 try:
-    dados = contexto.carregar(conn, emp["id"], ultimo)
-    linhas = P.serie_mensal(dados["b"], ultimo)
+    mensais, acum, mapa = contexto.carregar_base(conn, emp["id"])
+    dados = fontes.calcular(mensais, acum, mapa, ultimo)
+    linhas = P.serie_com_lacunas(mensais, acum, mapa, ultimo)
 except motor.ErroDados as exc:
     st.error(str(exc))
     st.stop()
+sem_dado = [f"{m:02d}/{ano}" for m in range(1, int(ultimo[5:7]) + 1) if f"{ano}-{m:02d}" not in {l["periodo"] for l in linhas}]
+if sem_dado:
+    st.info("Meses sem nenhum balancete (ficam fora dos gráficos): " + ", ".join(sem_dado) + ". Importe-os quando tiver; nada aqui trava.")
 
-st.caption(f"Janeiro a {F.mes_br(ultimo)} de {ano} — {len(linhas)} mês(es) com balancete. Valores em R$; negativos com “−”.")
+st.caption(f"Janeiro a {F.mes_br(ultimo)} de {ano} — {len(linhas)} mês(es) com balancete. Valores em R$; negativos com “−”; “–” = não calculável (faltam balancetes).")
 
 # ------------------------------------------------------------------ cartoes do ultimo mes
 atual = linhas[-1]
@@ -58,6 +58,7 @@ st.caption(f"Cartões em {F.mes_br(ultimo)}; a variação é contra o mês anter
 
 aba_evo, aba_ind, aba_tab, aba_q = st.tabs(["Evolução", "Indicadores", "Tabela mensal", "Qualidade dos dados"])
 df = pd.DataFrame(linhas).set_index("rotulo")
+df[list(P.COLUNAS)] = df[list(P.COLUNAS)].apply(pd.to_numeric, errors="coerce")      # n/d vira vazio nos gráficos
 ordem = list(df.index)
 
 
@@ -116,19 +117,22 @@ with aba_tab:
     st.caption("O CSV traz os valores sem formatação (decimal com vírgula), pronto para abrir no Excel.")
 
 with aba_q:
-    status = contexto.status_por_mes(conn, emp["id"])
+    status = contexto.status_por_periodo(conn, emp["id"])
     falhas_por = {}
     for c in dados["conf"]:
         if not c["ok"]:
             falhas_por[c["periodo"]] = falhas_por.get(c["periodo"], 0) + 1
-    rows = [{"Mês": F.mes_br(m), "Status": status.get(m, "–"), "Conferências com falha": falhas_por.get(m, 0)} for m in dados["b"].ordem]
-    outras = {k: v for k, v in falhas_por.items() if k not in dados["b"].ordem}
-    for k, v in outras.items():
-        rows.append({"Mês": k, "Status": "–", "Conferências com falha": v})
+    rows = [{"Mês": F.mes_br(l["periodo"]), "Balancete mensal": status.get(("MENSAL", l["periodo"]), "–"),
+             "Acumulado até o mês": status.get(("ACUMULADO", l["periodo"]), "–"),
+             "Relatório do mês": {"completo": "completo", "alternativo": "completo (usa acumulado)"}.get(l["fonte"], f"parcial: n/d em {l['n_nd']} item(ns)"),
+             "Conferências com falha": falhas_por.get(l["periodo"], 0)} for l in linhas]
+    nomes = {l["periodo"] for l in linhas}
+    for k, v in {k: v for k, v in falhas_por.items() if k not in nomes}.items():
+        rows.append({"Mês": k, "Balancete mensal": "–", "Acumulado até o mês": "–", "Relatório do mês": "–", "Conferências com falha": v})
     st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
-    n_ras = sum(1 for m in dados["b"].ordem if status.get(m) != "REVISADA")
+    n_ras = sum(1 for (t, m), s_ in status.items() if m[:4] == ano and m <= ultimo and s_ != "REVISADA")
     tot_f = sum(falhas_por.values())
     if n_ras or tot_f:
-        st.warning(f"{n_ras} mês(es) ainda em RASCUNHO e {tot_f} conferência(s) com falha. Use os números do painel como acompanhamento, não como fechamento.")
+        st.warning(f"{n_ras} balancete(s) ainda em RASCUNHO e {tot_f} conferência(s) com falha. Use os números do painel como acompanhamento, não como fechamento.")
     else:
-        st.success("Todos os meses estão REVISADA e todas as conferências passaram.")
+        st.success("Todos os balancetes estão REVISADA e todas as conferências passaram.")

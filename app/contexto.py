@@ -6,6 +6,7 @@ Le o banco, monta os balancetes ate' o mes e calcula Balanco, DRE e conferencias
 from __future__ import annotations
 
 import db
+import fontes
 import motor
 
 
@@ -23,24 +24,38 @@ def meses_faltantes(meses: list) -> list:
     return falta
 
 
+def meses_com_dados(conn, empresa_id: int) -> list:
+    """Todos os meses ('AAAA-MM') que têm balancete mensal OU acumulado ativo (o relatório pode ser gerado para qualquer um deles)."""
+    meses = set()
+    for i in db.listar_importacoes(conn, empresa_id):
+        if i["ativo"]:
+            meses.add(f"{i['periodo_fim'].year}-{i['periodo_fim'].month:02d}")
+    return sorted(meses)
+
+
+def carregar_base(conn, empresa_id: int) -> tuple:
+    """(balancetes mensais ativos, acumulados ativos, mapa vigente) — tudo que o motor precisa, lido uma vez."""
+    return db.periodos_mensais_ativos(conn, empresa_id), db.acumulados_ativos(conn, empresa_id), db.mapa_vigente(conn, empresa_id)
+
+
 def carregar(conn, empresa_id: int, mes_ref: str) -> dict:
-    """Calcula tudo do mes (so' os balancetes do mesmo ano: abertura em 31/12 anterior, DRE acumulada no ano).
-    Levanta motor.ErroDados se faltarem meses."""
-    mapa = db.mapa_vigente(conn, empresa_id)
-    periodos = {m: v for m, v in db.periodos_mensais_ativos(conn, empresa_id).items() if m <= mes_ref and m[:4] == mes_ref[:4]}
-    b = motor.Balancetes(periodos, mapa)
-    i = b.ordem.index(mes_ref) if mes_ref in b.ordem else -1
-    if i < 0:
-        raise motor.ErroDados(f"Não há balancete mensal ativo para {mes_ref[5:7]}/{mes_ref[:4]}.")
-    mes_ant = b.ordem[i - 1] if i > 0 else mes_ref
-    bp = motor.balanco(b, mes_ref, mes_ant)
-    d = motor.dre(b, mes_ref)
-    conf = motor.conferencias(b)
-    for ate, contas in db.acumulados_ativos(conn, empresa_id).items():
-        if ate <= mes_ref and ate in b.ordem:
-            conf += motor.conferir_acumulado(motor.Balancetes({m: periodos[m] for m in b.ordem if m <= ate}, mapa), contas, ate)
-    return {"mapa": mapa, "periodos": periodos, "b": b, "mes_ant": mes_ant, "bp": bp, "d": d, "conf": conf,
-            "falhas": [c for c in conf if not c["ok"]]}
+    """Calcula tudo do mês com o que estiver importado (balancetes mensais e acumulados do mesmo ano): ver fontes.calcular.
+    O que não puder ser calculado volta como None (n/d) e a explicação vem em `lacunas`. Levanta motor.ErroDados só se não houver nenhum balancete do mês."""
+    mensais, acum, mapa = carregar_base(conn, empresa_id)
+    return fontes.calcular(mensais, acum, mapa, mes_ref)
+
+
+def status_por_periodo(conn, empresa_id: int) -> dict:
+    """{('MENSAL'|'ACUMULADO', 'AAAA-MM'): 'RASCUNHO'|'REVISADA'} das importações ativas (acumulado: mês final)."""
+    return {(i["tipo"], f"{i['periodo_fim'].year}-{i['periodo_fim'].month:02d}"): i["status"]
+            for i in db.listar_importacoes(conn, empresa_id) if i["ativo"]}
+
+
+def status_usados(dados: dict, status: dict) -> tuple:
+    """(n REVISADA, n RASCUNHO, lista de rótulos em rascunho) só dos balancetes que entraram nas contas deste relatório."""
+    itens = [("MENSAL", m) for m in dados["usados_mensais"]] + [("ACUMULADO", m) for m in dados["usados_acum"]]
+    ras = [(f"mensal {m[5:7]}/{m[:4]}" if t == "MENSAL" else f"acumulado até {m[5:7]}/{m[:4]}") for t, m in itens if status.get((t, m)) != "REVISADA"]
+    return len(itens) - len(ras), len(ras), ras
 
 
 def status_por_mes(conn, empresa_id: int) -> dict:

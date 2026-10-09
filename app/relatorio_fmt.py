@@ -11,8 +11,13 @@ def neg(v, d=2):
     return isinstance(v, (int, float)) and round(v, d) < 0
 
 
+ND = "n/d"          # valor que nao pode ser calculado (faltam balancetes); texto passa direto para as tabelas
+
+
 def fnum(v, d=2):
-    if v is None or isinstance(v, str):
+    if isinstance(v, str):
+        return v
+    if v is None:
         return "–"
     return ("−" if neg(v, d) else "") + _n(v, d)
 
@@ -30,13 +35,17 @@ def mmn(v, d=1):
 
 
 def pct(v, d=1, sign=False):
+    if isinstance(v, str):
+        return v
     if v is None:
         return "–"
     return ("−" if neg(v * 100, d) else ("+" if sign and v > 0 else "")) + _n(v * 100, d) + "%"
 
 
 def varp(v):
-    if v is None or isinstance(v, str):
+    if isinstance(v, str):
+        return v
+    if v is None:
         return "–"
     if abs(v) > 9.99:
         return "n.s."

@@ -8,6 +8,9 @@ FLUXO = [
     ("Revisar", "Na própria tela de **Importar**: veja as conferências e, se os números batem com a contabilidade, marque **\"Revisei os números e confirmo\"** — o balancete entra já como **REVISADA**. Quem já entrou como rascunho é confirmado em **Histórico**."),
     ("Conferir os demonstrativos", "Menu **Demonstrativos**: Balanço, DRE, Indicadores, Composição de Saldos (aqui dá para digitar apelidos para os nomes cortados) e Conferências."),
     ("Gerar o relatório", "Menu **Relatório PDF**: gere o rascunho, ajuste os textos de leitura, e quando tudo estiver revisado gere a **versão final**. Se ainda houver pendência (balancete em rascunho, conferência com falha, assinante sem nome), dá para gerar mesmo assim: o app pede uma marcação e deixa o aviso no log. A ordem em que os balancetes são enviados não importa."),
+    ("Se faltar algum mês", "O app **nunca trava** por falta de balancete. O ideal é importar todos os meses (relatório completo). Se faltar algum, ele usa o **balancete acumulado** (01/01 até o mês) para completar o que der e marca **n/d** só no que não dá para calcular, sempre explicando o motivo e o que importar. "
+     "O quadro **Cobertura do ano** (em **Importar**) mostra como sairia o relatório de cada mês; nos **Demonstrativos** e no **Relatório PDF**, o aviso **O que falta e o que acontece se gerar assim** lista cada item n/d. "
+     "O PDF mostra n/d e ganha a página **Dados incompletos**; nenhum número é estimado. O app só recusa gerar quando não há nenhum balancete do mês escolhido."),
     ("Assinar (opcional)", "Assine a versão final no Autentique (fora do GDF). Se quiser deixar o registro no GDF, use **Relatório PDF → Registrar assinatura** e envie o PDF assinado; dá para substituir ou desfazer quando quiser (nada trava)."),
     ("Acompanhar", "Menu **Painel**: KPIs e evolução mês a mês. Na página **Início** fica o quadro de situação do ano."),
 ]
@@ -39,6 +42,9 @@ GUIA_CONFERENCIAS = {
     "Balanço calculado": ("O balanço calculado pelo app não fecha (Ativo ≠ Passivo + PL) ou não bate com a conta 1.",
                           "Quase sempre uma conta sem chave no mapa.",
                           "Veja **Mapa de contas → Contas sem chave** e a conferência 'Mapa de contas' do mesmo mês."),
+    "Acumulado x mensal": ("O saldo final do balancete acumulado não bate com o saldo anterior do mensal do mês seguinte.",
+                           "O acumulado ou o mensal é de outra versão (retificado) ou de outro período.",
+                           "Confira os arquivos no **Histórico**. Enquanto não bater, o acumulado **não é usado** nas contas (aparece em “O que falta”) e nada é calculado com dado incoerente."),
     "Mensal x acumulado": ("A soma dos meses não bate com o balancete acumulado do mesmo período.",
                            "Um mês foi retificado depois de o acumulado ser emitido (ou vice-versa).",
                            "Compare o mês indicado com o do acumulado; importe a versão atual do mês correto. Diferenças só de centavos entram em 'Outros ajustes líquidos'."),

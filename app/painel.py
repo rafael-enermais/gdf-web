@@ -6,6 +6,7 @@ Cada mes usa o mesmo motor dos Demonstrativos (Balanco, DRE e indicadores), enta
 """
 from __future__ import annotations
 
+import fontes
 import motor
 
 MESES_ABREV = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
@@ -68,6 +69,37 @@ def serie_mensal(b: motor.Balancetes, ate: str | None = None) -> list[dict]:
             "resultado_mes": d["mes"]["res_liq"], "resultado_acum": d["acumulado"]["res_liq"],
             "res_fin_acum": d["acumulado"]["res_fin"],
             "variacao_caixa": round(caixa - ref["caixa"], 2), "aporte_mes": round(cap - ref["capital_aportado"], 2),
+        })
+    return linhas
+
+
+def serie_com_lacunas(mensais: dict, acumulados: dict, mapa, ate: str) -> list[dict]:
+    """Igual a serie_mensal, mas sem exigir todos os meses: uma linha por mês do ano (até `ate`) que tenha balancete mensal ou acumulado.
+    Cada linha usa fontes.calcular (os mesmos números dos Demonstrativos); o que não dá para calcular fica None (n/d), nunca um valor chutado."""
+    ano = ate[:4]
+    meses = sorted({m for m in list(mensais) + list(acumulados) if m[:4] == ano and m <= ate})
+    linhas = []
+    for m in meses:
+        r = fontes.calcular(mensais, acumulados, mapa, m)
+        bp, d = r["bp"]["mes_ref"], r["d"]
+        ant = r["bp"]["abertura"] if m[5:7] == "01" else r["bp"]["mes_ant"]
+        ind = motor.indicadores(bp, d["acumulado"])
+        caixa, cap = bp["caixa_eq"], ind["capital_aportado"]
+        mes_d = d["mes"]
+        linhas.append({
+            "periodo": m, "rotulo": rotulo_mes(m),
+            "ativo": bp["ativo"], "caixa": caixa,
+            "divida_bruta": ind["div_bruta"], "divida_liquida": ind["div_liquida"],
+            "pl": bp["pl"], "capital_aportado": cap, "fornec": bp["fornec"], "ativo_concessao": bp["conc_liq"],
+            "ccl": ind["ccl"], "liq_corrente": ind["liq_corrente"], "liq_imediata": ind["liq_imediata"],
+            "endiv_geral": ind["endiv_geral"], "pl_ativo": ind["pl_ativo"],
+            "custo_constr_mes": None if mes_d is None else round(-mes_d["custo_constr"], 2),
+            "resultado_mes": None if mes_d is None else mes_d["res_liq"],
+            "resultado_acum": None if d["acumulado"] is None else d["acumulado"]["res_liq"],
+            "res_fin_acum": None if d["acumulado"] is None else d["acumulado"]["res_fin"],
+            "variacao_caixa": None if ant is None else round(caixa - ant["caixa_eq"], 2),
+            "aporte_mes": None if ant is None else round(cap - (ant["capital"] + ant["afac"]), 2),
+            "fonte": r["fonte"], "n_nd": len(r["lacunas"]),
         })
     return linhas
 

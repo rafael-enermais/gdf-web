@@ -23,8 +23,8 @@ def pagina_inicio():
     st.markdown(
         "Importe o balancete do mês (**CSV** ou **PDF** do sistema contábil), confira os avisos e veja o **Balanço**, a **DRE**, os "
         "**indicadores** e a **composição de saldos**, e gere o **relatório em PDF**. Nada é apagado: cada importação pode ser desfeita e reativada no **Histórico**.\n\n"
-        "1. **Importar balancete** — envie o CSV ou o PDF de cada mês de janeiro até o mês do relatório.\n"
-        "2. **Demonstrativos** — escolha o mês e veja Balanço, DRE, indicadores, composição de saldos e conferências.\n"
+        "1. **Importar balancete** — envie o CSV ou o PDF de cada mês (o ideal é de janeiro até o mês do relatório) ou o acumulado do ano. Se faltar algum mês nada trava: o app usa o acumulado quando dá e marca **n/d** só no que não dá para calcular, explicando o motivo.\n"
+        "2. **Demonstrativos** — escolha o mês e veja Balanço, DRE, indicadores, composição de saldos e conferências (com o aviso do que falta, se for o caso).\n"
         "3. **Relatório PDF** — gera o relatório do mês (textos editáveis, assinantes, versões).\n"
         "4. **Painel** — KPIs e evolução mês a mês para estudo e acompanhamento do histórico.\n"
         "5. **Histórico** — importações, status (rascunho/revisada), desfazer e o log por categoria (importações, relatórios, edições, erros e avisos).\n"

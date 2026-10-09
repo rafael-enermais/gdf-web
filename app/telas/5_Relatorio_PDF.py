@@ -9,6 +9,7 @@ import streamlit as st
 import contexto
 import db
 import formatacao as F
+import lacunas
 import motor
 import relatorio_dados
 import relatorio_pdf
@@ -28,17 +29,12 @@ st.caption("Gera o relatório em PDF (layout padrão Enermais) com os mesmos nú
 empresas = empresa_atual(conn)
 emp = st.selectbox("Empresa", empresas, format_func=lambda e: e["razao_social"], key="pdf_empresa")
 
-meses = db.listar_meses_ativos(conn, emp["id"])
-validos = contexto.meses_validos(meses)
+meses = contexto.meses_com_dados(conn, emp["id"])
 if not meses:
-    st.info("Ainda não há balancete mensal importado para esta empresa. Use **Importar balancete**.")
-    st.stop()
-if not validos:
-    st.warning("Há balancetes importados, mas a sequência de janeiro até o último mês está incompleta. Os números somam os meses do ano, então precisam de todos eles. Faltam: " + ", ".join(F.mes_br(m) for m in contexto.meses_faltantes(meses))
-               + ". Importe o que falta, em qualquer ordem; já importados: " + ", ".join(F.mes_br(m) for m in meses) + ".")
+    st.info("Ainda não há balancete importado para esta empresa. Use **Importar balancete**.")
     st.stop()
 
-mes_ref = st.selectbox("Mês de referência", validos, index=len(validos) - 1, format_func=F.mes_br, key="pdf_mes")
+mes_ref = st.selectbox("Mês de referência", meses, index=len(meses) - 1, format_func=F.mes_br, key="pdf_mes")
 try:
     dados = contexto.carregar(conn, emp["id"], mes_ref)
 except motor.ErroDados as exc:
@@ -46,25 +42,23 @@ except motor.ErroDados as exc:
     st.stop()
 b, bp, d, mapa, periodos, falhas = dados["b"], dados["bp"], dados["d"], dados["mapa"], dados["periodos"], dados["falhas"]
 
-_st = contexto.status_por_mes(conn, emp["id"])
-usados = [m for m in b.ordem if m <= mes_ref]
-n_rev = sum(1 for m in usados if _st.get(m) == "REVISADA")
-n_ras = len(usados) - n_rev
+n_rev, n_ras, pend_ras = contexto.status_usados(dados, contexto.status_por_periodo(conn, emp["id"]))
 if n_ras == 0:
-    st.success(f"Balancetes de janeiro a {F.mes_br(mes_ref)}: todos os {len(usados)} meses estão **REVISADA**.")
+    st.success(f"Balancetes usados neste relatório: todos os {n_rev} estão **REVISADA**.")
 else:
-    st.info(f"Balancetes de janeiro a {F.mes_br(mes_ref)}: {n_rev} **REVISADA** e {n_ras} **RASCUNHO**. O PDF sai como RASCUNHO de qualquer forma.")
+    st.info(f"Balancetes usados neste relatório: {n_rev} **REVISADA** e {n_ras} **RASCUNHO**. O PDF sai como RASCUNHO de qualquer forma.")
+lacunas.mostrar_lacunas(dados)
 if falhas:
     st.warning(f"{len(falhas)} de {len(dados['conf'])} conferências com falha. Veja a aba Conferências em **Demonstrativos** antes de usar estes números.")
 else:
     st.success(f"Todas as {len(dados['conf'])} conferências passaram.")
 
-contas_ref = periodos[mes_ref]
+contas_ref = dados["contas_ref"]
 apelidos = db.listar_apelidos(conn, emp["id"])
 cfg = db.config_empresa(conn, emp["id"])
-ctx = relatorio_dados.montar(emp, b, mes_ref, bp, d, contas_ref, apelidos, None, cfg, mapa)
+ctx = relatorio_dados.montar(emp, b, mes_ref, bp, d, contas_ref, apelidos, None, cfg, mapa, dados)
 padrao = relatorio_dados.textos_padrao(ctx)
-ROT = {"dest_1": "Destaques — parágrafo 1", "dest_2": "Destaques — parágrafo 2", "dest_3": "Destaques — parágrafo 3",
+ROT = {"dest_1": "Destaques — parágrafo 1", "dest_2": "Destaques — parágrafo 2", "dest_3": "Destaques — parágrafo 3", "dest_9": "Destaques — aviso de dados incompletos",
        "evo_1": "Evolução — caixa e dívida", "evo_2": "Evolução — custo de construção", "evo_3": "Evolução — patrimônio líquido",
        "res_1": "Resultado — parágrafo 1", "res_2": "Resultado — parágrafo 2", "bal_1": "Balanço — parágrafo 1", "bal_2": "Balanço — parágrafo 2",
        "comp_1": "Composição (1/2)", "comp_2": "Composição (2/2)"}
@@ -92,15 +86,15 @@ liberar = True
 if falhas:
     liberar = st.checkbox(f"Gerar rascunho mesmo com {len(falhas)} conferência(s) com falha", key="pdf_forcar")
 nomes_ok = any(a["nome"] for a in assinantes) and all(a["nome"] for a in assinantes if a["cargo"])
-final_ok = n_ras == 0 and not falhas and nomes_ok
+final_ok = n_ras == 0 and not falhas and nomes_ok and not dados["lacunas"]
 # a versão final nunca fica travada: com pendências o usuário pode seguir, e o app registra o que estava pendente
 pend_final = ([f"{n_ras} balancete(s) em RASCUNHO"] if n_ras else []) + ([f"{len(falhas)} conferência(s) com falha"] if falhas else []) \
-    + ([] if nomes_ok else ["assinantes sem nome"])
+    + ([f"{len(dados['lacunas'])} item(ns) n/d por falta de balancete"] if dados["lacunas"] else []) + ([] if nomes_ok else ["assinantes sem nome"])
 final_forcar = False
 if pend_final:
     final_forcar = st.checkbox("Gerar a versão final mesmo com pendências (" + "; ".join(pend_final) + ") — fica registrado no log", key="pdf_final_forcar")
 final_liberado = final_ok or final_forcar
-ids_usados = db.ids_importacoes_mensais(conn, emp["id"], mes_ref)
+ids_usados = sorted(db.ids_importacoes_mensais(conn, emp["id"], mes_ref) + (db.ids_importacoes_acumuladas(conn, emp["id"], dados["usados_acum"]) if dados["fonte"] != "completo" else []))
 regras = db.ids_regras_ativas(conn, emp["id"])
 periodo_rel = date(int(mes_ref[:4]), int(mes_ref[5:7]), 1)
 
@@ -113,11 +107,15 @@ def _gerar(status: str, pendencias=None):
         pdf = relatorio_pdf.gerar_pdf(ctx, editados, status, agora, ver)
         sha = hashlib.sha256(pdf).hexdigest()
         rid, ver = db.registrar_relatorio(conn, emp["id"], periodo_rel, sha, editados, assinantes, usuario,
-                                          {"importacoes": ids_usados, "mapa": regras["mapa"], "apelidos": regras["apelidos"], "importacoes_revisadas": n_rev, "importacoes_rascunho": n_ras, "conferencias_falhas": len(falhas), **({"pendencias": pendencias} if pendencias else {})},
+                                          {"importacoes": ids_usados, "mapa": regras["mapa"], "apelidos": regras["apelidos"], "importacoes_revisadas": n_rev, "importacoes_rascunho": n_ras, "conferencias_falhas": len(falhas), **({"pendencias": pendencias} if pendencias else {}), **({"lacunas": [l["onde"] for l in dados["lacunas"]]} if dados["lacunas"] else {}),
+                                           "fonte": dados["fonte"]},
                                           status=status, versao=ver)
         marca = "RASCUNHO" if status == "RASCUNHO" else "FINAL"
         if pendencias:
             db.registrar_evento(conn, "relatorio", "aviso", f"Relatório {mes_ref} v{ver}: versão final gerada com pendências — " + "; ".join(pendencias),
+                                empresa_id=emp["id"], usuario=usuario)
+        if dados["lacunas"]:
+            db.registrar_evento(conn, "relatorio", "aviso", f"Relatório {mes_ref} v{ver} ({status.lower()}) gerado com n/d em: " + "; ".join(l["onde"] for l in dados["lacunas"]),
                                 empresa_id=emp["id"], usuario=usuario)
         st.session_state["pdf_pronto"] = {"bytes": pdf, "nome": f"GDF_{emp['codigo']}_{mes_ref}_v{ver}_{marca}.pdf", "ver": ver, "sha": sha, "mes": mes_ref,
                                           "emp": emp["id"], "status": status}
@@ -133,9 +131,9 @@ if b2.button("Gerar versão final (para assinatura)", type="primary" if final_li
     _gerar("REVISADO", None if final_ok else pend_final)
 with st.container(border=True):
     st.markdown("**Para a versão final (o ideal é estar tudo ✅, mas não trava)**")
-    pend_rev = [F.mes_br(m) for m in usados if _st.get(m) != "REVISADA"]
-    st.markdown(f"{'✅' if not pend_rev else '❌'} Balancetes de janeiro a {F.mes_br(mes_ref)} todos **REVISADA**"
-                + ("" if not pend_rev else f" — faltam: {', '.join(pend_rev)} (marque no **Histórico**)"))
+    st.markdown(f"{'✅' if not pend_ras else '❌'} Balancetes usados neste relatório todos **REVISADA**"
+                + ("" if not pend_ras else f" — faltam: {', '.join(pend_ras)} (marque no **Histórico**)"))
+    st.markdown(f"{'✅' if not dados['lacunas'] else '⚠️'} Relatório sem n/d" + ("" if not dados["lacunas"] else f" — {len(dados['lacunas'])} item(ns) n/d (veja “O que falta” acima; o PDF mostra n/d e a explicação)"))
     st.markdown(f"{'✅' if not falhas else '❌'} Conferências sem falha" + ("" if not falhas else f" — {len(falhas)} com falha"))
     st.markdown(f"{'✅' if nomes_ok else '❌'} Assinantes com nome preenchido" + ("" if nomes_ok else " — preencha a tabela acima"))
 pronto = st.session_state.get("pdf_pronto")
