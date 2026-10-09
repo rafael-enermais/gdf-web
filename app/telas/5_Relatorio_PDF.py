@@ -75,15 +75,17 @@ with st.expander("Textos de leitura (editáveis)"):
             kk = f"txt_{emp['id']}_{mes_ref}_{k}_{hashlib.md5(padrao[k].encode()).hexdigest()[:6]}"
             textos[k] = st.text_area(rot, value=padrao[k], key=kk, height=110)
     editados = {k: v for k, v in textos.items() if v.strip() and v.strip() != padrao[k].strip()}
-with st.expander("Assinantes"):
-    ass0 = ctx["empresa"]["assinantes"]
-    a1, a2 = st.columns(2)
-    n1 = a1.text_input("Nome (1)", value=ass0[0][0], key=f"ass_n1_{emp['id']}")
-    c1 = a1.text_input("Cargo (1)", value=ass0[0][1], key=f"ass_c1_{emp['id']}")
-    n2 = a2.text_input("Nome (2)", value=ass0[1][0] if len(ass0) > 1 else "", key=f"ass_n2_{emp['id']}")
-    c2 = a2.text_input("Cargo (2)", value=ass0[1][1] if len(ass0) > 1 else "", key=f"ass_c2_{emp['id']}")
-    salvar_ass = st.checkbox("Guardar como padrão desta empresa", value=False, key="ass_salvar")
-assinantes = [{"nome": n1.strip(), "cargo": c1.strip()}, {"nome": n2.strip(), "cargo": c2.strip()}]
+st.subheader("Assinantes")
+st.caption("Quem assina o relatório (até 6). Use a última linha vazia da tabela (**+**) para adicionar e a caixa à esquerda da linha para remover. "
+           "Clique em **Salvar como padrão** para o GDF lembrar nos próximos relatórios desta empresa.")
+ass0 = [{"Nome": n, "Cargo": c_} for n, c_ in ctx["empresa"]["assinantes"]]
+ed = st.data_editor(pd.DataFrame(ass0 or [{"Nome": "", "Cargo": ""}], columns=["Nome", "Cargo"]), hide_index=True, num_rows="dynamic",
+                    use_container_width=True, key=f"ass_ed_{emp['id']}_{hashlib.md5(str(ass0).encode()).hexdigest()[:6]}")
+assinantes = [{"nome": (r["Nome"] or "").strip(), "cargo": (r["Cargo"] or "").strip()} for _, r in ed.iterrows() if (r["Nome"] or "").strip() or (r["Cargo"] or "").strip()][:6]
+if st.button("Salvar como padrão desta empresa", key="ass_salvar"):
+    db.salvar_config_empresa(conn, emp["id"], {"assinantes": assinantes}, usuario)
+    flash("ok", "Assinantes salvos como padrão desta empresa.")
+    st.rerun()
 
 liberar = True
 if falhas:
@@ -104,8 +106,6 @@ def _gerar(status: str):
         rid, ver = db.registrar_relatorio(conn, emp["id"], periodo_rel, sha, editados, assinantes, usuario,
                                           {"importacoes": ids_usados, "importacoes_revisadas": n_rev, "importacoes_rascunho": n_ras, "conferencias_falhas": len(falhas)},
                                           status=status, versao=ver)
-        if salvar_ass:
-            db.salvar_config_empresa(conn, emp["id"], {"assinantes": assinantes}, usuario)
         marca = "RASCUNHO" if status == "RASCUNHO" else "FINAL"
         st.session_state["pdf_pronto"] = {"bytes": pdf, "nome": f"GDF_{emp['codigo']}_{mes_ref}_v{ver}_{marca}.pdf", "ver": ver, "sha": sha, "mes": mes_ref,
                                           "emp": emp["id"], "status": status}
@@ -119,15 +119,13 @@ if b1.button("Gerar PDF (rascunho)", type="primary" if not final_ok else "second
     _gerar("RASCUNHO")
 if b2.button("Gerar versão final (para assinatura)", type="primary" if final_ok else "secondary", disabled=not final_ok, key="pdf_final"):
     _gerar("REVISADO")
-if not final_ok:
-    faltam = []
-    if n_ras:
-        faltam.append(f"{n_ras} balancete(s) ainda em RASCUNHO (marque como revisada no Histórico)")
-    if falhas:
-        faltam.append(f"{len(falhas)} conferência(s) com falha")
-    if not nomes_ok:
-        faltam.append("nome do(s) assinante(s) em branco")
-    st.caption("A versão final só é liberada quando " + "; ".join(faltam) + ".")
+with st.container(border=True):
+    st.markdown("**Para liberar a versão final**")
+    pend_rev = [F.mes_br(m) for m in usados if _st.get(m) != "REVISADA"]
+    st.markdown(f"{'✅' if not pend_rev else '❌'} Balancetes de janeiro a {F.mes_br(mes_ref)} todos **REVISADA**"
+                + ("" if not pend_rev else f" — faltam: {', '.join(pend_rev)} (marque no **Histórico**)"))
+    st.markdown(f"{'✅' if not falhas else '❌'} Conferências sem falha" + ("" if not falhas else f" — {len(falhas)} com falha"))
+    st.markdown(f"{'✅' if nomes_ok else '❌'} Assinantes com nome preenchido" + ("" if nomes_ok else " — preencha a tabela acima"))
 pronto = st.session_state.get("pdf_pronto")
 if pronto and pronto["mes"] == mes_ref and pronto["emp"] == emp["id"]:
     tipo = "RASCUNHO" if pronto["status"] == "RASCUNHO" else "VERSÃO FINAL (REVISADO)"

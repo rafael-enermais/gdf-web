@@ -17,6 +17,10 @@ mostrar_flash()
 empresas = empresa_atual(conn)
 emp = st.selectbox("Empresa", empresas, format_func=lambda e: e["razao_social"], key="hist_empresa")
 
+def _rot_mes(i):
+    return F.mes_br(f"{i['periodo_fim'].year}-{i['periodo_fim'].month:02d}") + " — " + i["arquivo_nome"]
+
+
 aba_imp, aba_log = st.tabs(["Importações", "Log de eventos"])
 with aba_imp:
     imps = db.listar_importacoes(conn, emp["id"])
@@ -49,6 +53,18 @@ with aba_imp:
         if col2.button(f"Marcar como {novo.lower()}", key="hist_status"):
             db.definir_status(conn, escolha["id"], novo, usuario)
             st.rerun()
+        pend = [i for i in imps if i["ativo"] and i["tipo"] == "MENSAL" and i["status"] == "RASCUNHO" and int(i["falhas"]) == 0]
+        if pend:
+            with st.expander(f"Marcar vários meses como REVISADA ({len(pend)} em rascunho, sem falhas)"):
+                st.caption("Marcar como revisada é a sua confirmação de que o balancete confere com a contabilidade. Só aparecem meses ativos sem conferência com falha; "
+                           "os com falha são tratados um a um acima.")
+                marcar = st.multiselect("Meses", pend, default=pend, key="hist_multi",
+                                        format_func=_rot_mes)
+                if st.checkbox("Conferi estes balancetes", key="hist_multi_ok") and marcar and st.button(f"Marcar {len(marcar)} como REVISADA", key="hist_multi_btn"):
+                    for i in marcar:
+                        db.definir_status(conn, i["id"], "REVISADA", usuario)
+                    flash("ok", f"{len(marcar)} importação(ões) marcada(s) como REVISADA.")
+                    st.rerun()
         with st.expander("Conferências desta importação"):
             conf = db.conferencias_da_importacao(conn, escolha["id"])
             if conf:
