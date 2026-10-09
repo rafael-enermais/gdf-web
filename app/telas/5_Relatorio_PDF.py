@@ -34,8 +34,8 @@ if not meses:
     st.info("Ainda não há balancete mensal importado para esta empresa. Use **Importar balancete**.")
     st.stop()
 if not validos:
-    st.warning("Há balancetes importados, mas falta o mês de janeiro (ou um mês no meio). O relatório precisa da sequência completa de "
-               "janeiro até o mês escolhido. Meses importados: " + ", ".join(F.mes_br(m) for m in meses) + ".")
+    st.warning("Há balancetes importados, mas a sequência de janeiro até o último mês está incompleta. Os números somam os meses do ano, então precisam de todos eles. Faltam: " + ", ".join(F.mes_br(m) for m in contexto.meses_faltantes(meses))
+               + ". Importe o que falta, em qualquer ordem; já importados: " + ", ".join(F.mes_br(m) for m in meses) + ".")
     st.stop()
 
 mes_ref = st.selectbox("Mês de referência", validos, index=len(validos) - 1, format_func=F.mes_br, key="pdf_mes")
@@ -93,12 +93,19 @@ if falhas:
     liberar = st.checkbox(f"Gerar rascunho mesmo com {len(falhas)} conferência(s) com falha", key="pdf_forcar")
 nomes_ok = any(a["nome"] for a in assinantes) and all(a["nome"] for a in assinantes if a["cargo"])
 final_ok = n_ras == 0 and not falhas and nomes_ok
+# a versão final nunca fica travada: com pendências o usuário pode seguir, e o app registra o que estava pendente
+pend_final = ([f"{n_ras} balancete(s) em RASCUNHO"] if n_ras else []) + ([f"{len(falhas)} conferência(s) com falha"] if falhas else []) \
+    + ([] if nomes_ok else ["assinantes sem nome"])
+final_forcar = False
+if pend_final:
+    final_forcar = st.checkbox("Gerar a versão final mesmo com pendências (" + "; ".join(pend_final) + ") — fica registrado no log", key="pdf_final_forcar")
+final_liberado = final_ok or final_forcar
 ids_usados = db.ids_importacoes_mensais(conn, emp["id"], mes_ref)
 regras = db.ids_regras_ativas(conn, emp["id"])
 periodo_rel = date(int(mes_ref[:4]), int(mes_ref[5:7]), 1)
 
 
-def _gerar(status: str):
+def _gerar(status: str, pendencias=None):
     try:
         agora = agora_br().strftime("%d/%m/%Y %H:%M")
         ver = db.proxima_versao_relatorio(conn, emp["id"], periodo_rel)
@@ -106,9 +113,12 @@ def _gerar(status: str):
         pdf = relatorio_pdf.gerar_pdf(ctx, editados, status, agora, ver)
         sha = hashlib.sha256(pdf).hexdigest()
         rid, ver = db.registrar_relatorio(conn, emp["id"], periodo_rel, sha, editados, assinantes, usuario,
-                                          {"importacoes": ids_usados, "mapa": regras["mapa"], "apelidos": regras["apelidos"], "importacoes_revisadas": n_rev, "importacoes_rascunho": n_ras, "conferencias_falhas": len(falhas)},
+                                          {"importacoes": ids_usados, "mapa": regras["mapa"], "apelidos": regras["apelidos"], "importacoes_revisadas": n_rev, "importacoes_rascunho": n_ras, "conferencias_falhas": len(falhas), **({"pendencias": pendencias} if pendencias else {})},
                                           status=status, versao=ver)
         marca = "RASCUNHO" if status == "RASCUNHO" else "FINAL"
+        if pendencias:
+            db.registrar_evento(conn, "relatorio", "aviso", f"Relatório {mes_ref} v{ver}: versão final gerada com pendências — " + "; ".join(pendencias),
+                                empresa_id=emp["id"], usuario=usuario)
         st.session_state["pdf_pronto"] = {"bytes": pdf, "nome": f"GDF_{emp['codigo']}_{mes_ref}_v{ver}_{marca}.pdf", "ver": ver, "sha": sha, "mes": mes_ref,
                                           "emp": emp["id"], "status": status}
     except Exception as exc:
@@ -119,10 +129,10 @@ def _gerar(status: str):
 b1, b2 = st.columns(2)
 if b1.button("Gerar PDF (rascunho)", type="primary" if not final_ok else "secondary", disabled=not liberar, key="pdf_gerar"):
     _gerar("RASCUNHO")
-if b2.button("Gerar versão final (para assinatura)", type="primary" if final_ok else "secondary", disabled=not final_ok, key="pdf_final"):
-    _gerar("REVISADO")
+if b2.button("Gerar versão final (para assinatura)", type="primary" if final_liberado else "secondary", disabled=not final_liberado, key="pdf_final"):
+    _gerar("REVISADO", None if final_ok else pend_final)
 with st.container(border=True):
-    st.markdown("**Para liberar a versão final**")
+    st.markdown("**Para a versão final (o ideal é estar tudo ✅, mas não trava)**")
     pend_rev = [F.mes_br(m) for m in usados if _st.get(m) != "REVISADA"]
     st.markdown(f"{'✅' if not pend_rev else '❌'} Balancetes de janeiro a {F.mes_br(mes_ref)} todos **REVISADA**"
                 + ("" if not pend_rev else f" — faltam: {', '.join(pend_rev)} (marque no **Histórico**)"))

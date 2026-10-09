@@ -14,6 +14,15 @@ def meses_validos(meses: list) -> list:
     return [m for m in meses if all(f"{m[:4]}-{i:02d}" in meses for i in range(1, int(m[5:7]) + 1))]
 
 
+def meses_faltantes(meses: list) -> list:
+    """Meses que faltam (de janeiro até o último importado de cada ano) para a sequência ficar completa. Serve para dizer ao usuário o que subir."""
+    falta = []
+    for ano in sorted({m[:4] for m in meses}):
+        ultimo = max(int(m[5:7]) for m in meses if m[:4] == ano)
+        falta += [f"{ano}-{i:02d}" for i in range(1, ultimo + 1) if f"{ano}-{i:02d}" not in meses]
+    return falta
+
+
 def carregar(conn, empresa_id: int, mes_ref: str) -> dict:
     """Calcula tudo do mes (so' os balancetes do mesmo ano: abertura em 31/12 anterior, DRE acumulada no ano).
     Levanta motor.ErroDados se faltarem meses."""

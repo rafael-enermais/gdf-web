@@ -26,13 +26,14 @@ if not meses:
     st.info("Ainda não há balancete mensal importado para esta empresa. Use **Importar balancete**.")
     st.stop()
 if not validos:
-    st.warning("Há balancetes importados, mas falta o mês de janeiro (ou um mês no meio). Os demonstrativos precisam da sequência "
-               "completa de janeiro até o mês escolhido. Meses importados: " + ", ".join(F.mes_br(m) for m in meses) + ".")
+    st.warning("Há balancetes importados, mas a sequência de janeiro até o último mês está incompleta. Os números somam os meses do ano, então precisam de todos eles. Faltam: " + ", ".join(F.mes_br(m) for m in contexto.meses_faltantes(meses))
+               + ". Importe o que falta, em qualquer ordem; já importados: " + ", ".join(F.mes_br(m) for m in meses) + ".")
     st.stop()
 
 mes_ref = st.selectbox("Mês de referência", validos, index=len(validos) - 1, format_func=F.mes_br, key="dem_mes")
 if len(validos) < len(meses):
-    st.caption("Meses que não aparecem na lista não têm todos os meses anteriores importados: " + ", ".join(F.mes_br(m) for m in meses if m not in validos) + ".")
+    st.caption("Meses que não aparecem na lista não têm todos os meses anteriores importados: " + ", ".join(F.mes_br(m) for m in meses if m not in validos)
+               + ". Para incluí-los, importe os meses que faltam: " + ", ".join(F.mes_br(m) for m in contexto.meses_faltantes(meses)) + ".")
 
 try:
     ctx_dados = contexto.carregar(conn, emp["id"], mes_ref)

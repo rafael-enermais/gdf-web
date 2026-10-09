@@ -66,7 +66,7 @@ def test_demonstrativos_mes_sem_janeiro(patch_conn):
     _semear(patch_conn, meses=(2, 3))
     at = _app("2_Demonstrativos.py", patch_conn).run()
     assert not at.exception
-    assert any("falta o mês de janeiro" in w.value for w in at.warning)
+    assert any("Faltam: 01/2026" in w.value for w in at.warning)
 
 
 def test_historico_desfazer_e_reativar(patch_conn):
@@ -272,7 +272,7 @@ def test_relatorio_pdf_sem_dados_e_sem_janeiro(patch_conn):
     assert not at.exception and any("Ainda não há balancete" in i.value for i in at.info)
     _semear(patch_conn, meses=(2, 3))
     at = _app("5_Relatorio_PDF.py", patch_conn).run()
-    assert not at.exception and any("falta o mês de janeiro" in w.value for w in at.warning)
+    assert not at.exception and any("Faltam: 01/2026" in w.value for w in at.warning)
 
 
 def test_relatorio_pdf_troca_de_mes(patch_conn):
@@ -626,3 +626,54 @@ def test_historico_log_por_categoria(patch_conn):
     rotulos = [t.label for t in at.tabs]
     for esperado in ("Todos (", "Importações (", "Relatórios (1)", "Edições (1)", "Erros e avisos (2)"):
         assert any(r.startswith(esperado) or r == esperado for r in rotulos), (esperado, rotulos)
+
+
+# ---------------------------------------------------------------- v0.4.10: flexibilidade (ordem do envio e versão final sem trava)
+def test_ordem_do_upload_nao_importa_conferencia_mensal_x_acumulado_e_feita_ao_vivo(patch_conn):
+    import contexto
+    emp_id = db.garantir_empresa(patch_conn, "ANASTACIO", "Anastácio Transmissora de Energia S.A.", CNPJ)
+    db.garantir_mapa(patch_conn, emp_id)
+    cab, contas = I.ler_bytes(csv_texto(MESES["2026-02"], cnpj=CNPJ, ini="01/01/2026", fim="28/02/2026"), "acum.csv")
+    db.inserir_importacao(patch_conn, emp_id, cab, contas, "seed", [])                       # acumulado ENTRA PRIMEIRO, sem nenhuma conferencia gravada
+    for m, ult in ((1, "31"), (2, "28")):                                                    # mensais depois
+        c2, k2 = I.ler_bytes(csv_texto(MESES[f"2026-{m:02d}"], cnpj=CNPJ, ini=f"01/{m:02d}/2026", fim=f"{ult}/{m:02d}/2026"), f"{m}.csv")
+        db.inserir_importacao(patch_conn, emp_id, c2, k2, "seed", [])
+    dados = contexto.carregar(patch_conn, emp_id, "2026-02")
+    assert any(c["grupo"] == "Mensal x acumulado" for c in dados["conf"])
+    at = _app("2_Demonstrativos.py", patch_conn).run()
+    assert not at.exception, at.exception
+
+
+def test_meses_faltantes_e_aviso_diz_o_que_importar(patch_conn):
+    import contexto
+    assert contexto.meses_faltantes(["2026-02", "2026-05"]) == ["2026-01", "2026-03", "2026-04"]
+    assert contexto.meses_faltantes(["2026-01", "2026-02"]) == []
+    _semear(patch_conn, meses=(1, 3))                                                        # janeiro vale; março fica de fora e a legenda diz o que importar
+    at = _app("2_Demonstrativos.py", patch_conn).run()
+    assert not at.exception and any("importe os meses que faltam: 02/2026" in c.value for c in at.caption)
+    patch_conn.cursor().execute("DELETE FROM balancete_linha; DELETE FROM conferencia; DELETE FROM importacao")
+    _semear(patch_conn, meses=(2, 3))
+    for tela in ("2_Demonstrativos.py", "5_Relatorio_PDF.py", "6_Painel.py"):
+        at = _app(tela, patch_conn).run()
+        assert not at.exception, (tela, at.exception)
+        assert any("Faltam: 01/2026" in w.value for w in at.warning), tela
+
+
+def test_versao_final_nao_trava_com_pendencias_e_fica_registrada(patch_conn):
+    emp_id = _semear_ate(patch_conn)                                                         # 3 meses em RASCUNHO, sem assinantes
+    at = _app("5_Relatorio_PDF.py", patch_conn).run()
+    assert at.button(key="pdf_final").disabled                                               # sem marcar nada, segue desabilitado
+    at.checkbox(key="pdf_final_forcar").check().run()
+    assert not at.exception and not at.button(key="pdf_final").disabled
+    at.button(key="pdf_final").click().run()
+    assert not at.exception, at.exception
+    rel = db.listar_relatorios(patch_conn, emp_id)[0]
+    assert rel["status"] == "REVISADO" and "RASCUNHO" in " ".join(rel["meta"]["pendencias"]) and "assinantes sem nome" in rel["meta"]["pendencias"]
+    avisos = [e["mensagem"] for e in db.listar_eventos(patch_conn, emp_id) if e["nivel"] == "aviso"]
+    assert any("versão final gerada com pendências" in m for m in avisos), avisos
+
+
+def test_demonstrativos_com_um_mes_so(patch_conn):
+    _semear(patch_conn, meses=(1,))
+    at = _app("2_Demonstrativos.py", patch_conn).run()
+    assert not at.exception, at.exception
