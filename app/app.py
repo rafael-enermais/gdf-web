@@ -19,12 +19,12 @@ def pagina_inicio():
     st.title(NOME_APP)
     mostrar_flash()
     st.markdown(
-        "Importe o balancete do mês (CSV exportado do sistema contábil), confira os avisos e veja o **Balanço**, a **DRE** e os "
-        "**indicadores** calculados. Nada é apagado: cada importação pode ser desfeita e reativada no **Histórico**.\n\n"
-        "1. **Importar balancete** — envie o CSV de cada mês de janeiro até o mês do relatório.\n"
-        "2. **Demonstrativos** — escolha o mês e veja Balanço, DRE, indicadores e conferências.\n"
-        "3. **Histórico** — importações, status, desfazer e log de eventos.\n"
-        "4. **Mapa de contas** — como cada conta do balancete vira uma linha do demonstrativo."
+        "Importe o balancete do mês (**CSV** ou **PDF** do sistema contábil), confira os avisos e veja o **Balanço**, a **DRE**, os "
+        "**indicadores** e a **composição de saldos**, e gere o **relatório em PDF**. Nada é apagado: cada importação pode ser desfeita e reativada no **Histórico**.\n\n"
+        "1. **Importar balancete** — envie o CSV ou o PDF de cada mês de janeiro até o mês do relatório.\n"
+        "2. **Demonstrativos** — escolha o mês e veja Balanço, DRE, indicadores, composição de saldos, conferências e o botão **Gerar PDF**.\n"
+        "3. **Histórico** — importações, status (rascunho/revisada), desfazer e log de eventos.\n"
+        "4. **Mapa de contas** — como cada conta do balancete vira uma linha do demonstrativo (editável, com histórico)."
     )
     sidebar_rodape()
 

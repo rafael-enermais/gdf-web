@@ -169,3 +169,49 @@ def test_explica_693659_62(mensal):
     dif = round(abs(l8) - abs(ag["res_liq"]), 2)
     assert dif == 693659.62
     assert abs(2 * ag["rec_fin"] + 2 * ag["deducoes"] + ag["ajustes"] - dif) < 0.005
+
+
+def test_pdf_do_acumulado_tem_os_mesmos_numeros_do_csv(pasta, csvd):
+    """O balancete em PDF (opcional na pasta) deve dar exatamente os mesmos numeros do CSV; so' os nomes longos vem cortados no PDF."""
+    import importador_pdf as P
+    f = pasta / "01 a 08.2026 - Balancete - sem assinatura Alex.pdf"
+    if not f.exists():
+        pytest.skip("PDF do acumulado nao esta na pasta")
+    cab_csv, c_csv = csvd
+    cab, c_pdf = P.ler_pdf(str(f))
+    assert (cab["tipo"], cab["periodo"], cab["cnpj"]) == (cab_csv["tipo"], cab_csv["periodo"], cab_csv["cnpj"])
+    assert len(c_pdf) == len(c_csv) and not cab["ignoradas"]
+    for a, b in zip(c_pdf, c_csv):
+        assert (a["id"], a["cl"], a["sint"]) == (b["id"], b["cl"], b["sint"])
+        assert all(abs(a[k] - b[k]) < 0.005 for k in ("ant", "deb", "cred", "sal"))
+        assert " ".join(b["nome"].split()).startswith(" ".join(a["nome"].split())[:30])
+
+
+def test_pdf_mensal_assinado_confere(pasta):
+    import importador_pdf as P
+    f = pasta / "08.2026 - Balancete - [assinado].pdf"
+    if not f.exists():
+        pytest.skip("PDF assinado de agosto nao esta na pasta")
+    cab, contas = P.ler_pdf(str(f))
+    assert (cab["tipo"], cab["periodo"], len(contas)) == ("MENSAL", "2026-08", 187)
+    assert all(c["ok"] for c in M.conferencias_arquivo(contas, None, "2026-08"))
+
+
+def test_relatorio_pdf_com_dados_reais_tem_os_valores_do_excel(b, wb):
+    """O PDF gerado a partir dos balancetes traz o resultado e o caixa do Excel da contadora (centavo a centavo)."""
+    import io
+    import pdfplumber
+    import relatorio_dados as RD
+    import relatorio_pdf as RP
+    mes = "2026-08"
+    bp, dr = M.balanco(b, mes), M.dre(b, mes)
+    emp = {"id": 1, "codigo": "ANASTACIO", "razao_social": "Anastácio Transmissora de Energia S.A.", "cnpj": "54.800.488/0001-60"}
+    ctx = RD.montar(emp, b, mes, bp, dr, b.p[mes])
+    pdf = RP.gerar_pdf(ctx, {}, "RASCUNHO", "01/01/2026 00:00")
+    with pdfplumber.open(io.BytesIO(pdf)) as p:
+        assert len(p.pages) == 11
+        todo = "\n".join(pg.extract_text() or "" for pg in p.pages)
+    ws = wb["Balanço Patrimonial"]
+    caixa = next(ws.cell(r, 5).value for r in range(10, 54) if ws.cell(r, 2).value and "Caixa e equivalentes" in str(ws.cell(r, 2).value))
+    assert RP.fnum(caixa) in todo
+    assert RP.fnum(dr["acumulado"]["res_liq"]) in todo
