@@ -132,3 +132,59 @@ def test_regras_ativas_mudam_quando_mapa_ou_apelido_mudam(conn):
     assert r1["mapa"] == r0["mapa"] and len(r1["apelidos"]) == 1
     db.salvar_mapa_linha(conn, emp, "dep_vista", "Depósitos à vista", ["1.1.01.002"], None, "t", "ajuste")
     assert db.ids_regras_ativas(conn, emp)["mapa"] != r0["mapa"]
+
+
+# ---------------------------------------------------------------- v0.4.7: SQL que limpa so' os residuos do teste ao vivo
+LIMPAR = Path(__file__).resolve().parent.parent.parent / "sql" / "limpar_residuos_teste.sql"
+
+
+def _semear_residuos(conn):
+    """Reproduz o estado de producao: #1 acumulado original, #2..#9 mensais, #10/#11 acumulados de teste, relatorios v1..v4 de 08/2026."""
+    import datetime
+    emp = db.garantir_empresa(conn, "ANASTACIO", "Anastácio Transmissora de Energia S.A.", CNPJ)
+    db.garantir_mapa(conn, emp)
+
+    def acum(nome, h):
+        cab, contas = _arq(3, nome)
+        cab = {**cab, "tipo": "ACUMULADO", "ini": datetime.date(2026, 1, 1), "fim": datetime.date(2026, 8, 31), "sha256": h * 64, "periodo": "2026-08"}
+        return db.inserir_importacao(conn, emp, cab, contas, "t", None, status="REVISADA", substituir=True)
+    assert acum("Relatorios_Contabeis_Balancete.csv", "1") == 1
+    with conn.cursor() as cur:                                    # #2..#9 mensais ficam como estao; aqui basta avancar a sequencia
+        cur.execute("SELECT setval(pg_get_serial_sequence('gdf.importacao','id'), 9)")
+    assert acum("balancete_08_2026_TESTE.csv", "2") == 10          # substitui a #1
+    assert acum("01 a 08.2026 - Balancete - sem assinatura.pdf", "3") == 11
+    d = datetime.date(2026, 8, 1)
+    for v, st in ((1, "REVISADO"), (2, "REVISADO"), (3, "RASCUNHO"), (4, "RASCUNHO")):
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO relatorio (empresa_id, periodo, versao, status, pdf_sha256) VALUES (%s,%s,%s,%s,%s)", (emp, d, v, st, str(v) * 64))
+    return emp
+
+
+def test_limpar_residuos_apaga_so_o_combinado_e_devolve_a_importacao_1(conn):
+    _semear_residuos(conn)
+    antes = _contagens(conn)
+    conn.cursor().execute(LIMPAR.read_text(encoding="utf-8"))
+    depois = _contagens(conn)
+    assert depois["importacao"] == antes["importacao"] - 2 and depois["relatorio"] == 2
+    assert depois["evento"] == antes["evento"] + 1
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, ativo, status FROM importacao")
+        assert cur.fetchall() == [(1, True, "REVISADA")]
+        cur.execute("SELECT count(*) FROM balancete_linha WHERE importacao_id IN (10,11)")
+        assert cur.fetchone()[0] == 0
+        cur.execute("SELECT versao FROM relatorio ORDER BY versao")
+        assert [r[0] for r in cur.fetchall()] == [1, 2]
+    assert db.registrar_relatorio  # o app continua gerando a proxima versao sem conflito
+    emp = db.empresa_por_cnpj(conn, CNPJ)["id"]
+    import datetime
+    assert db.proxima_versao_relatorio(conn, emp, datetime.date(2026, 8, 1)) == 3
+
+
+def test_limpar_residuos_recusa_se_o_estado_for_outro(conn):
+    _semear_tudo(conn)                                              # estado diferente do esperado (sem #10/#11)
+    antes = _contagens(conn)
+    with pytest.raises(psycopg2.Error) as exc:
+        conn.cursor().execute(LIMPAR.read_text(encoding="utf-8"))
+    assert "Nada foi apagado" in str(exc.value)
+    conn.cursor().execute("ROLLBACK")
+    assert _contagens(conn) == antes
