@@ -6,6 +6,7 @@ Regras: nada e' apagado (ativo=false; "Desfazer" reativa); a role do app nao tem
 from __future__ import annotations
 
 import json
+import re
 from contextlib import contextmanager
 
 from psycopg2.extras import execute_values
@@ -195,6 +196,148 @@ def conferencias_da_importacao(conn, importacao_id: int) -> list:
     with conn.cursor() as cur:
         cur.execute("SELECT grupo, descricao, ok, detalhe FROM conferencia WHERE importacao_id = %s ORDER BY id", (importacao_id,))
         return [{"grupo": g, "periodo": "", "descricao": d, "ok": o, "detalhe": t or ""} for g, d, o, t in cur.fetchall()]
+
+
+# ---------------------------------------------------------------- mapa de contas (edicao = nova linha; a anterior fica inativa)
+class MapaInvalido(Exception):
+    """Alteracao de mapa recusada (mensagem em linguagem simples)."""
+
+
+_PREFIXO = re.compile(r"^\d(\.\d+)*$")
+
+
+def salvar_mapa_linha(conn, empresa_id: int, chave: str, rotulo: str, prefixos: list, natureza, usuario: str, motivo: str) -> None:
+    """Troca a linha ATIVA da chave por uma nova (a antiga fica inativa, com historico). Exige motivo."""
+    rotulo = (rotulo or "").strip()
+    prefixos = [p.strip() for p in (prefixos or []) if p and p.strip()]
+    motivo = (motivo or "").strip()
+    if not motivo:
+        raise MapaInvalido("Informe o motivo da alteração (fica registrado no histórico).")
+    if not rotulo:
+        raise MapaInvalido("O nome da linha do demonstrativo não pode ficar vazio.")
+    if not prefixos:
+        raise MapaInvalido("Informe ao menos um prefixo de conta (ex.: 1.1.01.002).")
+    ruins = [p for p in prefixos if not _PREFIXO.match(p)]
+    if ruins:
+        raise MapaInvalido("Prefixo inválido: " + ", ".join(ruins) + ". Use só números separados por ponto (ex.: 2.4.01.001).")
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, secao, rotulo, prefixos, natureza FROM mapa_conta WHERE empresa_id=%s AND chave=%s AND ativo", (empresa_id, chave))
+        atual = cur.fetchone()
+    if not atual:
+        raise MapaInvalido("Essa chave não existe no mapa da empresa.")
+    _, secao, rot0, pref0, nat0 = atual
+    if secao == "DRE" and natureza not in ("D", "C"):
+        raise MapaInvalido("Para linhas da DRE informe a natureza: despesa/custo ou receita.")
+    nat = natureza if secao == "DRE" else None
+    if rotulo == rot0 and list(pref0) == prefixos and nat == nat0:
+        raise MapaInvalido("Nada mudou em relação ao mapa atual.")
+    with transacao(conn):
+        with conn.cursor() as cur:
+            cur.execute("UPDATE mapa_conta SET ativo=false WHERE id=%s", (atual[0],))
+            cur.execute("INSERT INTO mapa_conta (empresa_id, chave, rotulo, secao, prefixos, natureza, alterado_por, motivo) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                        (empresa_id, chave, rotulo, secao, prefixos, nat, usuario, motivo))
+            _evento(cur, empresa_id, "mapa", "info", f"Mapa de contas: linha '{chave}' alterada — {motivo}", usuario,
+                    {"chave": chave, "antes": {"rotulo": rot0, "prefixos": list(pref0), "natureza": nat0}, "depois": {"rotulo": rotulo, "prefixos": prefixos, "natureza": nat}})
+
+
+def historico_mapa(conn, empresa_id: int, limite: int = 200) -> list:
+    with conn.cursor() as cur:
+        cur.execute("SELECT chave, rotulo, secao, prefixos, natureza, ativo, alterado_por, alterado_em, motivo FROM mapa_conta "
+                    "WHERE empresa_id=%s ORDER BY id DESC LIMIT %s", (empresa_id, limite))
+        cols = ("chave", "rotulo", "secao", "prefixos", "natureza", "ativo", "alterado_por", "alterado_em", "motivo")
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+# ---------------------------------------------------------------- apelidos (Composicao de Saldos)
+def listar_apelidos(conn, empresa_id: int) -> dict:
+    """{nome_original em minusculas: apelido} dos apelidos ativos."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT nome_original, apelido FROM apelido WHERE empresa_id=%s AND ativo", (empresa_id,))
+        return {n.lower(): a for n, a in cur.fetchall()}
+
+
+def salvar_apelidos(conn, empresa_id: int, mudancas: dict, usuario: str) -> int:
+    """mudancas: {nome_original: apelido}. Apelido vazio (ou igual ao nome) desativa o apelido. O antigo fica inativo. Retorna quantos mudaram."""
+    n = 0
+    with transacao(conn):
+        with conn.cursor() as cur:
+            for nome, ap in mudancas.items():
+                nome, ap = " ".join((nome or "").split()), " ".join((ap or "").split())
+                if not nome:
+                    continue
+                cur.execute("SELECT id, apelido FROM apelido WHERE empresa_id=%s AND lower(nome_original)=lower(%s) AND ativo", (empresa_id, nome))
+                ant = cur.fetchone()
+                novo = ap if ap and ap != nome else ""
+                if (ant[1] if ant else "") == novo:
+                    continue
+                if ant:
+                    cur.execute("UPDATE apelido SET ativo=false WHERE id=%s", (ant[0],))
+                if novo:
+                    cur.execute("INSERT INTO apelido (empresa_id, nome_original, apelido, alterado_por) VALUES (%s,%s,%s,%s)", (empresa_id, nome, novo, usuario))
+                n += 1
+            if n:
+                _evento(cur, empresa_id, "composicao", "info", f"{n} apelido(s) da Composição de Saldos atualizado(s)", usuario)
+    return n
+
+
+# ---------------------------------------------------------------- relatorio PDF
+def config_empresa(conn, empresa_id: int) -> dict:
+    with conn.cursor() as cur:
+        cur.execute("SELECT config FROM empresa WHERE id=%s", (empresa_id,))
+        r = cur.fetchone()
+    return dict(r[0]) if r and r[0] else {}
+
+
+def salvar_config_empresa(conn, empresa_id: int, novos: dict, usuario: str) -> None:
+    """Mescla chaves em empresa.config (ex.: assinantes)."""
+    cfg = config_empresa(conn, empresa_id)
+    cfg.update(novos)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE empresa SET config=%s::jsonb WHERE id=%s", (json.dumps(cfg), empresa_id))
+        _evento(cur, empresa_id, "relatorio", "info", "Configuração do relatório da empresa atualizada (" + ", ".join(novos) + ")", usuario)
+
+
+def registrar_relatorio(conn, empresa_id: int, periodo, pdf_sha256: str, textos: dict, assinantes: list, usuario: str, meta: dict | None = None) -> tuple:
+    """Grava um relatorio gerado como RASCUNHO (nova versao do periodo; nunca regrava uma linha existente). Retorna (id, versao)."""
+    with transacao(conn):
+        with conn.cursor() as cur:
+            cur.execute("SELECT COALESCE(MAX(versao),0)+1 FROM relatorio WHERE empresa_id=%s AND periodo=%s", (empresa_id, periodo))
+            v = cur.fetchone()[0]
+            corpo = dict(textos)
+            if meta:
+                corpo["_meta"] = meta
+            cur.execute("INSERT INTO relatorio (empresa_id, periodo, versao, status, pdf_sha256, textos, assinantes, gerado_por) "
+                        "VALUES (%s,%s,%s,'RASCUNHO',%s,%s::jsonb,%s::jsonb,%s) RETURNING id",
+                        (empresa_id, periodo, v, pdf_sha256, json.dumps(corpo), json.dumps(assinantes), usuario))
+            rid = cur.fetchone()[0]
+            _evento(cur, empresa_id, "relatorio", "info", f"Relatório {periodo:%m/%Y} v{v} gerado (RASCUNHO)", usuario, {"relatorio_id": rid, "sha256": pdf_sha256})
+    return rid, v
+
+
+def listar_relatorios(conn, empresa_id: int, periodo=None) -> list:
+    sql = "SELECT id, periodo, versao, status, pdf_sha256, gerado_por, gerado_em FROM relatorio WHERE empresa_id=%s"
+    par = [empresa_id]
+    if periodo:
+        sql += " AND periodo=%s"; par.append(periodo)
+    with conn.cursor() as cur:
+        cur.execute(sql + " ORDER BY periodo DESC, versao DESC", par)
+        cols = ("id", "periodo", "versao", "status", "pdf_sha256", "gerado_por", "gerado_em")
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def definir_status_relatorio(conn, relatorio_id: int, status: str, usuario: str) -> None:
+    """RASCUNHO <-> REVISADO. Relatorio ASSINADO nunca e' alterado (gerar nova versao)."""
+    if status not in ("RASCUNHO", "REVISADO"):
+        raise ValueError("Status inválido (a assinatura é feita fora do GDF nesta versão).")
+    with conn.cursor() as cur:
+        cur.execute("SELECT empresa_id, status, periodo, versao FROM relatorio WHERE id=%s", (relatorio_id,))
+        r = cur.fetchone()
+        if not r:
+            raise ValueError("Relatório não encontrado.")
+        if r[1] == "ASSINADO":
+            raise ValueError("Relatório assinado não pode ser alterado; gere uma nova versão.")
+        cur.execute("UPDATE relatorio SET status=%s WHERE id=%s", (status, relatorio_id))
+        _evento(cur, r[0], "relatorio", "info", f"Relatório {r[2]:%m/%Y} v{r[3]} marcado como {status}", usuario, {"relatorio_id": relatorio_id})
 
 
 # ---------------------------------------------------------------- log

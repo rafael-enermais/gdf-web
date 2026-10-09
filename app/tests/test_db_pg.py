@@ -175,3 +175,55 @@ def test_preparar_conexao_fixa_schema_e_exige_role_do_app(pg_dsn):
     with pytest.raises(conexao.ConexaoInvalida):
         conexao.preparar_conexao(c2)
     c2.close()
+
+
+# ---------------------------------------------------------------- apelidos, mapa e relatorio (v1.9)
+def test_apelidos_salvar_trocar_e_limpar(conn, emp):
+    assert db.salvar_apelidos(conn, emp, {"Itaú s/a - Cdb": "Itaú Unibanco — CDB"}, "u") == 1
+    assert db.listar_apelidos(conn, emp) == {"itaú s/a - cdb": "Itaú Unibanco — CDB"}
+    assert db.salvar_apelidos(conn, emp, {"Itaú s/a - Cdb": "Itaú Unibanco — CDB"}, "u") == 0          # sem mudanca
+    assert db.salvar_apelidos(conn, emp, {"Itaú s/a - Cdb": "Itaú CDB"}, "u") == 1
+    assert db.listar_apelidos(conn, emp)["itaú s/a - cdb"] == "Itaú CDB"
+    assert db.salvar_apelidos(conn, emp, {"Itaú s/a - Cdb": ""}, "u") == 1                            # vazio = volta ao original
+    assert db.listar_apelidos(conn, emp) == {}
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*), count(*) FILTER (WHERE ativo) FROM apelido WHERE empresa_id=%s", (emp,))
+        assert cur.fetchone() == (2, 0)                                                              # nada apagado
+
+
+def test_mapa_edicao_cria_nova_linha_e_guarda_a_anterior(conn, emp):
+    antes = {m[0]: m for m in db.mapa_vigente(conn, emp)}["juros"]
+    db.salvar_mapa_linha(conn, emp, "juros", "(−) Juros e encargos", ["5.7.11.001.005", "5.7.11.001.006"], "D", "u", "nova conta de encargos")
+    depois = {m[0]: m for m in db.mapa_vigente(conn, emp)}["juros"]
+    assert depois[1] == "(−) Juros e encargos" and depois[3] == ["5.7.11.001.005", "5.7.11.001.006"] and depois[3] != antes[3]
+    hist = [h for h in db.historico_mapa(conn, emp) if h["chave"] == "juros"]
+    assert [h["ativo"] for h in hist] == [True, False] and hist[0]["motivo"] == "nova conta de encargos"
+    for ruim, msg in [(dict(motivo=""), "motivo"), (dict(prefixos=[]), "prefixo"), (dict(prefixos=["5.x"]), "inválido"), (dict(rotulo=" "), "vazio"), (dict(natureza=None), "natureza")]:
+        args = dict(rotulo="X", prefixos=["5.7.11"], natureza="D", motivo="m"); args.update(ruim)
+        with pytest.raises(db.MapaInvalido, match=msg):
+            db.salvar_mapa_linha(conn, emp, "juros", args["rotulo"], args["prefixos"], args["natureza"], "u", args["motivo"])
+    with pytest.raises(db.MapaInvalido, match="Nada mudou"):
+        db.salvar_mapa_linha(conn, emp, "juros", "(−) Juros e encargos", ["5.7.11.001.005", "5.7.11.001.006"], "D", "u", "repetido")
+    with pytest.raises(db.MapaInvalido, match="não existe"):
+        db.salvar_mapa_linha(conn, emp, "chave_inexistente", "X", ["1"], None, "u", "m")
+
+
+def test_relatorio_versoes_status_e_config(conn, emp):
+    from datetime import date
+    per = date(2026, 3, 1)
+    assert db.config_empresa(conn, emp) == {}
+    db.salvar_config_empresa(conn, emp, {"assinantes": [{"nome": "A", "cargo": "Adm"}]}, "u")
+    assert db.config_empresa(conn, emp)["assinantes"][0]["nome"] == "A"
+    r1, v1 = db.registrar_relatorio(conn, emp, per, "a" * 64, {"dest_1": "x"}, [{"nome": "A", "cargo": "Adm"}], "u", {"k": 1})
+    r2, v2 = db.registrar_relatorio(conn, emp, per, "b" * 64, {}, [], "u")
+    assert (v1, v2) == (1, 2)
+    lista = db.listar_relatorios(conn, emp, per)
+    assert [r["versao"] for r in lista] == [2, 1] and lista[0]["status"] == "RASCUNHO"
+    db.definir_status_relatorio(conn, r1, "REVISADO", "u")
+    assert [r["status"] for r in db.listar_relatorios(conn, emp, per)] == ["RASCUNHO", "REVISADO"]
+    with conn.cursor() as cur:
+        cur.execute("UPDATE relatorio SET status='ASSINADO' WHERE id=%s", (r1,))
+    with pytest.raises(ValueError, match="assinado"):
+        db.definir_status_relatorio(conn, r1, "RASCUNHO", "u")
+    with pytest.raises(ValueError):
+        db.definir_status_relatorio(conn, r2, "ASSINADO", "u")

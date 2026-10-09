@@ -123,3 +123,37 @@ def csv_texto(contas: list, cnpj="00.000.000/0001-91", empresa="EMPRESA SINTETIC
 
 def fim_do_mes(ano, mes):
     return f"{calendar.monthrange(ano, mes)[1]:02d}/{mes:02d}/{ano}"
+
+
+def pdf_balancete(contas: list, cnpj="00.000.000/0001-91", empresa="EMPRESA SINTETICA LTDA", ini="01/01/2026", fim="31/01/2026",
+                  ult_mov=False, linhas_por_pagina=40, linhas_extras=()) -> bytes:
+    """PDF (texto) no layout do 'Balancete - Societario' do sistema contabil, com varias paginas (cabecalho repetido). So' para testes."""
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.pdfgen import canvas
+
+    def br(v):
+        s = f"{abs(v):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"({s})" if v < 0 else s
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=landscape(A4))
+    W, H = landscape(A4)
+    paginas = [contas[i:i + linhas_por_pagina] for i in range(0, max(len(contas), 1), linhas_por_pagina)]
+    for n, lote in enumerate(paginas, 1):
+        y = H - 30
+        c.setFont("Helvetica", 7)
+        for txt in (f"0001 {empresa}    08/10/2026 10:22 Pág:{n:04d}", f"CNPJ: {cnpj}", f"Período: {ini} a {fim}",
+                    "Balancete – Societário", "Balancete", "Valores expressos em Reais (R$)"):
+            c.drawString(30, y, txt); y -= 10
+        cab = "Conta S Classificação" + (" Ult. Mov." if ult_mov else "") + " Saldo Ant. Débito Crédito Saldo"
+        c.drawString(30, y, cab); y -= 12
+        for k in lote:
+            um = " 28/01/26" if (ult_mov and not k["sint"]) else ""
+            c.drawString(30, y, f'{k["id"]} {"S " if k["sint"] else ""}{k["cl"]} {k["nome"]}{um} {br(k["ant"])} {br(k["deb"])} {br(k["cred"])} {br(k["sal"])}')
+            y -= 10
+        if n == len(paginas):
+            for txt in linhas_extras:
+                c.drawString(30, y, txt); y -= 10
+        c.showPage()
+    c.save()
+    return buf.getvalue()

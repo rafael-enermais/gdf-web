@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-"""GDF — Importar balancete (CSV do sistema contábil): leitura, conferências do arquivo e gravação sem apagar nada."""
+"""GDF — Importar balancete (CSV ou PDF do sistema contábil): leitura, conferências do arquivo e gravação sem apagar nada."""
 import streamlit as st
 
 import db
 import motor
 from auth import usuario_atual
 from conexao import empresa_atual, flash, get_conn, mostrar_flash, sidebar_rodape
-from importador_csv import ErroImportacao, ler_bytes
+from importador import ErroImportacao, ler_bytes
 
 usuario = usuario_atual()
 conn = get_conn()
@@ -14,12 +14,13 @@ sidebar_rodape()
 
 st.title("Importar balancete")
 mostrar_flash()
-st.caption("Envie o CSV do relatório **Balancete – Débito/Crédito (Texto)** do sistema contábil: um arquivo por mês "
-           "(01/01 a 31/01, 01/02 a 28/02...). O CSV acumulado (01/01 até o mês) também é aceito e serve para conferir os meses.")
+st.caption("Envie o balancete do sistema contábil em **CSV** (relatório *Balancete – Débito/Crédito (Texto)*) ou em **PDF** (*Balancete – Societário*, "
+           "inclusive o assinado — o PDF só é lido, nunca alterado). Um arquivo por mês (01/01 a 31/01, 01/02 a 28/02...). "
+           "O acumulado (01/01 até o mês) também é aceito e serve para conferir os meses. Os dois formatos dão os mesmos números e passam pelas mesmas conferências.")
 
 empresa_atual(conn)
 st.session_state.setdefault("upl_n", 0)
-arquivos = st.file_uploader("Arquivos CSV", type=["csv"], accept_multiple_files=True, key=f"upl_{st.session_state['upl_n']}")
+arquivos = st.file_uploader("Arquivos CSV ou PDF", type=["csv", "pdf"], accept_multiple_files=True, key=f"upl_{st.session_state['upl_n']}")
 
 ICONE = {True: "✅", False: "❌"}
 
@@ -45,6 +46,9 @@ for arq in arquivos or []:
             continue
         mapa = db.mapa_vigente(conn, emp["id"])
         conf = motor.conferencias_arquivo(contas, mapa, cab["periodo"])
+        ign = cab.get("ignoradas") or []
+        conf.insert(0, {"grupo": "arquivo", "periodo": cab["periodo"], "descricao": "Todas as linhas de conta do arquivo foram lidas", "ok": not ign,
+                        "detalhe": "sim" if not ign else f"{len(ign)} linha(s) não lida(s): " + " | ".join(ign[:3])})
         acum_info = None
         if cab["tipo"] == "ACUMULADO":
             mensais = db.periodos_mensais_ativos(conn, emp["id"])
@@ -56,7 +60,7 @@ for arq in arquivos or []:
             else:
                 acum_info = "Ainda não há todos os balancetes mensais de janeiro até este mês; a conferência mensal × acumulado fica para depois."
         tipo_txt = "mês isolado" if cab["tipo"] == "MENSAL" else "acumulado do ano"
-        st.write(f"{emp['razao_social']} · {tipo_txt} · {cab['ini']:%d/%m/%Y} a {cab['fim']:%d/%m/%Y} · {cab['n_contas']} contas")
+        st.write(f"{emp['razao_social']} · {cab.get('formato', 'CSV')} · {tipo_txt} · {cab['ini']:%d/%m/%Y} a {cab['fim']:%d/%m/%Y} · {cab['n_contas']} contas")
         st.dataframe(_tabela_conf(conf), hide_index=True, use_container_width=True)
         if acum_info:
             st.info(acum_info)

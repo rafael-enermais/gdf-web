@@ -10,7 +10,7 @@ from streamlit.testing.v1 import AppTest
 import db
 import importador_csv as I
 import motor
-from dados_sinteticos import csv_texto, gerar_meses
+from dados_sinteticos import csv_texto, gerar_meses, pdf_balancete
 
 pytestmark = pytest.mark.pg
 APP = Path(__file__).resolve().parent.parent
@@ -56,7 +56,7 @@ def test_demonstrativos_com_dados(patch_conn):
     at = _app("2_Demonstrativos.py", patch_conn).run()
     assert not at.exception, at.exception
     assert any("conferências passaram" in s.value for s in at.success)
-    assert len(at.tabs) == 4 and len(at.dataframe) >= 4
+    assert len(at.tabs) == 6 and len(at.dataframe) >= 4
     assert at.selectbox(key="dem_mes").value == "2026-03"
     at.selectbox(key="dem_mes").select("2026-02").run()
     assert not at.exception
@@ -155,3 +155,74 @@ def test_historico_mostra_periodo_do_acumulado_com_janeiro(patch_conn):
     periodos = [str(v) for df in at.dataframe for v in df.value.get("Período", [])]
     assert "01/01/2026 a 28/02/2026" in periodos
     assert not any(p.startswith("01/02/2026 a") for p in periodos)
+
+
+def test_importar_pdf_e_depois_csv_do_mesmo_periodo(patch_conn):
+    """PDF e CSV entram pelo mesmo caminho; o 2o formato do mesmo periodo pede confirmacao para substituir (nada e' apagado)."""
+    pdf = _Upload("01.2026 - Balancete.pdf", pdf_balancete(MESES["2026-01"], cnpj=CNPJ, ini="01/01/2026", fim="31/01/2026"))
+    at = _importar(patch_conn, [pdf])
+    assert not at.exception, at.exception
+    assert any("PDF" in m.value and "mês isolado" in m.value for m in at.markdown)
+    botao = [b for b in at.button if "Importar 1 arquivo" in b.label]
+    assert botao, [b.label for b in at.button]
+    with patch("streamlit.file_uploader", return_value=[pdf]):
+        botao[0].click().run()
+    emp = db.empresa_por_cnpj(patch_conn, CNPJ)
+    assert db.listar_meses_ativos(patch_conn, emp["id"]) == ["2026-01"]
+    csv = _Upload("01.csv", csv_texto(MESES["2026-01"], cnpj=CNPJ, ini="01/01/2026", fim="31/01/2026"))
+    at2 = _importar(patch_conn, [csv])
+    assert not at2.exception
+    assert [c for c in at2.checkbox if "Substituir" in c.label]
+    assert not [b for b in at2.button if "Importar" in b.label and "arquivo" in b.label]
+
+
+def _semear_ate(conn, n=3):
+    return _semear(conn, meses=tuple(range(1, n + 1)))
+
+
+def test_demonstrativos_mostra_status_e_abas_novas(patch_conn):
+    emp_id = _semear_ate(patch_conn)
+    at = _app("2_Demonstrativos.py", patch_conn).run()
+    assert not at.exception, at.exception
+    assert any("RASCUNHO" in i.value and "Status dos balancetes" in i.value for i in at.info)
+    assert [t.label for t in at.tabs] == ["Balanço Patrimonial", "DRE", "Indicadores", "Composição de Saldos", "Conferências", "Relatório PDF"]
+    imps = db.listar_importacoes(patch_conn, emp_id)
+    for i in imps:
+        db.definir_status(patch_conn, i["id"], "REVISADA", "t")
+    at = _app("2_Demonstrativos.py", patch_conn).run()
+    assert any("estão **REVISADA**" in s.value for s in at.success)
+
+
+def test_gerar_pdf_registra_rascunho_e_oferece_download(patch_conn):
+    emp_id = _semear_ate(patch_conn)
+    at = _app("2_Demonstrativos.py", patch_conn).run()
+    assert not at.exception, at.exception
+    botao = [b for b in at.button if b.label == "Gerar PDF (rascunho)"]
+    assert botao and not botao[0].disabled
+    botao[0].click().run()
+    assert not at.exception, at.exception
+    assert any("gerado e registrado como RASCUNHO" in s.value for s in at.success)
+    rels = db.listar_relatorios(patch_conn, emp_id)
+    assert len(rels) == 1 and rels[0]["status"] == "RASCUNHO" and rels[0]["versao"] == 1 and len(rels[0]["pdf_sha256"]) == 64
+    at.button(key="pdf_gerar").click().run()                    # segunda geracao = versao 2
+    assert [r["versao"] for r in db.listar_relatorios(patch_conn, emp_id)] == [2, 1]
+
+
+def test_apelido_salvo_aparece_na_composicao(patch_conn):
+    emp_id = _semear_ate(patch_conn)
+    db.salvar_apelidos(patch_conn, emp_id, {"Acionista Gama Ltda": "Gama"}, "t")
+    at = _app("2_Demonstrativos.py", patch_conn).run()
+    assert not at.exception, at.exception
+    assert any("Gama" in str(df.value.to_dict()) for df in at.dataframe)
+
+
+def test_mapa_editar_linha_pela_tela(patch_conn):
+    emp_id = _semear_ate(patch_conn, 1)
+    at = _app("4_Mapa_de_Contas.py", patch_conn).run()
+    assert not at.exception, at.exception
+    at.selectbox(key="mapa_linha").set_value([m for m in db.mapa_vigente(patch_conn, emp_id) if m[0] == "fretes"][0]).run()
+    at.text_input[0].set_value("(−) Fretes e transportes")
+    at.text_input[2].set_value("teste de edição")
+    [b for b in at.button if b.label == "Salvar alteração"][0].click().run()
+    assert not at.exception, at.exception
+    assert {m[0]: m for m in db.mapa_vigente(patch_conn, emp_id)}["fretes"][1] == "(−) Fretes e transportes"
