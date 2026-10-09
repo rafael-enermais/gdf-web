@@ -17,7 +17,7 @@ GRUPOS_PADRAO = [
     {"chave": "divida", "titulo": "Empréstimos e financiamentos (BNDES)", "prefixos": ["2.1.01.001", "2.2.01.001"], "modo": "prefixo",
      "rotulos": {"2.1.01.001": "Curto prazo", "2.2.01.001": "Longo prazo"}},
     {"chave": "adiant", "titulo": "Adiantamentos a fornecedores", "prefixos": ["1.1.04.013"], "modo": "conta", "max": 8, "demais": "Demais fornecedores"},
-    {"chave": "fornec", "titulo": "Fornecedores — 10 maiores saldos", "prefixos": ["2.1.03.001"], "modo": "conta", "max": 10, "demais": "Demais fornecedores"},
+    {"chave": "fornec", "titulo": "Fornecedores — 10 maiores saldos", "prefixos": ["2.1.03.001"], "modo": "conta", "max": 11, "demais": "Demais fornecedores"},
     {"chave": "capital", "titulo": "Capital aportado por acionista (capital social + AFAC)", "prefixos": ["2.4.01.001"], "modo": "acionista", "max": 8, "demais": "Demais acionistas"},
 ]
 _AFAC = re.compile(r"^\s*afac\s*[-–—:]\s*", re.I)
