@@ -226,3 +226,58 @@ def test_painel_serie_com_dados_reais(b):
     assert abs(sum(l["resultado_mes"] for l in linhas) - linhas[-1]["resultado_acum"]) < 0.05
     assert abs(linhas[-1]["resultado_acum"] - M.dre(b, b.ordem[-1])["acumulado"]["res_liq"]) < 0.005
     assert linhas[-1]["periodo"] == b.ordem[-1] and linhas[-1]["caixa"] > 0
+
+
+# ------------------------------------------------------------------ modo flexivel (v0.5.0) com dados reais
+def _acum_dos_mensais(per, ate):
+    """Balancete acumulado jan-ate montado dos mensais: todas as contas que aparecem em algum mes (saldo anterior da primeira aparicao, movimentos somados, saldo do ultimo mes)."""
+    meses = [m for m in sorted(per) if m <= ate]
+    k = lambda c: (c["id"], c["sint"], c["cl"])
+    base, deb, cred = {}, {}, {}
+    for m in meses:
+        for x in per[m]:
+            base.setdefault(k(x), x)
+            deb[k(x)] = deb.get(k(x), 0.0) + x["deb"]
+            cred[k(x)] = cred.get(k(x), 0.0) + x["cred"]
+    fim = {k(c): c for c in per[ate]}
+    return [{**c, "ant": c["ant"] if kk in {k(x) for x in per[meses[0]]} else 0.0, "deb": round(deb[kk], 2), "cred": round(cred[kk], 2), "sal": fim[kk]["sal"] if kk in fim else 0.0} for kk, c in base.items()]
+
+
+def _mesmos(a, c, cols, tol=0.011):
+    for col in cols:
+        assert a[col] is not None, col
+        dif = {k: (a[col][k], c[col][k]) for k in c[col] if abs(a[col][k] - c[col][k]) > tol}
+        assert not dif, (col, dif)
+
+
+def test_flexivel_acumulado_jan_jul_mais_mensal_de_agosto_reproduz_o_relatorio_completo(b):
+    """Caso da contadora: sem os mensais de jan-jul, o acumulado 01-07 + o mensal de agosto dao o relatorio de agosto sem diferenca."""
+    import fontes
+    cheio = fontes.calcular(b.p, {}, None, "2026-08")
+    r = fontes.calcular({"2026-08": b.p["2026-08"]}, {"2026-07": _acum_dos_mensais(b.p, "2026-07")}, None, "2026-08")
+    assert r["fonte"] == "alternativo" and not r["lacunas"]                    # (o acumulado montado aqui a partir dos mensais nao reproduz o 2.4.13 do sistema: so' os numeros importam)
+    _mesmos(r["bp"], cheio["bp"], ("abertura", "mes_ant", "mes_ref"))
+    _mesmos(r["d"], cheio["d"], ("ate_mes_ant", "mes", "acumulado"))
+
+
+def test_flexivel_so_o_acumulado_pdf_jan_ago_da_posicao_e_acumulado_corretos(csvd, b):
+    """Com so' o balancete acumulado 01-08 (o CSV/PDF da contadora): balanco de agosto, abertura e DRE acumulada batem com o Excel; o resto e' n/d."""
+    import fontes
+    cheio = fontes.calcular(b.p, {}, None, "2026-08")
+    r = fontes.calcular({}, {"2026-08": csvd[1]}, None, "2026-08")
+    assert r["fonte"] == "parcial" and len(r["lacunas"]) == 3
+    _mesmos(r["bp"], cheio["bp"], ("abertura", "mes_ref"))
+    for linha in ("rec_liq", "res_bruto", "ebit", "res_fin", "res_liq", "custo_constr", "pis", "cofins"):      # totais iguais; so' a classificacao de R$ 7,40 muda de linha
+        assert abs(r["d"]["acumulado"][linha] - cheio["d"]["acumulado"][linha]) < 0.011 or linha in ("ebit", "res_fin")
+    assert abs(r["d"]["acumulado"]["res_liq"] - cheio["d"]["acumulado"]["res_liq"]) < 0.011
+    assert abs(r["d"]["acumulado"]["res_antes_ir"] - cheio["d"]["acumulado"]["res_antes_ir"]) < 0.011
+    assert r["bp"]["mes_ant"] is None and r["d"]["mes"] is None
+
+
+def test_flexivel_so_o_mensal_de_agosto_tem_posicao_de_julho_e_mes_corretos(b):
+    import fontes
+    cheio = fontes.calcular(b.p, {}, None, "2026-08")
+    r = fontes.calcular({"2026-08": b.p["2026-08"]}, {}, None, "2026-08")
+    _mesmos(r["bp"] | {"abertura": cheio["bp"]["abertura"]}, cheio["bp"], ("mes_ant", "mes_ref"))
+    _mesmos({"mes": r["d"]["mes"]}, {"mes": cheio["d"]["mes"]}, ("mes",))
+    assert r["bp"]["abertura"] is None and r["d"]["acumulado"] is None

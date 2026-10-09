@@ -11,7 +11,7 @@ import calendar
 import composicao
 import motor
 import tabelas
-from relatorio_fmt import brl, fnum, mm, pct, razao
+from relatorio_fmt import ND, brl, fnum, mm, pct, razao
 
 MESES_ABREV = ["Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
 MESES_EXT = ["janeiro", "fevereiro", "março", "abril", "maio", "junho", "julho", "agosto", "setembro", "outubro", "novembro", "dezembro"]
@@ -64,37 +64,56 @@ def info_empresa(emp: dict, config: dict | None = None) -> dict:
 
 
 def _linha(v0, v1, v2):
-    var = round(v2 - v0, 2)
-    return [v0, v1, v2, var, None if abs(v0) < 0.005 else var / abs(v0)]
+    """[abertura, mes anterior, mes ref, var R$, var %]; ND ("n/d") = coluna sem balancete (nao da' para calcular); None = sem base de comparacao."""
+    v0, v1, v2 = (ND if v is None else v for v in (v0, v1, v2))
+    var = ND if ND in (v0, v2) else round(v2 - v0, 2)
+    return [v0, v1, v2, var, ND if var == ND else (None if abs(v0) < 0.005 else var / abs(v0))]
+
+
+def _pontos_de(b: motor.Balancetes, mes_ref: str) -> list:
+    """Pontos mensais (balanço e resultado do mês) a partir dos balancetes completos de janeiro até o mês de referência."""
+    return [{"per": m, "bp": motor.coluna_bp(b, m), "dre_mes": motor.dre_calcular(motor.dre_bruta(b, [m]))} for m in b.ordem if m <= mes_ref]
 
 
 def montar(emp: dict, b: motor.Balancetes, mes_ref: str, bp: dict, d: dict, contas_ref: list, apelidos=None, grupos=None,
-           config: dict | None = None, mapa=None) -> dict:
-    """Tudo que o gerador de PDF precisa (numeros prontos, sem calculo no desenho)."""
+           config: dict | None = None, mapa=None, dados: dict | None = None) -> dict:
+    """Tudo que o gerador de PDF precisa (numeros prontos, sem calculo no desenho).
+    `dados` = resultado de fontes.calcular (meses faltando: colunas None = n/d, pontos so' dos meses com balancete, lacunas explicadas);
+    sem ele, usa `b` como antes (sequencia completa de janeiro ate o mes)."""
     ano, mes = int(mes_ref[:4]), int(mes_ref[5:7])
-    ordem = [m for m in b.ordem if m <= mes_ref]
-    mes_ant = ordem[ordem.index(mes_ref) - 1] if ordem.index(mes_ref) > 0 else mes_ref
+    if dados is not None:
+        pontos, mes_ant, lacunas, fontes_ = dados["pontos"], dados["mes_ant"], dados["lacunas"], dados["fontes"]
+    else:
+        pontos = _pontos_de(b, mes_ref)
+        ordem = [m for m in b.ordem if m <= mes_ref]
+        mes_ant = ordem[ordem.index(mes_ref) - 1] if ordem.index(mes_ref) > 0 else mes_ref
+        lacunas, fontes_ = [], {}
     rot = dict(motor.ROTULOS)
     rot.update({m[0]: m[1] for m in (mapa or [])})
-    bpv = {k: _linha(bp["abertura"][k], bp["mes_ant"][k], bp["mes_ref"][k]) for k in bp["mes_ref"]}
-    drv = {k: [d["ate_mes_ant"][k], d["mes"][k], d["acumulado"][k]] for k in d["acumulado"]}
+    cb = [bp["abertura"], bp["mes_ant"], bp["mes_ref"]]
+    cd = [d["ate_mes_ant"], d["mes"], d["acumulado"]]
+    kb = list(next(c for c in cb if c is not None))
+    kd = list(next(c for c in cd if c is not None))
+    bpv = {k: _linha(*(c[k] if c is not None else None for c in cb)) for k in kb}
+    drv = {k: [c[k] if c is not None else ND for c in cd] for k in kd}
     i0, i1, i2 = (motor.indicadores(bp["abertura"], None), motor.indicadores(bp["mes_ant"], d["ate_mes_ant"]),
                   motor.indicadores(bp["mes_ref"], d["acumulado"]))
-    ind = {k: [i0[k], i1[k], i2[k]] for k in i2}
-    # serie mensal: abertura (31/12 anterior) + cada mes ate' o de referencia
-    def pontos(f_ab, f_m):
-        return [f_ab] + [f_m(m) for m in ordem]
-    sal = b.saldo
-    def pl(m): return round(sum(sal(m, k) for k in ("capital", "afac", "res_legal", "res_ret", "prej")), 2)
+    def _ci(i, k, col, dre_col, abertura=False):             # n/d quando a coluna do balanco (ou, nos de resultado, a da DRE) nao existe
+        return ND if col is None or (k in ("res_fin", "ebit_ebitda", "res_liq") and dre_col is None and not abertura) else i[k]
+    ind = {k: [_ci(i0, k, bp["abertura"], None, True), _ci(i1, k, bp["mes_ant"], d["ate_mes_ant"]), _ci(i2, k, bp["mes_ref"], d["acumulado"])] for k in i2}
+    # serie: abertura (31/12 anterior, se houver) + cada mes que tem balancete ate' o de referencia
+    ab = bp["abertura"]
+    ate_ab = [("Dez/" + str(ano - 1)[2:], ab)] if ab is not None else []
+    rot_pts = ate_ab + [(f"{MESES_ABREV[int(p['per'][5:7]) - 1]}/{str(ano)[2:]}", p["bp"]) for p in pontos]
     serie = {
-        "meses": [MESES_ABREV[int(m[5:7]) - 1] for m in ordem],
-        "rotulos": [f"Dez/{str(ano - 1)[2:]}"] + [f"{MESES_ABREV[int(m[5:7]) - 1]}/{str(ano)[2:]}" for m in ordem],
-        "caixa": pontos(bp["abertura"]["caixa_eq"], lambda m: round(sal(m, "dep_vista") + sal(m, "aplic"), 2)),
-        "bndes": pontos(round(bp["abertura"]["bndes_cp"] + bp["abertura"]["bndes_lp"], 2), lambda m: round(sal(m, "bndes_cp") + sal(m, "bndes_lp"), 2)),
-        "pl": pontos(bp["abertura"]["pl"], pl),
-        "fornec": pontos(bp["abertura"]["fornec"], lambda m: sal(m, "fornec")),
-        "custo_constr": [-b.mov(m, "custo_constr") for m in ordem],
-        "resultado_mes": [motor.dre(b, m)["mes"]["res_liq"] for m in ordem],
+        "meses": [MESES_ABREV[int(p["per"][5:7]) - 1] for p in pontos],
+        "rotulos": [r for r, _ in rot_pts], "tem_abertura": ab is not None,
+        "caixa": [c["caixa_eq"] for _, c in rot_pts],
+        "bndes": [round(c["bndes_cp"] + c["bndes_lp"], 2) for _, c in rot_pts],
+        "pl": [c["pl"] for _, c in rot_pts],
+        "fornec": [c["fornec"] for _, c in rot_pts],
+        "custo_constr": [None if p["dre_mes"] is None else round(-p["dre_mes"]["custo_constr"], 2) for p in pontos],     # None = mes sem balancete mensal
+        "resultado_mes": [None if p["dre_mes"] is None else p["dre_mes"]["res_liq"] for p in pontos],
     }
     return {
         "empresa": info_empresa(emp, config), "mes_ref": mes_ref, "mes_ant": mes_ant, "ano": ano, "mes": mes,
@@ -103,10 +122,19 @@ def montar(emp: dict, b: motor.Balancetes, mes_ref: str, bp: dict, d: dict, cont
         "periodo": (f"Acumulado de janeiro a {MESES_EXT[mes - 1]} de {ano}" if mes > 1 else f"Janeiro de {ano}"),
         "periodo_curto": (f"JAN–{MESES_ABREV[mes - 1].upper()}/{ano}" if mes > 1 else f"JAN/{ano}"),
         "mes_nome": MESES_EXT[mes - 1], "mes_abrev": MESES_ABREV[mes - 1],
-        "rot": rot, "bp": bpv, "dre": drv, "ind": ind, "serie": serie, "n_meses": len(ordem),
+        "rot": rot, "bp": bpv, "dre": drv, "ind": ind, "serie": serie, "n_meses": mes,
         "comp": composicao.calcular(contas_ref, grupos, apelidos),
-        "ajustes": d["acumulado"]["ajustes"],
+        "ajustes": d["acumulado"]["ajustes"] if d["acumulado"] is not None else ND,
+        "lacunas": lacunas, "fontes": fontes_, "fonte": (dados["fonte"] if dados is not None else "completo"), "usa_acum": bool(dados["usados_acum"]) if dados is not None else False,
     }
+
+
+def _seguro(fn) -> str:
+    """Texto automatico que depende de numero que pode estar n/d: se nao der para escrever com correcao, o paragrafo e' omitido (nunca inventado)."""
+    try:
+        return fn() or ""
+    except (TypeError, ZeroDivisionError, ValueError, IndexError, KeyError):
+        return ""
 
 
 # ------------------------------------------------------------------ textos de leitura (modelos preenchidos com os valores)
@@ -138,39 +166,52 @@ def textos_padrao(x: dict) -> dict:
     dedu, opex = D("deducoes"), D("desp_adm")
     db, per = x["data_base"], x["mes_nome"]
     t = {}
-    t["dest_1"] = (f"Em {db}, o ativo total da {E['curto']} era de {brl(atv)}" +
-                   (f", dos quais {brl(conc)} ({pct(razao(conc, atv))}) correspondem ao ativo de concessão líquido." if abs(conc) >= 0.005 else "."))
-    t["dest_2"] = (f"O caixa e equivalentes totalizou {brl(caixa)}, {_variacao(caixa0, caixa)}"
+    t["dest_1"] = _seguro(lambda: (f"Em {db}, o ativo total da {E['curto']} era de {brl(atv)}" +
+                   (f", dos quais {brl(conc)} ({pct(razao(conc, atv))}) correspondem ao ativo de concessão líquido." if abs(conc) >= 0.005 else ".")))
+    if isinstance(caixa0, str) or isinstance(divb0, str):                      # sem a abertura (31/12) não há comparação: só a posição
+        t["dest_2"] = _seguro(lambda: f"O caixa e equivalentes totalizou {brl(caixa)}; a dívida bruta é de {brl(divb)} e a dívida líquida (dívida bruta menos caixa) é de {brl(divl)}.")
+    else:
+        t["dest_2"] = _seguro(lambda: (f"O caixa e equivalentes totalizou {brl(caixa)}, {_variacao(caixa0, caixa)}"
                    + (f" ({pct(razao(abs(caixa - caixa0), abs(caixa0)))})" if abs(caixa0) >= 0.005 and abs(caixa - caixa0) >= 0.005 else "") + f" em relação a {x['abertura']}. "
-                   f"No mesmo período, a dívida bruta {_de_para(divb0, divb)}; a dívida líquida (dívida bruta menos caixa) é de {brl(divl)}.")
-    t["dest_3"] = (f"O resultado líquido acumulado até {per} foi de {brl(res)}, composto por custo de construção de {brl(-custo)}, "
+                   f"No mesmo período, a dívida bruta {_de_para(divb0, divb)}; a dívida líquida (dívida bruta menos caixa) é de {brl(divl)}."))
+    t["dest_3"] = _seguro(lambda: (f"O resultado líquido acumulado até {per} foi de {brl(res)}, composto por custo de construção de {brl(-custo)}, "
                    f"demais custos e despesas de {brl(-(D('deducoes') + D('fretes') + D('desp_adm')))} e resultado financeiro de {brl(resf)}. "
-                   f"O patrimônio líquido {_de_para(pl0, pl)}" + (f", com variação de AFAC de {brl(B('afac', 3))} no período." if abs(B('afac', 3)) >= 0.005 else "."))
+                   f"O patrimônio líquido {_de_para(pl0, pl)}" + (f", com variação de AFAC de {brl(B('afac', 3))} no período." if abs(B('afac', 3)) >= 0.005 else ".")))
     n = len(S["caixa"])
     mn_i = min(range(n), key=lambda i: S["caixa"][i])
     meio = 0 < mn_i < n - 1 and S["caixa"][mn_i] < min(S["caixa"][0], S["caixa"][-1])
-    t["evo_1"] = (f"O caixa e equivalentes passou de {brl(S['caixa'][0])} em {S['rotulos'][0].lower()} para {brl(S['caixa'][-1])} em {S['rotulos'][-1].lower()}"
+    parcial_serie = x["n_meses"] > len(S["meses"])             # ha' meses sem balancete: a serie mostra so' os que existem
+    t["evo_1"] = _seguro(lambda: n >= 2 and (f"O caixa e equivalentes passou de {brl(S['caixa'][0])} em {S['rotulos'][0].lower()} para {brl(S['caixa'][-1])} em {S['rotulos'][-1].lower()}"
                   + (f", com o menor saldo do período em {S['rotulos'][mn_i].lower()} ({brl(S['caixa'][mn_i])})" if meio else "") + ". "
-                  f"A dívida bruta {_de_para(S['bndes'][0], S['bndes'][-1])} no período.")
-    cc = S["custo_constr"]
-    imax = max(range(len(cc)), key=lambda i: cc[i]) if cc else 0
-    t["evo_2"] = (f"O custo de construção do ativo de concessão somou {brl(sum(cc))} no ano (média mensal de {brl(sum(cc) / max(len(cc), 1))}); "
-                  f"o maior valor mensal foi o de {S['meses'][imax].lower()} ({brl(cc[imax])})." if cc and sum(cc) > 0 else
-                  "Não houve custo de construção do ativo de concessão no período.")
+                  f"A dívida bruta {_de_para(S['bndes'][0], S['bndes'][-1])} no período."))
+    cc = [(m, v) for m, v in zip(S["meses"], S["custo_constr"]) if v is not None]        # so' os meses com balancete mensal
+    total_cc = None if isinstance(custo, str) else -custo                                       # acumulado do ano (vale mesmo com meses faltando)
+    def _evo2():
+        if total_cc is None:
+            return f"Nos meses com balancete mensal, o custo de construção do ativo de concessão somou {brl(sum(v for _, v in cc))}." if cc and sum(v for _, v in cc) > 0 else ""
+        if total_cc <= 0:
+            return "Não houve custo de construção do ativo de concessão no período."
+        pm, vm = max(cc, key=lambda mv: mv[1]) if cc else (None, None)
+        return (f"O custo de construção do ativo de concessão somou {brl(total_cc)} no ano (média mensal de {brl(total_cc / max(x['n_meses'], 1))})"
+                + (f"; o maior valor mensal foi o de {pm.lower()} ({brl(vm)})" + (" entre os meses com balancete mensal" if parcial_serie else "") if pm else "") + ".")
+    t["evo_2"] = _seguro(_evo2)
     plm = S["pl"]
     mudou = next((i for i in range(1, len(plm)) if plm[i - 1] >= 0 > plm[i]), None)
-    t["evo_3"] = (f"O patrimônio líquido passou de {brl(plm[0])} em {S['rotulos'][0].lower()} para {brl(plm[-1])} em {S['rotulos'][-1].lower()}." +
-                  (f" A mudança de sinal ocorre em {S['rotulos'][mudou].lower()} ({brl(plm[mudou])})." if mudou else ""))
-    t["res_1"] = (f"O resultado líquido acumulado até {per} foi de {brl(res)}. O custo de construção do ativo de concessão, de {brl(-custo)}, "
-                  + (f"equivale a {pct(razao(custo, res))} desse valor; " if res < -0.005 else "") + f"as deduções da receita (PIS e COFINS) somaram {brl(-dedu)}.")
-    t["res_2"] = (f"As despesas operacionais somaram {brl(-opex)} e o resultado financeiro líquido foi de {brl(resf)}, formado por rendimentos de aplicações "
-                  f"financeiras de {brl(D('rend_aplic'))} e receitas de aplicações (NT) de {brl(D('rec_nt'))}, entre outros.")
+    t["evo_3"] = _seguro(lambda: len(plm) >= 2 and (f"O patrimônio líquido passou de {brl(plm[0])} em {S['rotulos'][0].lower()} para {brl(plm[-1])} em {S['rotulos'][-1].lower()}." +
+                  (f" A mudança de sinal ocorre em {S['rotulos'][mudou].lower()} ({brl(plm[mudou])})." if mudou else "")))
+    t["res_1"] = _seguro(lambda: (f"O resultado líquido acumulado até {per} foi de {brl(res)}. O custo de construção do ativo de concessão, de {brl(-custo)}, "
+                  + (f"equivale a {pct(razao(custo, res))} desse valor; " if res < -0.005 else "") + f"as deduções da receita (PIS e COFINS) somaram {brl(-dedu)}."))
+    t["res_2"] = _seguro(lambda: (f"As despesas operacionais somaram {brl(-opex)} e o resultado financeiro líquido foi de {brl(resf)}, formado por rendimentos de aplicações "
+                  f"financeiras de {brl(D('rend_aplic'))} e receitas de aplicações (NT) de {brl(D('rec_nt'))}, entre outros."))
     exig = B("pc") + B("pnc")
-    t["bal_1"] = ((f"O ativo de concessão líquido ({brl(conc)}) representa {pct(razao(conc, atv))} do ativo total. " if abs(conc) >= 0.005 else "") +
-                  f"O passivo exigível soma {brl(exig)}, sendo {brl(B('bndes_lp'))} de empréstimos do BNDES no longo prazo e {brl(B('trib_dif'))} de tributos diferidos.")
-    t["bal_2"] = (f"O patrimônio líquido de {brl(pl)} resulta de capital social de {brl(B('capital'))}, AFAC de {brl(B('afac'))}, reservas de {brl(B('res_legal') + B('res_ret'))} "
+    if x.get("lacunas"):
+        t["dest_9"] = ("Atenção: este relatório foi gerado com dados incompletos. Os itens marcados “n/d” não puderam ser calculados porque faltam balancetes "
+                       "(veja a página “Dados incompletos”); o que está calculado está correto.")
+    t["bal_1"] = _seguro(lambda: ((f"O ativo de concessão líquido ({brl(conc)}) representa {pct(razao(conc, atv))} do ativo total. " if abs(conc) >= 0.005 else "") +
+                  f"O passivo exigível soma {brl(exig)}, sendo {brl(B('bndes_lp'))} de empréstimos do BNDES no longo prazo e {brl(B('trib_dif'))} de tributos diferidos."))
+    t["bal_2"] = _seguro(lambda: (f"O patrimônio líquido de {brl(pl)} resulta de capital social de {brl(B('capital'))}, AFAC de {brl(B('afac'))}, reservas de {brl(B('res_legal') + B('res_ret'))} "
                   f"e resultado acumulado do período de {brl(B('prej'))}. O ativo circulante ({brl(B('ac'))}) é "
-                  f"{'inferior' if B('ac') < B('pc') else 'superior'} ao passivo circulante ({brl(B('pc'))}).")
+                  f"{'inferior' if B('ac') < B('pc') else 'superior'} ao passivo circulante ({brl(B('pc'))})."))
     c = {g["chave"]: g for g in x["comp"]}
     p1 = []
     cx = c.get("caixa")
@@ -186,7 +227,7 @@ def textos_padrao(x: dict) -> dict:
     if ad and ad["itens"] and abs(ad["total"]) >= 0.005:
         top = max(ad["itens"], key=lambda kv: kv[1])
         p1.append(f"O maior saldo de adiantamentos é o de {top[0]} ({pct(razao(top[1], ad['total']))} de {brl(ad['total'])}).")
-    t["comp_1"] = " ".join(p1)
+    t["comp_1"] = _seguro(lambda: " ".join(p1))
     p2 = []
     fo = c.get("fornec")
     if fo and fo["itens"] and abs(fo["total"]) >= 0.005:
@@ -197,5 +238,5 @@ def textos_padrao(x: dict) -> dict:
     if cp and cp["itens"] and abs(cp["total"]) >= 0.005:
         top = max(cp["itens"], key=lambda kv: kv[1])
         p2.append(f"{top[0]} concentra {pct(razao(top[1], cp['total']))} do capital aportado.")
-    t["comp_2"] = " ".join(p2)
+    t["comp_2"] = _seguro(lambda: " ".join(p2))
     return t

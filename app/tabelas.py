@@ -82,9 +82,21 @@ def _data_fim_mes(chave: str) -> str:
     return f"{calendar.monthrange(a, m)[1]:02d}/{m:02d}/{a}"
 
 
+ND = "n/d"          # coluna que não pôde ser calculada (faltam balancetes): sempre explicado em "O que falta"
+
+
 def _col_mes_ant(mes_ant: str, mes_ref: str) -> str:
-    """Rótulo da coluna do mês anterior. Em janeiro (único mês importado) mes_ant == mes_ref: o rótulo precisa ser diferente, senão o Streamlit quebra."""
-    return _data_fim_mes(mes_ant) if mes_ant != mes_ref else "Mês anterior (n/d)"
+    """Rótulo da coluna do mês anterior. Em janeiro o mês anterior é dezembro (= a abertura): o rótulo precisa ser diferente do da abertura, senão o Streamlit quebra."""
+    return _data_fim_mes(mes_ant) if mes_ant != mes_ref else "Mês anterior (= abertura)"
+
+
+def _v(col, lid):
+    """Valor de uma linha numa coluna do Balanço/DRE; None quando a coluna inteira não pôde ser calculada."""
+    return None if col is None else col[lid]
+
+
+def _nd(col, lid):
+    return ND if col is None else F.num_br(col[lid])
 
 
 def tabela_balanco(bp: dict, mes_ref: str, mes_ant: str):
@@ -97,8 +109,9 @@ def tabela_balanco(bp: dict, mes_ref: str, mes_ant: str):
         for rot, lid, tipo in linhas:
             if tipo == "secao":
                 rows.append([rot, "", "", "", "", ""]); estilos.append("secao"); continue
-            a, m, r = bp["abertura"][lid], bp["mes_ant"][lid], bp["mes_ref"][lid]
-            rows.append([_rotulo(lid, rot), F.num_br(a), F.num_br(m), F.num_br(r), F.num_br(r - a), F.var_pct(r, a)])
+            a, m, r = _v(bp["abertura"], lid), _v(bp["mes_ant"], lid), _v(bp["mes_ref"], lid)
+            rows.append([_rotulo(lid, rot), _nd(bp["abertura"], lid), _nd(bp["mes_ant"], lid), _nd(bp["mes_ref"], lid),
+                         ND if a is None or r is None else F.num_br(r - a), ND if a is None or r is None else F.var_pct(r, a)])
             estilos.append(tipo)
         df = pd.DataFrame(rows, columns=[titulo] + cols)
         out.append((df, estilos))
@@ -114,7 +127,7 @@ def tabela_dre(d: dict, mes_ref: str):
     for rot, lid, tipo in DRE_LINHAS_EXIBIR:
         if tipo == "secao":
             rows.append([rot, "", "", ""]); estilos.append("secao"); continue
-        rows.append([_rotulo(lid, rot), F.num_br(d["ate_mes_ant"][lid]) if mes > 1 else "–", F.num_br(d["mes"][lid]), F.num_br(d["acumulado"][lid])])
+        rows.append([_rotulo(lid, rot), (_nd(d["ate_mes_ant"], lid) if mes > 1 else "–"), _nd(d["mes"], lid), _nd(d["acumulado"], lid)])
         estilos.append(tipo)
     return pd.DataFrame(rows, columns=["Demonstração do Resultado"] + cols), estilos
 
@@ -126,10 +139,16 @@ def tabela_indicadores(bp: dict, d: dict, mes_ref: str, mes_ant: str):
     i1 = motor.indicadores(bp["mes_ant"], d["ate_mes_ant"])
     i2 = motor.indicadores(bp["mes_ref"], d["acumulado"])
     rows, estilos = [], []
+    resultado = ("res_fin", "ebit_ebitda", "res_liq")
+    def cel(i, chave, kind, bpc, dre_col, abertura=False):
+        if bpc is None or (chave in resultado and dre_col is None and not abertura):
+            return ND                                          # coluna sem dados: não dá para calcular (diferente de "–" = divisão por zero)
+        return _fmt(kind, i[chave])
     for rot, chave, kind, formula in INDICADORES_LINHAS:
         if chave is None:
             rows.append([rot, "", "", "", ""]); estilos.append("secao"); continue
-        rows.append([rot, _fmt(kind, i0[chave]), _fmt(kind, i1[chave]), _fmt(kind, i2[chave]), formula]); estilos.append("item")
+        rows.append([rot, cel(i0, chave, kind, bp["abertura"], None, True), cel(i1, chave, kind, bp["mes_ant"], d["ate_mes_ant"]),
+                     cel(i2, chave, kind, bp["mes_ref"], d["acumulado"]), formula]); estilos.append("item")
     return pd.DataFrame(rows, columns=["Indicador"] + cols + ["Fórmula"]), estilos
 
 

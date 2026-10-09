@@ -131,6 +131,12 @@ def _avaliar(defs, base):
     return out
 
 
+def _mes_anterior(per: str) -> str:
+    """'2026-03' -> '2026-02' (janeiro devolve '2025-12')."""
+    a, m = int(per[:4]), int(per[5:7])
+    return f"{a:04d}-{m - 1:02d}" if m > 1 else f"{a - 1:04d}-12"
+
+
 def meses_faltando(periodos) -> list[str]:
     """Meses ('AAAA-MM') que faltam entre janeiro e o ultimo periodo informado (lista vazia = sequencia completa)."""
     if not periodos:
@@ -225,6 +231,8 @@ class Balancetes:
     def ajuste_mes(self, per):
         """'Outros ajustes liquidos': resultado do mes implicito no balanco - soma das contas de resultado."""
         i = self.ordem.index(per)
+        if i > 0 and self.ordem[i - 1] != _mes_anterior(per):
+            raise ErroDados(f"Falta o balancete de {_mes_anterior(per)[5:7]}/{_mes_anterior(per)[:4]} para apurar o resultado de {per[5:7]}/{per[:4]}.")
         acum_ant = self.resultado_acumulado_implicito(self.ordem[i - 1]) if i > 0 else 0.0
         impl = self.resultado_acumulado_implicito(per) - acum_ant
         soma = sum(self.mov(per, k) for k in self.chaves_dre)
@@ -233,23 +241,36 @@ class Balancetes:
 
 
 # ------------------------------------------------------------------ demonstrativos
+def coluna_bp(b: Balancetes, per, abertura: bool = False):
+    """Uma coluna do Balanco (todas as linhas somadas): o saldo final de `per`, ou a abertura (saldo anterior do primeiro periodo de `b`)."""
+    base = {k: 0.0 for k in CHAVES_BP}                      # chave tirada do mapa vira zero (e a conta aparece como "sem chave")
+    base.update({k: (b.abertura(k) if abertura else b.saldo(per, k)) for k in b.chaves_bp})
+    if abertura:                                            # na abertura nao ha resultado em aberto; prej = saldo anterior de 2.4.13
+        base["prej"] = b.abertura("prej")
+    return _avaliar(BP_PASSIVO, _avaliar(BP_ATIVO, base))
+
+
 def balanco(b: Balancetes, mes_ref: str, mes_ant: str | None = None):
     """3 colunas: 31/12 anterior (abertura), mes anterior, mes de referencia."""
     b.exigir_sequencia(mes_ref)
     if mes_ant is None:
         i = b.ordem.index(mes_ref)
         mes_ant = b.ordem[i - 1] if i > 0 else mes_ref
-    cols = {}
-    for nome, getter in (("abertura", lambda k: b.abertura(k)), ("mes_ant", lambda k: b.saldo(mes_ant, k)),
-                         ("mes_ref", lambda k: b.saldo(mes_ref, k))):
-        base = {k: 0.0 for k in CHAVES_BP}                  # chave tirada do mapa vira zero (e a conta aparece como "sem chave")
-        base.update({k: getter(k) for k in b.chaves_bp})
-        if nome == "abertura":                    # na abertura nao ha resultado em aberto; prej = saldo anterior de 2.4.13
-            base["prej"] = b.abertura("prej")
-        v = _avaliar(BP_ATIVO, base)
-        v = _avaliar(BP_PASSIVO, v)
-        cols[nome] = v
-    return cols
+    return {"abertura": coluna_bp(b, None, True), "mes_ant": coluna_bp(b, mes_ant), "mes_ref": coluna_bp(b, mes_ref)}
+
+
+def dre_bruta(b: Balancetes, meses: list) -> dict:
+    """Soma das contas de resultado (e do 'Outros ajustes liquidos') dos `meses`, ainda sem as linhas calculadas."""
+    d = {k: 0.0 for k in CHAVES_DRE}
+    d.update({k: round(sum(b.mov(m, k) for m in meses), 2) for k in b.chaves_dre})
+    d["ajustes"] = round(sum(b.ajuste_mes(m) for m in meses), 2)
+    d["ir_cs"] = 0.0
+    return d
+
+
+def dre_calcular(bruta: dict) -> dict:
+    """Linhas calculadas (deducoes, EBIT, resultado liquido...) a partir da DRE bruta."""
+    return _avaliar(DRE_LINHAS, dict(bruta))
 
 
 def dre(b: Balancetes, mes_ref: str):
@@ -257,14 +278,7 @@ def dre(b: Balancetes, mes_ref: str):
     b.exigir_sequencia(mes_ref)
     i = b.ordem.index(mes_ref)
     ate_ant = b.ordem[:i]
-
-    def soma(meses):
-        d = {k: 0.0 for k in CHAVES_DRE}
-        d.update({k: round(sum(b.mov(m, k) for m in meses), 2) for k in b.chaves_dre})
-        d["ajustes"] = round(sum(b.ajuste_mes(m) for m in meses), 2)
-        d["ir_cs"] = 0.0
-        return _avaliar(DRE_LINHAS, d)
-
+    soma = lambda meses: dre_calcular(dre_bruta(b, meses))
     return {"ate_mes_ant": soma(ate_ant), "mes": soma([mes_ref]), "acumulado": soma(ate_ant + [mes_ref])}
 
 
@@ -272,8 +286,14 @@ def _div(a, b):
     return None if (b is None or abs(b) < TOL) else a / b
 
 
+INDICADORES_CHAVES = ["liq_corrente", "liq_imediata", "liq_geral", "ccl", "div_bruta", "caixa_neg", "div_liquida", "div_cp_sobre_bruta", "div_bruta_ativo",
+                      "div_liq_sobre_concessao", "endiv_geral", "comp_endiv_cp", "pl_ativo", "capital_aportado", "res_fin", "ebit_ebitda", "res_liq"]
+
+
 def indicadores(bp: dict, dre_acum: dict | None):
     """17 indicadores do relatorio. bp: dict de linhas de UMA data; dre_acum: acumulado do ano ate a data (ou None)."""
+    if bp is None:                                           # coluna sem dados (n/d): nenhum indicador pode ser calculado
+        return {k: None for k in INDICADORES_CHAVES}
     ac, pc, pnc, rlp = bp["ac"], bp["pc"], bp["pnc"], bp["rlp"]
     caixa = bp["caixa_eq"]
     divb = round(bp["bndes_cp"] + bp["bndes_lp"], 2)
@@ -331,15 +351,17 @@ def conferencias_arquivo(contas: list, mapa=None, periodo="arquivo"):
 
 
 def conferencias(b: Balancetes):
-    """Lista de dicts {grupo, periodo, descricao, ok, detalhe}. Falha = precisa de olhar antes de gerar relatorio."""
+    """Lista de dicts {grupo, periodo, descricao, ok, detalhe}. Falha = precisa de olhar antes de gerar relatorio.
+    Funciona com meses faltando: cada conferencia so roda quando os arquivos de que depende existem
+    (continuidade: o mes anterior; encerramento: janeiro ate o mes sem buraco)."""
     R: list = []
-    ordem = b.ordem
     acc = 0.0
-    for i, per in enumerate(ordem):
+    for per in b.ordem:
         A = b._an[per]
         _conf_arquivo(b, per, R)
-        if i > 0:
-            ant = {c["id"]: c for c in b._an[ordem[i - 1]]}
+        ant_per = _mes_anterior(per)
+        if ant_per in b.p:
+            ant = {c["id"]: c for c in b._an[ant_per]}
             bad = []
             for c in A:
                 if c["cl"][0] not in "12" or c["cl"].startswith("2.4.13"):
@@ -349,12 +371,14 @@ def conferencias(b: Balancetes):
                 if abs(c["ant"] - rv) > TOL:
                     bad.append(c["cl"])
             _reg(R, "Continuidade", per, "Saldo anterior = saldo final do mês anterior (exceto Prejuízos Acumulados)", not bad, ", ".join(bad[:10]))
-        ant_pj = sum(c["ant"] for c in A if c["cl"].startswith("2.4.13"))
-        _reg(R, "Encerramento", per, "Prejuízos Acumulados (saldo anterior) = soma dos resultados dos meses anteriores",
-             abs(ant_pj - acc) < 0.02, f"{ant_pj:.2f} x {acc:.2f}")
-        acc += sum(b.mov(per, k) for k in b.chaves_dre) + b.ajuste_mes(per)
+        seguido = all(f"{per[:4]}-{i:02d}" in b.p for i in range(1, int(per[5:7])))      # janeiro ate' o mes anterior, sem buraco
+        if seguido:
+            ant_pj = sum(c["ant"] for c in A if c["cl"].startswith("2.4.13"))
+            _reg(R, "Encerramento", per, "Prejuízos Acumulados (saldo anterior) = soma dos resultados dos meses anteriores",
+                 abs(ant_pj - acc) < 0.02, f"{ant_pj:.2f} x {acc:.2f}")
+            acc += sum(b.mov(per, k) for k in b.chaves_dre) + b.ajuste_mes(per)
         if b.sint(per, "1") is not None and b.sint(per, "2") is not None:
-            bp = balanco(b, per, per if i == 0 else ordem[i - 1])["mes_ref"]
+            bp = coluna_bp(b, per)
             a1 = b.sint(per, "1")["sal"]
             _reg(R, "Balanço calculado", per, "Total do ativo calculado = conta 1 do balancete", abs(bp["ativo"] - a1) < TOL, f"{bp['ativo']:.2f} x {a1:.2f}")
             _reg(R, "Balanço calculado", per, "Ativo = Passivo + PL calculados", abs(bp["ativo"] - bp["passivo_pl"]) < TOL, f"{bp['ativo']:.2f} x {bp['passivo_pl']:.2f}")

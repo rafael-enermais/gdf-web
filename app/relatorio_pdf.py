@@ -20,7 +20,7 @@ from reportlab.pdfgen import canvas
 
 import relatorio_dados as RD
 import tabelas
-from relatorio_fmt import brl, fnum, mm, mmn, neg, pct, razao, varp
+from relatorio_fmt import ND, brl, fnum, mm, mmn, neg, pct, razao, varp
 
 ASSETS = Path(__file__).resolve().parent / "assets_relatorio"
 _LOCK = threading.Lock()
@@ -56,6 +56,10 @@ def BP(k, i=2): return X["bp"][k][i]          # i: 0=31/12 anterior, 1=mes anter
 def DR(k, i=2): return X["dre"][k][i]         # i: 0=acumulado ate' mes anterior, 1=mes, 2=acumulado
 def IN(k, i=2): return X["ind"][k][i]
 def E(k): return X["empresa"][k]
+def nd(*v): return any(isinstance(x, str) for x in v)          # algum valor n/d (coluna sem balancete)?
+def dif(a, b): return ND if nd(a, b) else a - b
+def mmx(v, d=2, sign=False): return v if isinstance(v, str) else mm(v, d, sign)
+def xx(v): return v if isinstance(v, str) else fnum(v) + "x"
 
 
 def _logo():
@@ -147,13 +151,18 @@ def eixo_y(vals, pad=0.16):
     return lo - (span * pad if lo < 0 else 0), hi + span * pad
 def barras(c, x, y, w, h, labels, vals, fmt=lambda v: mmn(v), hl=None, cor_pos=None, rot=0, size=6.2, lbl_every=1, destaque=None):
     """barras verticais; positivo em azul (degradê), negativo laranja; y = base inferior da área."""
-    lo, hi = eixo_y(vals)
+    nums = [v for v in vals if v is not None] or [0]          # None = mes sem dado (n/d): sem barra, com a marca "n/d"
+    lo, hi = eixo_y(nums)
     sc = h / (hi - lo); y0 = y + (-lo) * sc
     n = len(vals); slot = w / n; bw = slot * 0.56
     hline(c, x, x + w, y0, HexColor("#9AA0B8"), 0.7)
-    mx = max(abs(v) for v in vals) or 1
+    mx = max(abs(v) for v in nums) or 1
     for i, v in enumerate(vals):
-        bx = x + i * slot + (slot - bw) / 2; bh = abs(v) * sc
+        bx = x + i * slot + (slot - bw) / 2
+        if v is None:
+            txt(c, bx + bw / 2, y0 + 3.5, "n/d", "P", size, GREY, "c"); txt(c, bx + bw / 2, y - 11, labels[i], "P", 6, GREY, "c")
+            continue
+        bh = abs(v) * sc
         if v >= 0:
             k = 2 + int(round((abs(v) / mx) * 3)); fill = cor_pos or BLUES[min(k, 5)]
             rect(c, bx, y0, bw, bh, fill=fill)
@@ -350,18 +359,19 @@ def p_destaques(c, n, N):
     divb, divl = IN("div_bruta"), IN("div_liquida")
     cw2 = (CW - 12) / 2
     sub_res = "Custos de construção sem a receita correspondente (ver nota na página 4)" if E("nota_resultado") else "Resultado líquido acumulado do ano"
-    kpi(c, MX, y, cw2, 66, f"Resultado líquido {ate.lower()}", mm(DR("res_liq")), sub_res, dark=True, vsize=19)
+    kpi(c, MX, y, cw2, 66, f"Resultado líquido {ate.lower()}", mmx(DR("res_liq")), sub_res if not nd(DR("res_liq")) else "n/d: faltam balancetes para o acumulado do ano", dark=True, vsize=19)
     kpi(c, MX + cw2 + 12, y, cw2, 66, "Caixa e equivalentes", mm(caixa),
-        f"Variação de {mm(caixa - caixa0, 2, True)} desde {X['abertura']}" + (f" ({pct(razao(caixa - caixa0, abs(caixa0)))})" if abs(caixa0) >= 0.005 else ""), vsize=19)
+        (f"Variação de {mm(caixa - caixa0, 2, True)} desde {X['abertura']}" + (f" ({pct(razao(caixa - caixa0, abs(caixa0)))})" if abs(caixa0) >= 0.005 else ""))
+        if not nd(caixa0) else f"Variação desde {X['abertura']}: n/d (falta o saldo de 31/12)", vsize=19)
     y -= 78
     cw3 = (CW - 24) / 3
     conc = BP("conc_liq")
     cards = [("Ativo total", mm(ativo), f"Ativo de concessão líquido: {mm(conc)}" if abs(conc) >= 0.005 else ""),
              ("Dívida bruta (BNDES)", mm(divb), f"Dívida líquida: {mm(divl)}"),
-             ("Patrimônio líquido", mm(BP("pl")), f"Em {X['abertura']}: {mm(BP('pl', 0))}"),
+             ("Patrimônio líquido", mm(BP("pl")), f"Em {X['abertura']}: {mmx(BP('pl', 0))}"),
              ("Capital aportado", mm(IN("capital_aportado")), "Capital social + AFAC"),
-             ("Resultado financeiro", mm(DR("res_fin"), 2, True), f"Receitas menos despesas financeiras, {ate.lower()}"),
-             ("Fornecedores a pagar", mm(BP("fornec")), f"Em {X['abertura']}: {mm(BP('fornec', 0))}")]
+             ("Resultado financeiro", mmx(DR("res_fin"), 2, True), f"Receitas menos despesas financeiras, {ate.lower()}"),
+             ("Fornecedores a pagar", mm(BP("fornec")), f"Em {X['abertura']}: {mmx(BP('fornec', 0))}")]
     for i, (a, b_, d_) in enumerate(cards):
         kpi(c, MX + (i % 3) * (cw3 + 12), y - (i // 3) * 62, cw3, 52, a, b_, d_, accent=NEG_FILL if b_.startswith("−") else NAVY, vsize=13)
     y -= 2 * 62 + 10
@@ -381,10 +391,13 @@ def p_destaques(c, n, N):
         txt(c, MX + 38, y, a, "PB", 7.8, NAVY); txt(c, MX + 148, y, b_, "P", 7.4, GREY); y -= 17
     y = secao(c, y - 8, f"Principais variações desde {X['abertura']}")
     unidade(c, MX + CW, y + 14)
-    itens = [(f"Resultado do período ({ate.lower()})", DR("res_liq")), ("Caixa e equivalentes", caixa - caixa0),
-             ("Dívida bruta (BNDES)", divb - IN("div_bruta", 0)), ("Fornecedores", BP("fornec", 3)),
+    itens = [(f"Resultado do período ({ate.lower()})", DR("res_liq")), ("Caixa e equivalentes", dif(caixa, caixa0)),
+             ("Dívida bruta (BNDES)", dif(divb, IN("div_bruta", 0))), ("Fornecedores", BP("fornec", 3)),
              ("Adiantamento p/ futuro aumento de capital", BP("afac", 3))]
-    variacoes(c, MX, y, CW, itens)
+    sem = [lab for lab, v in itens if nd(v)]
+    variacoes(c, MX, y, CW, [(lab, v) for lab, v in itens if not nd(v)])
+    if sem:
+        txt(c, MX, y - 14 * (len(itens) - len(sem)) - 6, "n/d (faltam balancetes): " + "; ".join(sem), "PI", 6.6, GREY)
 
 
 def _passo(v):
@@ -437,12 +450,12 @@ def p_evolucao(c, n, N):
     y = gy2 - 30
     wcol = (CW - 104) / n_
     cols = [(104, "l")] + [(wcol, "r")] * n_
-    f2 = lambda v: (fnum(v / 1e6, 2), NEG_TXT) if neg(v / 1e6, 2) else (fnum(v / 1e6, 2), None)
+    f2 = lambda v: ("n/d", None) if v is None else ((fnum(v / 1e6, 2), NEG_TXT) if neg(v / 1e6, 2) else (fnum(v / 1e6, 2), None))
     rws = [("norm", [("Caixa e equivalentes", None)] + [f2(v) for v in SC]),
            ("norm", [("Dívida bruta (BNDES)", None)] + [f2(v) for v in SD]),
            ("norm", [("Fornecedores", None)] + [f2(v) for v in SF]),
            ("norm", [("Patrimônio líquido", None)] + [f2(v) for v in SPL]),
-           ("norm", [("Custo de construção do mês", None), ("–", None)] + [f2(v) for v in SCC])]
+           ("norm", [("Custo de construção do mês", None)] + ([("–", None)] if S["tem_abertura"] else []) + [f2(v) for v in SCC])]
     y = tabela(c, MX, y, cols, ["R$ MM"] + MESES, rws, rh=12.6, fs=6.7 if n_ <= 10 else 5.8, head_h=16)
     y -= 16
     y = secao(c, y, "Leitura do Período")
@@ -511,7 +524,7 @@ def p_dre(c, n, N):
     notas = [f"(1) Resultado acumulado = resultado dos meses anteriores + resultado de {X['mes_nome']}; as contas de resultado de cada mês são encerradas no próprio mês."]
     if E("nota_resultado"):
         notas.append("(2) " + E("nota_resultado"))
-    if abs(X["ajustes"]) >= 0.005:
+    if not nd(X["ajustes"]) and abs(X["ajustes"]) >= 0.005:
         notas.append(f"({len(notas) + 1}) “Outros ajustes líquidos” (R$ {fnum(X['ajustes'])} no acumulado): estornos de centavos apurados no encerramento do mês.")
     caixa_nota(c, y, "Notas: " + " ".join(notas), size=7)
 
@@ -542,15 +555,19 @@ def p_posicao(c, n, N):
     y -= 70
     y = secao(c, y, f"Do patrimônio líquido de {X['abertura']} ao de {X['data_base']}")
     unidade(c, MX + CW, y + 14)
-    d_cap = round(BP("capital", 3) + BP("afac", 3), 2)
-    outras = round(PL - PL0 - d_cap - RES, 2)
-    et = [(f"PL em {X['abertura']}", PL0, "total"), ("Capital social e AFAC", d_cap, "delta"), (f"Resultado até {X['mes_abrev'].lower()}", RES, "delta")]
-    if abs(outras) >= 0.5:
-        et.append(("Outras variações", outras, "delta"))
-    et.append((f"PL em {X['data_base']}", PL, "final"))
-    calc_levels(et)
     gy = y - 135 - 16
-    cascata(c, MX + 30, gy, CW - 60, 125, et, size=6.6)
+    if nd(PL0, BP("capital", 3), BP("afac", 3), RES):          # sem a abertura (31/12) ou sem a DRE do ano nao ha' como reconciliar o PL
+        caixa_nota(c, gy + 70, "Reconciliação do patrimônio líquido indisponível (n/d): precisa do saldo de " + X["abertura"] + " e da DRE acumulada do ano. "
+                   "Veja a página “Dados incompletos” para saber o que importar.", size=7.6)
+    else:
+        d_cap = round(BP("capital", 3) + BP("afac", 3), 2)
+        outras = round(PL - PL0 - d_cap - RES, 2)
+        et = [(f"PL em {X['abertura']}", PL0, "total"), ("Capital social e AFAC", d_cap, "delta"), (f"Resultado até {X['mes_abrev'].lower()}", RES, "delta")]
+        if abs(outras) >= 0.5:
+            et.append(("Outras variações", outras, "delta"))
+        et.append((f"PL em {X['data_base']}", PL, "final"))
+        calc_levels(et)
+        cascata(c, MX + 30, gy, CW - 60, 125, et, size=6.6)
     y = gy - 32
     cw3 = (CW - 16) / 3
     for i, (a, b_, d_) in enumerate([("Liquidez corrente", fnum(IN("liq_corrente")) + "x", "Ativo circulante ÷ passivo circulante"),
@@ -597,9 +614,9 @@ def p_indicadores(c, n, N):
     y = titulo(c, TOPY, "Indicadores econômico-financeiros", "Calculados a partir do Balanço Patrimonial e da DRE · com explicação em linguagem simples")
     cw4 = (CW - 24) / 4
     ab0 = f"Dez/{str(X['ano'] - 1)[2:]}"
-    for i, (a, b_, d_) in enumerate([("Liquidez corrente", fnum(IN("liq_corrente")) + "x", f"{ab0}: {fnum(IN('liq_corrente', 0))}x"),
-                                     ("Dívida líquida", mm(IN("div_liquida")), f"{ab0}: {mm(IN('div_liquida', 0))}"),
-                                     ("Capital circulante líquido", mm(IN("ccl")), f"{ab0}: {mm(IN('ccl', 0))}"),
+    for i, (a, b_, d_) in enumerate([("Liquidez corrente", xx(IN("liq_corrente")), f"{ab0}: {xx(IN('liq_corrente', 0))}"),
+                                     ("Dívida líquida", mm(IN("div_liquida")), f"{ab0}: {mmx(IN('div_liquida', 0))}"),
+                                     ("Capital circulante líquido", mm(IN("ccl")), f"{ab0}: {mmx(IN('ccl', 0))}"),
                                      ("PL / ativo total", pct(IN("pl_ativo")), f"{ab0}: {pct(IN('pl_ativo', 0))}")]):
         kpi(c, MX + i * (cw4 + 8), y, cw4, 52, a, b_, d_, accent=NEG_FILL if b_.startswith("−") else NAVY, vsize=11.5)
     y -= 64
@@ -611,7 +628,8 @@ def p_indicadores(c, n, N):
             rows.append(("sec", [(rotulo, None), "", "", "", ""])); continue
         k = KINDS_PDF[kind]
         def fm(v, k=k):
-            if v is None or isinstance(v, str): return ("–", None)
+            if isinstance(v, str): return (v, None)                   # n/d
+            if v is None: return ("–", None)
             if k == "x": return (fnum(v) + "x", None)
             if k == "p": return (pct(v), NEG_TXT) if v < 0 else (pct(v), None)
             return (fnum(v / 1e6, 2) + " MM", NEG_TXT) if v < 0 else (fnum(v / 1e6, 2) + " MM", None)
@@ -652,7 +670,41 @@ def p_comp2(c, n, N):
     paras(c, "comp_2", y - 4, size=8.2, lead=12.4, gap=3)
 
 
-# ================================================================== 11. FECHAMENTO
+# ================================================================== 11. DADOS INCOMPLETOS / FONTES (so' entra quando ha' n/d ou numeros por outro caminho)
+_ROT_FONTES = {"bp_abertura": "Balanço — 31/12 anterior", "bp_ant": "Balanço — mês anterior", "bp_ref": "Balanço — mês de referência",
+               "dre_ate_ant": "DRE — acumulado até o mês anterior", "dre_mes": "DRE — mês", "dre_acum": "DRE — acumulado do ano"}
+
+
+def _precisa_pagina_fontes():
+    return bool(X.get("lacunas")) or X.get("fonte", "completo") != "completo"
+
+
+@pagina
+def p_lacunas(c, n, N):
+    moldura(c, n, N, "Dados incompletos" if X.get("lacunas") else "Fontes dos números")
+    y = titulo(c, TOPY, "Dados incompletos e fontes dos números" if X.get("lacunas") else "De onde vêm os números",
+               "O que não pôde ser calculado (n/d) e como cada coluna foi obtida" if X.get("lacunas") else "Como cada coluna do relatório foi obtida, já que faltam balancetes mensais")
+    if X.get("lacunas"):
+        y = secao(c, y, "O que ficou n/d — e como resolver")
+        y = para(c, "Os itens abaixo aparecem como “n/d” neste relatório porque faltam balancetes. Nenhum valor foi estimado: o que está calculado está correto e "
+                 "o que não dá para calcular está marcado. Ao importar o que falta, basta gerar o relatório de novo.", MX, y, CW, size=8, lead=11.6, gap=6)
+        cols = [(150, "l"), (190, "l"), (175, "l")]
+        rows = [("ind", [(l["onde"], None), (l["motivo"][:1].upper() + l["motivo"][1:] + ".", None), (l["resolver"][:1].upper() + l["resolver"][1:] + ".", None)]) for l in X["lacunas"]]
+        y = tabela(c, MX, y - 4, cols, ["Item que ficou n/d", "Por quê", "Como resolver"], rows, rh=14, fs=6.8, head_h=18)
+        y -= 14
+    fontes = X.get("fontes") or {}
+    if fontes:
+        if X.get("lacunas"):
+            y = secao(c, y, "De onde vêm os números")
+        rows = [("ind", [(_ROT_FONTES[k], None), (fontes[k][:1].upper() + fontes[k][1:], None)]) for k in _ROT_FONTES if k in fontes]
+        y = tabela(c, MX, y - 4, [(190, "l"), (325, "l")], ["Coluna do relatório", "Fonte"], rows, rh=14, fs=6.8, head_h=18)
+        y -= 12
+    if X.get("usa_acum"):
+        caixa_nota(c, y, "Parte dos valores vem de balancete acumulado em vez da soma dos balancetes mensais. Totais e subtotais batem com a soma dos meses; "
+                   "uma linha isolada da DRE pode ter diferença de centavos de classificação, porque o acumulado já traz os estornos líquidos.", size=7.4)
+
+
+# ================================================================== 12. FECHAMENTO
 @pagina
 def p_fechamento(c, n, N):
     moldura(c, n, N, "Fechamento")
@@ -691,6 +743,20 @@ def p_fechamento(c, n, N):
 
 
 # ------------------------------------------------------------------ build
+_NOME_PAGINA = {"p_capa": "Capa", "p_destaques": "Destaques do Período", "p_evolucao": "Evolução Mensal", "p_resultado": "Formação do Resultado",
+                "p_dre": "Demonstração do Resultado", "p_posicao": "Posição Patrimonial", "p_balanco": "Balanço Patrimonial", "p_indicadores": "Indicadores",
+                "p_comp1": "Composição de Saldos (1/2)", "p_comp2": "Composição de Saldos (2/2)", "p_lacunas": "Dados incompletos", "p_fechamento": "Fechamento"}
+
+
+def _pagina_indisponivel(c, n, N, fn):
+    """Pagina que depende de numeros n/d: em vez de numeros errados, explica o que falta (mesma moldura das demais)."""
+    nome = _NOME_PAGINA.get(fn.__name__, "Página")
+    moldura(c, n, N, nome)
+    y = titulo(c, TOPY, nome + " — indisponível neste relatório", "Faltam balancetes para calcular esta página")
+    y = para(c, "Esta página precisa de dados que não puderam ser calculados com os balancetes importados (veja a página “Dados incompletos”). "
+             "Nenhum valor foi estimado. Importe o que falta e gere o relatório de novo para que esta página apareça completa.", MX, y, CW, size=8.4, lead=12.6, gap=6)
+    for l in (X.get("lacunas") or []):
+        y = para(c, "• " + l["onde"] + " — " + l["resolver"] + ".", MX + 8, y, CW - 8, size=7.8, lead=11.4, gap=3)
 ROTULO_STATUS = {"RASCUNHO": "RASCUNHO", "REVISADO": "VERSÃO FINAL"}
 
 
@@ -706,8 +772,19 @@ def gerar_pdf(ctx: dict, textos: dict | None = None, status: str = "RASCUNHO", g
         buf = io.BytesIO()
         c = canvas.Canvas(buf, pagesize=(W, H), invariant=1)
         c.setTitle(f"Demonstrativos Financeiros — {E('nome')} — {X['data_base']}"); c.setAuthor("Grupo Enermais — GDF"); c.setSubject(f"{rot} · {X['periodo']}")
-        N = len(PAGES)
-        for i, fn in enumerate(PAGES, 1):
-            fn(c, i, N); c.showPage()
+        paginas = [fn for fn in PAGES if fn is not p_lacunas or _precisa_pagina_fontes()]
+        N = len(paginas)
+        falhou = {}
+        for fn in paginas:                                   # ensaio: a pagina que nao puder ser desenhada (numero n/d demais) vira um aviso, nunca derruba o relatorio
+            try:
+                fn(canvas.Canvas(io.BytesIO(), pagesize=(W, H), invariant=1), 1, N)
+            except Exception as exc:                          # noqa: BLE001
+                falhou[fn.__name__] = exc
+        for i, fn in enumerate(paginas, 1):
+            if fn.__name__ in falhou:
+                _pagina_indisponivel(c, i, N, fn)
+            else:
+                fn(c, i, N)
+            c.showPage()
         c.save()
         return buf.getvalue()
