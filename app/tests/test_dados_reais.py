@@ -215,6 +215,8 @@ def test_relatorio_pdf_com_dados_reais_tem_os_valores_do_excel(b, wb):
     caixa = next(ws.cell(r, 5).value for r in range(10, 54) if ws.cell(r, 2).value and "Caixa e equivalentes" in str(ws.cell(r, 2).value))
     assert RP.fnum(caixa) in todo
     assert RP.fnum(dr["acumulado"]["res_liq"]) in todo
+    # "Fornecedores — 10 maiores": 10 nomes + demais, como no Excel (o 10o e' a Omicron, R$ 442.800,00)
+    assert "Omicron" in todo and RP.fnum(442800.0) in todo
 
 
 def test_painel_serie_com_dados_reais(b):

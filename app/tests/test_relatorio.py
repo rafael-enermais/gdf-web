@@ -39,7 +39,7 @@ def test_composicao_apelido_e_acionista_capital_mais_afac():
 def test_composicao_demais_agrupa_o_resto_e_total_inclui_tudo():
     contas = [_conta("2.1.03.001.001", f"Forn {i:02d}", 100.0 * (i + 1)) for i in range(15)]
     g = [x for x in C.calcular(contas) if x["chave"] == "fornec"][0]
-    assert len(g["itens"]) == 10 and g["itens"][-1][0] == "Demais fornecedores (6)" and g["demais"]
+    assert len(g["itens"]) == 11 and g["itens"][-1][0] == "Demais fornecedores (5)" and g["demais"]      # 10 maiores + "demais" (igual ao Excel da contadora)
     assert g["total"] == sum(100.0 * (i + 1) for i in range(15)) and g["n_itens"] == 15
     assert round(sum(v for _, v in g["itens"]), 2) == g["total"]
 
