@@ -396,44 +396,76 @@ def listar_relatorios(conn, empresa_id: int, periodo=None) -> list:
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
+def _arquivar_assinatura(corpo: dict, usuario: str, motivo: str) -> dict:
+    """Move o registro de assinatura atual para o historico (`_assinaturas_anteriores`); nada se perde."""
+    corpo = dict(corpo or {})
+    atual = corpo.pop("_assinatura", None)
+    if atual:
+        hist = list(corpo.get("_assinaturas_anteriores") or [])
+        hist.append({**atual, "motivo": motivo, "por_alteracao": usuario})
+        corpo["_assinaturas_anteriores"] = hist
+    return corpo
+
+
 def definir_status_relatorio(conn, relatorio_id: int, status: str, usuario: str) -> None:
-    """RASCUNHO <-> REVISADO. Relatorio ASSINADO nunca e' alterado (gerar nova versao)."""
+    """RASCUNHO <-> REVISADO. Sem trava: se estava ASSINADO, o registro da assinatura vai para o historico e o status muda."""
     if status not in ("RASCUNHO", "REVISADO"):
-        raise ValueError("Status inválido (a assinatura é feita fora do GDF nesta versão).")
-    with conn.cursor() as cur:
-        cur.execute("SELECT empresa_id, status, periodo, versao FROM relatorio WHERE id=%s", (relatorio_id,))
-        r = cur.fetchone()
-        if not r:
-            raise ValueError("Relatório não encontrado.")
-        if r[1] == "ASSINADO":
-            raise ValueError("Relatório assinado não pode ser alterado; gere uma nova versão.")
-        cur.execute("UPDATE relatorio SET status=%s WHERE id=%s", (status, relatorio_id))
-        _evento(cur, r[0], "relatorio", "info", f"Relatório {r[2]:%m/%Y} v{r[3]} marcado como {status}", usuario, {"relatorio_id": relatorio_id})
+        raise ValueError("Status inválido (a assinatura é registrada em 'Registrar assinatura').")
+    with transacao(conn):
+        with conn.cursor() as cur:
+            cur.execute("SELECT empresa_id, status, periodo, versao, textos FROM relatorio WHERE id=%s FOR UPDATE", (relatorio_id,))
+            r = cur.fetchone()
+            if not r:
+                raise ValueError("Relatório não encontrado.")
+            if r[1] == "ASSINADO":
+                cur.execute("UPDATE relatorio SET status=%s, textos=%s::jsonb WHERE id=%s",
+                            (status, json.dumps(_arquivar_assinatura(r[4], usuario, f"status alterado para {status}")), relatorio_id))
+            else:
+                cur.execute("UPDATE relatorio SET status=%s WHERE id=%s", (status, relatorio_id))
+            _evento(cur, r[0], "relatorio", "info", f"Relatório {r[2]:%m/%Y} v{r[3]} marcado como {status}", usuario, {"relatorio_id": relatorio_id})
 
 
 class AssinaturaInvalida(Exception):
     """O arquivo enviado nao serve como registro de assinatura (mensagem em linguagem simples)."""
 
 
+def assinaturas_registradas(conn, empresa_id: int, periodo) -> list:
+    """Versoes do mes que ja tem PDF assinado registrado: [{id, versao, arquivo, sha256, por}]."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, versao, textos->'_assinatura' FROM relatorio WHERE empresa_id=%s AND periodo=%s AND status='ASSINADO' ORDER BY versao",
+                    (empresa_id, periodo))
+        return [{"id": i, "versao": v, "arquivo": (a or {}).get("arquivo"), "sha256": (a or {}).get("sha256"), "por": (a or {}).get("por")} for i, v, a in cur.fetchall()]
+
+
 def registrar_assinatura(conn, relatorio_id: int, nome_arquivo: str, sha256_assinado: str, usuario: str) -> None:
-    """Fecha o ciclo: o relatorio REVISADO foi assinado fora do GDF (Autentique). Guarda so' o nome e o hash do PDF assinado (o arquivo nao e' guardado
-    nem alterado) e muda o status para ASSINADO. Dali em diante a linha nao muda mais; correcao = nova versao."""
+    """OPCIONAL e sem trava. O relatorio foi assinado fora do GDF (Autentique): guarda so' o nome e o hash do PDF assinado (o arquivo nao e' guardado
+    nem alterado) e marca ASSINADO. Pode ser refeito a qualquer momento: o registro anterior vai para o historico (`_assinaturas_anteriores`)."""
     with transacao(conn):
         with conn.cursor() as cur:
-            cur.execute("SELECT empresa_id, status, periodo, versao, pdf_sha256 FROM relatorio WHERE id=%s FOR UPDATE", (relatorio_id,))
+            cur.execute("SELECT empresa_id, status, periodo, versao, pdf_sha256, textos FROM relatorio WHERE id=%s FOR UPDATE", (relatorio_id,))
             r = cur.fetchone()
             if not r:
                 raise AssinaturaInvalida("Relatório não encontrado.")
-            if r[1] == "ASSINADO":
-                raise AssinaturaInvalida("Este relatório já está registrado como assinado.")
-            if r[1] != "REVISADO":
-                raise AssinaturaInvalida("Só uma versão final (REVISADO) pode ser registrada como assinada. Gere a versão final primeiro.")
+            if r[1] not in ("REVISADO", "ASSINADO"):
+                raise AssinaturaInvalida("Só uma versão final (REVISADO) pode ter assinatura registrada. Gere a versão final primeiro.")
             if sha256_assinado == r[4]:
                 raise AssinaturaInvalida("Este arquivo é idêntico ao PDF gerado pelo GDF, ou seja, ainda não tem assinatura. Envie o PDF que voltou do Autentique.")
-            info = {"arquivo": nome_arquivo, "sha256": sha256_assinado, "por": usuario}
-            cur.execute("UPDATE relatorio SET status='ASSINADO', textos = jsonb_set(textos, '{_assinatura}', %s::jsonb, true) WHERE id=%s", (json.dumps(info), relatorio_id))
-            _evento(cur, r[0], "relatorio", "info", f"Relatório {r[2]:%m/%Y} v{r[3]} registrado como ASSINADO ({nome_arquivo})", usuario,
+            corpo = dict(r[5] or {})
+            atual = corpo.get("_assinatura")
+            if r[1] == "ASSINADO" and atual and atual.get("sha256") == sha256_assinado:
+                raise AssinaturaInvalida("Este mesmo arquivo já está registrado nesta versão.")
+            substituiu = r[1] == "ASSINADO"
+            corpo = _arquivar_assinatura(corpo, usuario, "substituída por novo arquivo") if substituiu else corpo
+            corpo["_assinatura"] = {"arquivo": nome_arquivo, "sha256": sha256_assinado, "por": usuario}
+            cur.execute("UPDATE relatorio SET status='ASSINADO', textos=%s::jsonb WHERE id=%s", (json.dumps(corpo), relatorio_id))
+            _evento(cur, r[0], "relatorio", "info",
+                    f"Relatório {r[2]:%m/%Y} v{r[3]} {'assinatura substituída' if substituiu else 'registrado como ASSINADO'} ({nome_arquivo})", usuario,
                     {"relatorio_id": relatorio_id, "sha256_assinado": sha256_assinado})
+
+
+def desfazer_assinatura(conn, relatorio_id: int, usuario: str) -> None:
+    """Tira o registro de assinatura (volta para REVISADO). O registro fica guardado no historico."""
+    definir_status_relatorio(conn, relatorio_id, "REVISADO", usuario)
 
 
 # ---------------------------------------------------------------- log

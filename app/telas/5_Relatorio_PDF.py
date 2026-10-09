@@ -23,8 +23,8 @@ sidebar_rodape()
 st.title("Relatório PDF")
 mostrar_flash()
 st.caption("Gera o relatório em PDF (layout padrão Enermais) com os mesmos números da tela Demonstrativos. Caminho: **rascunho** (para revisar) → "
-           "**versão final** (sem marca de rascunho, para assinar no Autentique) → **registrar assinatura**. Cada geração vira uma versão nova; "
-           "um relatório assinado nunca é regravado.")
+           "**versão final** (sem marca de rascunho, para assinar no Autentique) → *registrar assinatura (opcional)*. Cada geração vira uma versão nova; "
+           "nada é regravado.")
 empresas = empresa_atual(conn)
 emp = st.selectbox("Empresa", empresas, format_func=lambda e: e["razao_social"], key="pdf_empresa")
 
@@ -150,24 +150,45 @@ if rels:
     st.dataframe(pd.DataFrame([{"Versão": f"v{r['versao']}", "Status": r["status"], "Dados": _dados(r), "Gerado por": r["gerado_por"],
                                 "Em": fmt_br(r["gerado_em"]), "Código": (r["pdf_sha256"] or "")[:8]} for r in rels]),
                  hide_index=True, width="stretch")
-    finais = [r for r in rels if r["status"] == "REVISADO"]
+    finais = [r for r in rels if r["status"] in ("REVISADO", "ASSINADO")]
     if finais:
-        with st.expander("Registrar assinatura (PDF que voltou do Autentique)"):
-            st.caption("O GDF não assina. Depois de assinar fora, envie aqui o PDF assinado só para registrar: o sistema guarda o nome e o código (SHA-256) do arquivo, "
-                       "não o guarda nem o altera, e a versão passa a ASSINADO (não muda mais).")
+        with st.expander("Registrar assinatura (opcional — PDF que voltou do Autentique)"):
+            st.caption("O GDF não assina e o registro é opcional. Depois de assinar fora, você pode enviar aqui o PDF assinado: o sistema guarda só o nome e o código (SHA-256) "
+                       "do arquivo (não o guarda nem o altera). Nada trava: dá para registrar outro arquivo no lugar ou desfazer o registro; o anterior fica no histórico.")
             _fin = {r["id"]: r for r in finais}
-            alvo = _fin[st.selectbox("Versão assinada", list(_fin), key="ass_versao",
-                                     format_func=lambda n: f"v{_fin[n]['versao']} (código {(_fin[n]['pdf_sha256'] or '')[:8]})")]
+            alvo = _fin[st.selectbox("Versão", list(_fin), key="ass_versao",
+                                     format_func=lambda n: f"v{_fin[n]['versao']} — {_fin[n]['status']} (código {(_fin[n]['pdf_sha256'] or '')[:8]})")]
+            reg = db.assinaturas_registradas(conn, emp["id"], periodo_rel)
+            if reg:
+                st.info("Já há PDF assinado registrado neste mês: " + "; ".join(f"v{x['versao']} ({x['arquivo']}, por {x['por']})" for x in reg) + ".")
+            if alvo["status"] == "ASSINADO":
+                if st.button(f"Desfazer o registro de assinatura da v{alvo['versao']} (volta para REVISADO)", key="ass_desfazer"):
+                    db.desfazer_assinatura(conn, alvo["id"], usuario)
+                    flash("ok", f"Registro de assinatura da v{alvo['versao']} desfeito (guardado no histórico).")
+                    st.rerun()
             arq = st.file_uploader("PDF assinado", type=["pdf"], key="ass_arquivo")
             if arq is not None:
                 raw = arq.getvalue()
+                sha = hashlib.sha256(raw).hexdigest()
                 sem_assinatura = b"/ByteRange" not in raw
                 if sem_assinatura:
                     st.warning("Não encontrei assinatura digital dentro deste PDF. Confirme que é o arquivo assinado.")
-                ok_conf = st.checkbox("Confirmo que é o PDF assinado desta versão", key="ass_confirma") if sem_assinatura else True
+                ja_igual = [x for x in reg if x["sha256"] == sha]
+                outras = [x for x in reg if x["sha256"] != sha]
+                ok_conf = True
+                if ja_igual:
+                    st.info(f"Este mesmo arquivo já está registrado na v{ja_igual[0]['versao']}.")
+                    ok_conf = False
+                else:
+                    if outras:
+                        st.warning(f"Este mês já tem assinatura registrada (v{outras[0]['versao']}: {outras[0]['arquivo']}). Se registrar este arquivo "
+                                   + ("na mesma versão, ele substitui o registro anterior (que fica no histórico)." if alvo["id"] == outras[0]["id"]
+                                      else "em outra versão, as duas ficam assinadas."))
+                    if sem_assinatura:
+                        ok_conf = st.checkbox("Confirmo que é o PDF assinado desta versão", key="ass_confirma")
                 if ok_conf and st.button("Registrar como assinado", key="ass_registrar"):
                     try:
-                        db.registrar_assinatura(conn, alvo["id"], arq.name, hashlib.sha256(raw).hexdigest(), usuario)
+                        db.registrar_assinatura(conn, alvo["id"], arq.name, sha, usuario)
                         flash("ok", f"Versão v{alvo['versao']} registrada como ASSINADO.")
                         st.rerun()
                     except db.AssinaturaInvalida as exc:

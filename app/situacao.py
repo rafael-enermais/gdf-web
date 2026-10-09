@@ -51,6 +51,6 @@ def proxima_acao(linhas: list[dict]) -> str:
     ref = next(l for l in linhas if l["mes"] == ultimo)
     if ref["relatorio"] == "–":
         return f"Balancetes até {ref['rotulo']} revisados. Gere o relatório de {ref['rotulo']} (menu **Relatório PDF**)."
-    if "ASSINADO" not in ref["relatorio"]:
-        return f"Relatório de {ref['rotulo']} já gerado ({ref['relatorio']}). Falta a versão final e a assinatura, ou importar o mês seguinte."
+    if "ASSINADO" not in ref["relatorio"] and "REVISADO" not in ref["relatorio"]:
+        return f"Relatório de {ref['rotulo']} já gerado ({ref['relatorio']}). Falta a versão final (menu **Relatório PDF**), ou importar o mês seguinte."
     return f"Tudo em dia até {ref['rotulo']}. Próximo: importar o balancete do mês seguinte."

@@ -72,7 +72,7 @@ for arq in arquivos or []:
         with conn.cursor() as cur:
             cur.execute("SELECT id, ativo, status FROM importacao WHERE empresa_id=%s AND arquivo_sha256=%s", (emp["id"], cab["sha256"]))
             dup = cur.fetchone()
-            cur.execute("SELECT id FROM importacao WHERE empresa_id=%s AND tipo=%s AND periodo_ini=%s AND periodo_fim=%s AND ativo",
+            cur.execute("SELECT id, status FROM importacao WHERE empresa_id=%s AND tipo=%s AND periodo_ini=%s AND periodo_fim=%s AND ativo",
                         (emp["id"], cab["tipo"], cab["ini"], cab["fim"]))
             ativa = cur.fetchone()
         if dup:
@@ -99,6 +99,14 @@ for arq in arquivos or []:
                     st.caption(outra_txt.strip())
             continue
         if ativa:
+            if ativa[1] == "REVISADA":
+                st.warning(f"Atenção: o mês {cab['fim']:%m/%Y} já está **validado** (importação #{ativa[0]}, REVISADA). Substituir muda os números deste mês; "
+                           "o arquivo novo precisa ser confirmado de novo.")
+            if cab["tipo"] == "MENSAL":
+                afetados = [r for r in db.listar_relatorios(conn, emp["id"]) if r["periodo"] >= cab["fim"].replace(day=1)]
+                if afetados:
+                    st.warning("Já existem relatórios que usam este mês (" + ", ".join(f"{r['periodo']:%m/%Y} v{r['versao']} {r['status']}" for r in afetados[:6])
+                               + "). Depois da troca eles aparecem como \"desatualizados\" na tela Relatório PDF; gere uma nova versão.")
             item["substituir"] = st.checkbox(f"Já existe a importação #{ativa[0]} ativa para este período. Substituir? (a anterior fica guardada, inativa)",
                                              key=f"subst_{cab['sha256']}")
             if not item["substituir"]:

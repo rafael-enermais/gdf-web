@@ -366,10 +366,24 @@ def test_registrar_assinatura_regras(patch_conn):
     db.registrar_assinatura(patch_conn, r2, "assinado.pdf", "c" * 64, "t")
     rel = {r["id"]: r for r in db.listar_relatorios(patch_conn, emp_id)}
     assert rel[r2]["status"] == "ASSINADO" and rel[r2]["pdf_sha256"] == "b" * 64
-    with pytest.raises(db.AssinaturaInvalida, match="já está"):
-        db.registrar_assinatura(patch_conn, r2, "assinado.pdf", "d" * 64, "t")
-    with pytest.raises(ValueError):
-        db.definir_status_relatorio(patch_conn, r2, "RASCUNHO", "t")
+    # sem trava: mesmo arquivo de novo -> avisa; outro arquivo -> substitui e o anterior vai para o historico
+    with pytest.raises(db.AssinaturaInvalida, match="mesmo arquivo"):
+        db.registrar_assinatura(patch_conn, r2, "assinado.pdf", "c" * 64, "t")
+    assert [x["versao"] for x in db.assinaturas_registradas(patch_conn, emp_id, per)] == [2]
+    db.registrar_assinatura(patch_conn, r2, "assinado_v2.pdf", "d" * 64, "t")
+    with patch_conn.cursor() as cur:
+        cur.execute("SELECT textos->'_assinatura'->>'arquivo', jsonb_array_length(textos->'_assinaturas_anteriores') FROM relatorio WHERE id=%s", (r2,))
+        assert cur.fetchone() == ("assinado_v2.pdf", 1)
+    db.desfazer_assinatura(patch_conn, r2, "t")
+    rel = {r["id"]: r for r in db.listar_relatorios(patch_conn, emp_id)}
+    assert rel[r2]["status"] == "REVISADO" and db.assinaturas_registradas(patch_conn, emp_id, per) == []
+    with patch_conn.cursor() as cur:
+        cur.execute("SELECT textos ? '_assinatura', jsonb_array_length(textos->'_assinaturas_anteriores') FROM relatorio WHERE id=%s", (r2,))
+        assert cur.fetchone() == (False, 2)                       # nada se perde: os dois registros ficam guardados
+    db.registrar_assinatura(patch_conn, r2, "assinado_v3.pdf", "e" * 64, "t")              # e da' para assinar de novo
+    assert [x["arquivo"] for x in db.assinaturas_registradas(patch_conn, emp_id, per)] == ["assinado_v3.pdf"]
+    db.definir_status_relatorio(patch_conn, r2, "RASCUNHO", "t")                           # sem trava: pode ate' voltar a rascunho
+    assert {r["id"]: r for r in db.listar_relatorios(patch_conn, emp_id)}[r2]["status"] == "RASCUNHO"
     with pytest.raises(ValueError):
         db.registrar_relatorio(patch_conn, emp_id, per, "e" * 64, {}, [], "t", status="ASSINADO")
 
@@ -519,3 +533,43 @@ def test_historico_a_selecao_nao_pula_para_outra_importacao_apos_editar(patch_co
     assert st_[alvo] == "REVISADA" and all(st_[n] == "RASCUNHO" for n in ids[1:])      # so' a escolhida mudou
     at.button(key="hist_desfazer").click().run()
     assert at.selectbox(key="hist_escolha").value == alvo and [b for b in at.button if b.key == "hist_reativar"]
+
+
+# ---------------------------------------------------------------- v0.4.8: assinatura opcional e sem trava + avisos
+def test_importar_substituir_mes_validado_avisa_e_lista_relatorios_afetados(patch_conn):
+    from datetime import date
+    emp_id = _semear_ate(patch_conn)
+    for i in db.listar_importacoes(patch_conn, emp_id):
+        db.definir_status(patch_conn, i["id"], "REVISADA", "t")
+    db.registrar_relatorio(patch_conn, emp_id, date(2026, 3, 1), "a" * 64, {}, [], "t", status="REVISADO")
+    contas = [dict(c) for c in MESES["2026-02"]]
+    contas[0] = {**contas[0], "nome": contas[0]["nome"] + " (novo)"}
+    novo = _Upload("fev_novo.csv", csv_texto(contas, cnpj=CNPJ, ini="01/02/2026", fim="28/02/2026"))
+    at = _importar(patch_conn, [novo])
+    assert not at.exception, at.exception
+    avisos = " ".join(w.value for w in at.warning)
+    assert "já está **validado**" in avisos and "03/2026 v1 REVISADO" in avisos and "desatualizados" in avisos
+    assert [c for c in at.checkbox if "Substituir" in c.label]
+
+
+def test_tela_assinatura_opcional_sem_trava(patch_conn):
+    from datetime import date
+    emp_id = _semear_ate(patch_conn)
+    rid, _ = db.registrar_relatorio(patch_conn, emp_id, date(2026, 3, 1), "b" * 64, {}, [], "t", status="REVISADO")
+    db.registrar_assinatura(patch_conn, rid, "primeiro.pdf", "c" * 64, "t")
+    pdf2 = _Upload("segundo.pdf", b"%PDF-1.4 /ByteRange [0 1 2 3] segundo")
+    at = _app("5_Relatorio_PDF.py", patch_conn)
+    with patch("streamlit.file_uploader", return_value=pdf2):
+        at.run()
+        assert not at.exception, at.exception
+        textos = " ".join(i.value for i in at.info) + " " + " ".join(w.value for w in at.warning)
+        assert "Já há PDF assinado registrado" in textos and "substitui o registro anterior" in textos
+        assert [b for b in at.button if "Desfazer o registro" in b.label]
+        at.button(key="ass_registrar").click().run()
+    assert not at.exception, at.exception
+    assert [x["arquivo"] for x in db.assinaturas_registradas(patch_conn, emp_id, date(2026, 3, 1))] == ["segundo.pdf"]
+    at = _app("5_Relatorio_PDF.py", patch_conn)
+    with patch("streamlit.file_uploader", return_value=None):
+        at.run()
+        at.button(key="ass_desfazer").click().run()
+    assert {r["id"]: r for r in db.listar_relatorios(patch_conn, emp_id)}[rid]["status"] == "REVISADO"
