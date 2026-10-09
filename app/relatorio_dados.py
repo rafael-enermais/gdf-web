@@ -108,6 +108,7 @@ def montar(emp: dict, b: motor.Balancetes, mes_ref: str, bp: dict, d: dict, cont
     serie = {
         "meses": [MESES_ABREV[int(p["per"][5:7]) - 1] for p in pontos],
         "rotulos": [r for r, _ in rot_pts], "tem_abertura": ab is not None,
+        "sem_posicao": [f"{MESES_ABREV[m - 1].lower()}/{str(ano)[2:]}" for m in range(1, mes + 1) if m not in {int(p["per"][5:7]) for p in pontos}],
         "caixa": [c["caixa_eq"] for _, c in rot_pts],
         "bndes": [round(c["bndes_cp"] + c["bndes_lp"], 2) for _, c in rot_pts],
         "pl": [c["pl"] for _, c in rot_pts],

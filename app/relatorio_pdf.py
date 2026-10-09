@@ -118,19 +118,33 @@ def unidade(c, xr, y, s="R$ MM"):
     txt(c, xr - wd / 2, y + 0.6, s, "PB", 5.8, GREY, "c")
 
 
+def _sub_cabe(sub, larg, base, h, maxl):
+    """Quebra o texto de apoio do quadro de modo que TODAS as linhas fiquem dentro dele: se não couber, reduz a fonte (6,6 → 5,4); se ainda
+    não couber, encurta a última linha com reticências. Sem isso, a segunda linha escapava do quadro (ex.: 'Resultado financeiro')."""
+    cap = max(1, min(maxl, int((h - 5 - base) / 8.6) + 1))
+    for fs in (6.6, 6.2, 5.8, 5.4):
+        lns = simpleSplit(sub, "P", fs, larg)
+        if len(lns) <= cap:
+            return lns, fs
+    lns = simpleSplit(sub, "P", 5.4, larg)[:cap]
+    while lns and pdfmetrics.stringWidth(lns[-1] + "…", "P", 5.4) > larg and len(lns[-1]) > 1: lns[-1] = lns[-1][:-1]
+    if lns: lns[-1] = lns[-1].rstrip() + "…"
+    return lns, 5.4
 def kpi(c, x, y, w, h, rot, valor, sub, dark=False, accent=None, vsize=15, maxl=2):
     if dark:
         rect(c, x, y - h, w, h, fill=NAVY, r=6)
         txt(c, x + 11, y - 15, rot.upper(), "PB", 6.2, BRAND_OR)
         txt(c, x + 11, y - 15 - 21, valor, "PB", vsize, WHITE)
-        for i, ln in enumerate(simpleSplit(sub, "P", 6.6, w - 28)[:maxl]): txt(c, x + 11, y - 15 - 34 - i * 8.6, ln, "P", 6.6, HexColor("#D6D9EA"))
+        lns, fs = _sub_cabe(sub, w - 28, 15 + 34, h, maxl)
+        for i, ln in enumerate(lns): txt(c, x + 11, y - 15 - 34 - i * 8.6, ln, "P", fs, HexColor("#D6D9EA"))
     else:
         rect(c, x, y - h, w, h, fill=GREY_BG, r=4)
         rect(c, x, y - h, 3, h, fill=accent or NAVY)
         txt(c, x + 11, y - 14, rot.upper(), "PB", 6.2, accent if accent else NAVY)
         vcol = NEG_TXT if valor.startswith("−") else NAVY
         txt(c, x + 11, y - 14 - 21, valor, "PB", vsize, vcol)
-        for i, ln in enumerate(simpleSplit(sub, "P", 6.6, w - 26)[:maxl]): txt(c, x + 11, y - 14 - 33 - i * 8.6, ln, "P", 6.6, GREY)
+        lns, fs = _sub_cabe(sub, w - 26, 14 + 33, h, maxl)
+        for i, ln in enumerate(lns): txt(c, x + 11, y - 14 - 33 - i * 8.6, ln, "P", fs, GREY)
 def variacoes(c, x, y, w, itens, lab_w=190, rh=14):
     area = w - lab_w - 60
     mn = max([-v for _, v in itens if v < 0] or [0]); mp = max([v for _, v in itens if v > 0] or [0])
@@ -370,7 +384,7 @@ def p_destaques(c, n, N):
              ("Dívida bruta (BNDES)", mm(divb), f"Dívida líquida: {mm(divl)}"),
              ("Patrimônio líquido", mm(BP("pl")), f"Em {X['abertura']}: {mmx(BP('pl', 0))}"),
              ("Capital aportado", mm(IN("capital_aportado")), "Capital social + AFAC"),
-             ("Resultado financeiro", mmx(DR("res_fin"), 2, True), f"Receitas menos despesas financeiras, {ate.lower()}"),
+             ("Resultado financeiro", mmx(DR("res_fin"), 2, True), f"Receitas − despesas financeiras, {ate.lower()}"),
              ("Fornecedores a pagar", mm(BP("fornec")), f"Em {X['abertura']}: {mmx(BP('fornec', 0))}")]
     for i, (a, b_, d_) in enumerate(cards):
         kpi(c, MX + (i % 3) * (cw3 + 12), y - (i // 3) * 62, cw3, 52, a, b_, d_, accent=NEG_FILL if b_.startswith("−") else NAVY, vsize=13)
@@ -414,7 +428,8 @@ def _passo(v):
 def p_evolucao(c, n, N):
     S = X["serie"]; MESES = S["rotulos"]; SC, SD, SPL, SF, SCC = S["caixa"], S["bndes"], S["pl"], S["fornec"], S["custo_constr"]
     moldura(c, n, N, "Evolução Mensal")
-    y = titulo(c, TOPY, f"Evolução de {MESES[0].lower()} a {MESES[-1].lower()}", "Saldos no fim de cada mês · valores em R$ milhões · posições mensais dos Balancetes Societários")
+    y = titulo(c, TOPY, f"Evolução de {MESES[0].lower()} a {MESES[-1].lower()}", ("Saldos no fim de cada mês · R$ milhões · sem posição em " + ", ".join(S["sem_posicao"]) + " (balancete não importado)") if S.get("sem_posicao")
+               else "Saldos no fim de cada mês · valores em R$ milhões · posições mensais dos Balancetes Societários")
     y = secao(c, y, "Caixa e equivalentes × dívida bruta (BNDES)")
     legenda(c, MX + 262, y + 14, [(BLUES[3], "Caixa e equivalentes", "bar"), (NAVY, "Dívida bruta", "line")])
     unidade(c, MX + CW, y + 14)
@@ -557,8 +572,9 @@ def p_posicao(c, n, N):
     unidade(c, MX + CW, y + 14)
     gy = y - 135 - 16
     if nd(PL0, BP("capital", 3), BP("afac", 3), RES):          # sem a abertura (31/12) ou sem a DRE do ano nao ha' como reconciliar o PL
-        caixa_nota(c, gy + 70, "Reconciliação do patrimônio líquido indisponível (n/d): precisa do saldo de " + X["abertura"] + " e da DRE acumulada do ano. "
-                   "Veja a página “Dados incompletos” para saber o que importar.", size=7.6)
+        yn = caixa_nota(c, y - 8, "Reconciliação do patrimônio líquido indisponível (n/d): precisa do saldo de " + X["abertura"] + " e da DRE acumulada do ano. "
+                        "Veja a página “Dados incompletos” para saber o que importar.", size=7.6)
+        gy = yn + 18                                               # sem o gráfico, os quadros sobem (não deixa um buraco no meio da página)
     else:
         d_cap = round(BP("capital", 3) + BP("afac", 3), 2)
         outras = round(PL - PL0 - d_cap - RES, 2)
