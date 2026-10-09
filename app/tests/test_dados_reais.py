@@ -281,3 +281,37 @@ def test_flexivel_so_o_mensal_de_agosto_tem_posicao_de_julho_e_mes_corretos(b):
     _mesmos(r["bp"] | {"abertura": cheio["bp"]["abertura"]}, cheio["bp"], ("mes_ant", "mes_ref"))
     _mesmos({"mes": r["d"]["mes"]}, {"mes": cheio["d"]["mes"]}, ("mes",))
     assert r["bp"]["abertura"] is None and r["d"]["acumulado"] is None
+
+
+def test_periodo_a_partir_de_abril_sem_marco_abre_em_31_03_e_soma_so_abr_a_ago(b):
+    """Caminho 'só depois da lacuna': abertura = posição de 31/03 (saldo anterior do mensal de abril) e DRE = soma de abril a agosto, igual ao completo."""
+    import fontes
+    sem3 = {k: v for k, v in b.p.items() if k != "2026-03"}
+    r = fontes.calcular(sem3, {}, None, "2026-08", 4)
+    assert r["ini"] == 4 and r["fonte"] != "parcial" and not r["lacunas"] and not r["falhas"]
+    marco = fontes.calcular(b.p, {}, None, "2026-03")["bp"]["mes_ref"]
+    assert all(abs(r["bp"]["abertura"][k] - marco[k]) <= TOL for k in marco)
+    soma = {}
+    for m in range(4, 9):
+        for k, v in fontes.calcular(b.p, {}, None, f"2026-{m:02d}")["d"]["mes"].items():
+            soma[k] = round(soma.get(k, 0) + v, 2)
+    assert all(abs(r["d"]["acumulado"][k] - v) <= TOL for k, v in soma.items())
+    cheio = fontes.calcular(b.p, {}, None, "2026-08")["bp"]["mes_ref"]
+    assert all(abs(r["bp"]["mes_ref"][k] - cheio[k]) <= TOL for k in cheio)
+    o = fontes.opcoes_periodo(fontes.calcular(sem3, {}, None, "2026-08"), "2026-08")
+    assert o == {"faltam": ["2026-03"], "ate": "2026-02", "apos": "2026-04"}
+
+
+def test_pdf_periodo_a_partir_de_abril_diz_31_03_e_abril_a_agosto(b):
+    import io
+    import fontes
+    import pdfplumber
+    import relatorio_dados as RD
+    import relatorio_pdf as RP
+    sem3 = {k: v for k, v in b.p.items() if k != "2026-03"}
+    r = fontes.calcular(sem3, {}, None, "2026-08", 4)
+    emp = {"id": 1, "codigo": "ANASTACIO", "razao_social": "Anastácio Transmissora de Energia S.A.", "cnpj": "54.800.488/0001-60"}
+    x = RD.montar(emp, r["b"], "2026-08", r["bp"], r["d"], r["contas_ref"], None, None, None, None, r)
+    with pdfplumber.open(io.BytesIO(RP.gerar_pdf(x, {}, "RASCUNHO", "09/10/2026 10:00"))) as p:
+        txt = " ".join((pg.extract_text() or "") for pg in p.pages).replace("\n", " ")
+    assert "31/03/2026" in txt and "período de abril a agosto" in txt and "n/d" not in txt

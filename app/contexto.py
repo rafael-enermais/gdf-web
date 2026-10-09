@@ -38,11 +38,12 @@ def carregar_base(conn, empresa_id: int) -> tuple:
     return db.periodos_mensais_ativos(conn, empresa_id), db.acumulados_ativos(conn, empresa_id), db.mapa_vigente(conn, empresa_id)
 
 
-def carregar(conn, empresa_id: int, mes_ref: str) -> dict:
+def carregar(conn, empresa_id: int, mes_ref: str, mes_ini: int = 1) -> dict:
     """Calcula tudo do mês com o que estiver importado (balancetes mensais e acumulados do mesmo ano): ver fontes.calcular.
-    O que não puder ser calculado volta como None (n/d) e a explicação vem em `lacunas`. Levanta motor.ErroDados só se não houver nenhum balancete do mês."""
+    O que não puder ser calculado volta como None (n/d) e a explicação vem em `lacunas`. Levanta motor.ErroDados só se não houver nenhum balancete do mês.
+    `mes_ini` > 1 = relatório só do período mes_ini..mes_ref (quando falta um mês no meio do ano)."""
     mensais, acum, mapa = carregar_base(conn, empresa_id)
-    return fontes.calcular(mensais, acum, mapa, mes_ref)
+    return fontes.calcular(mensais, acum, mapa, mes_ref, mes_ini)
 
 
 def status_por_periodo(conn, empresa_id: int) -> dict:

@@ -229,3 +229,81 @@ def test_cobertura_diz_como_sai_o_relatorio_de_cada_mes():
     assert "sem balancete" in por_mes["02/2026"]["Relatório deste mês"]
     assert "n/d" in por_mes["03/2026"]["Relatório deste mês"]
     assert por_mes["04/2026"]["Relatório deste mês"].startswith("✅ completo")                # abril: acumulado + mensal cobrem tudo
+
+
+# ---------- v0.5.2: periodo do relatorio (gerar ate' a lacuna / so' depois dela) ----------
+SEM_FEV = {k: PER[k] for k in ("2026-01", "2026-03", "2026-04")}
+
+
+def _soma_dre(ate_ini, ate_fim):
+    tot = {}
+    for m in range(ate_ini, ate_fim + 1):
+        mes = fontes.calcular(PER, {}, None, f"2026-{m:02d}")["d"]["mes"]
+        for k, v in mes.items():
+            tot[k] = round(tot.get(k, 0) + v, 2)
+    return tot
+
+
+def test_opcoes_de_periodo_dizem_ate_onde_e_a_partir_de_onde_gerar():
+    r = fontes.calcular(SEM_FEV, {}, None, "2026-04")
+    assert fontes.opcoes_periodo(r, "2026-04") == {"faltam": ["2026-02"], "ate": "2026-01", "apos": "2026-03"}
+    assert fontes.opcoes_periodo(CHEIO, "2026-04") is None                                   # completo: nada a oferecer
+    r1 = fontes.calcular({k: PER[k] for k in ("2026-02", "2026-03", "2026-04")}, {}, None, "2026-04")      # falta janeiro: nao ha' "ate"
+    o = fontes.opcoes_periodo(r1, "2026-04")
+    assert o["ate"] is None and o["apos"] == "2026-02" and o["faltam"] == ["2026-01"]
+    r4 = fontes.calcular({k: PER[k] for k in ("2026-01", "2026-02", "2026-03")}, {"2026-04": _acum(PER, "2026-04")}, None, "2026-04")
+    o4 = fontes.opcoes_periodo(r4, "2026-04")
+    assert o4 is None or o4["apos"] is None or o4["apos"] <= "2026-04"
+
+
+def test_periodo_a_partir_de_marco_tem_abertura_em_28_02_e_dre_so_de_marco_e_abril():
+    r = fontes.calcular(SEM_FEV, {}, None, "2026-04", 3)
+    assert r["ini"] == 3 and not r["falhas"]
+    fev = fontes.calcular(PER, {}, None, "2026-02")["bp"]["mes_ref"]
+    _igual({"abertura": r["bp"]["abertura"], "mes_ref": r["bp"]["mes_ref"]}, {"abertura": fev, "mes_ref": CHEIO["bp"]["mes_ref"]}, ("abertura", "mes_ref"))
+    _igual({"mes": r["d"]["mes"]}, {"mes": CHEIO["d"]["mes"]}, ("mes",))
+    soma = _soma_dre(3, 4)
+    assert r["d"]["acumulado"] is not None
+    for k, v in soma.items():
+        assert abs(r["d"]["acumulado"][k] - v) <= 0.011, k
+    assert r["d"]["ate_mes_ant"] is not None and abs(r["d"]["ate_mes_ant"]["res_liq"] - _soma_dre(3, 3)["res_liq"]) <= 0.011
+
+
+def test_periodo_a_partir_do_primeiro_mes_do_periodo_se_comporta_como_janeiro():
+    r = fontes.calcular(SEM_FEV, {}, None, "2026-03", 3)
+    fev = fontes.calcular(PER, {}, None, "2026-02")["bp"]["mes_ref"]
+    _igual({"mes_ant": r["bp"]["mes_ant"], "abertura": r["bp"]["abertura"]}, {"mes_ant": fev, "abertura": fev}, ("mes_ant", "abertura"))
+    assert all(abs(v) < 0.011 for v in r["d"]["ate_mes_ant"].values())
+    _igual({"acumulado": r["d"]["acumulado"]}, {"acumulado": fontes.calcular(PER, {}, None, "2026-03")["d"]["mes"]}, ("acumulado",))
+
+
+def test_periodo_ate_janeiro_nao_precisa_de_nada_que_falte():
+    r = fontes.calcular(SEM_FEV, {}, None, "2026-01")
+    _igual(r["bp"], fontes.calcular(PER, {}, None, "2026-01")["bp"], ("abertura", "mes_ant", "mes_ref"))
+    assert not r["lacunas"] and r["fonte"] == "completo"
+
+
+def test_periodo_sem_o_balancete_mensal_do_mes_inicial_bloqueia_e_diz_qual():
+    with pytest.raises(fontes.ErroDados) as e:
+        fontes.calcular(SEM_FEV, {}, None, "2026-04", 2)
+    assert "02/2026" in str(e.value) and "mensal" in str(e.value)
+    with pytest.raises(fontes.ErroDados):
+        fontes.calcular(PER, {}, None, "2026-02", 3)                                         # inicio depois do mes do relatorio
+
+
+def test_pdf_periodo_diz_o_que_e_e_nao_traz_n_d_do_que_foi_escolhido():
+    r = fontes.calcular(SEM_FEV, {}, None, "2026-04", 3)
+    x, pdf = _pdf(r)
+    n, txt = _texto_pdf(pdf)
+    t = txt.replace("\n", " ")
+    assert "28/02/2026" in t and "cobre só o período de março a abril" in t
+    assert RP.fnum(r["d"]["acumulado"]["res_liq"]) in txt
+    assert "indisponível" not in txt
+    assert all(isinstance(v, str) for v in RD.textos_padrao(x).values())
+
+
+def test_pdf_ate_a_lacuna_e_um_relatorio_completo_de_janeiro():
+    r = fontes.calcular(SEM_FEV, {}, None, "2026-01")
+    x, pdf = _pdf(r, "2026-01")
+    n, txt = _texto_pdf(pdf)
+    assert n == 11 and "n/d" not in txt and "Dados incompletos" not in txt

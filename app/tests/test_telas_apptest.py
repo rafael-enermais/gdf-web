@@ -15,7 +15,7 @@ from dados_sinteticos import csv_texto, gerar_meses, pdf_balancete
 pytestmark = pytest.mark.pg
 APP = Path(__file__).resolve().parent.parent
 CNPJ = "54.800.488/0001-60"                      # CNPJ da empresa inicial (so' o numero publico; dados sinteticos)
-MESES = gerar_meses([(100_000, 5_000, 200), (80_000, 4_000, 100), (60_000, 3_000, 50)])
+MESES = gerar_meses([(100_000, 5_000, 200), (80_000, 4_000, 100), (60_000, 3_000, 50), (70_000, 2_000, 80)])
 SESSAO = SimpleNamespace(user=SimpleNamespace(email="usuaria@teste"))
 
 
@@ -35,7 +35,7 @@ def _semear(conn, meses=(1, 2, 3)):
     emp_id = db.garantir_empresa(conn, "ANASTACIO", "Anastácio Transmissora de Energia S.A.", CNPJ)
     db.garantir_mapa(conn, emp_id)
     for m in meses:
-        ult = {1: "31", 2: "28", 3: "31"}[m]
+        ult = {1: "31", 2: "28", 3: "31", 4: "30"}[m]
         cab, contas = I.ler_bytes(csv_texto(MESES[f"2026-{m:02d}"], cnpj=CNPJ, ini=f"01/{m:02d}/2026", fim=f"{ult}/{m:02d}/2026"), f"{m}.csv")
         db.inserir_importacao(conn, emp_id, cab, contas, "seed", motor.conferencias_arquivo(contas, db.mapa_vigente(conn, emp_id), cab["periodo"]))
     return emp_id
@@ -675,6 +675,45 @@ def test_meses_faltantes_e_aviso_diz_o_que_importar(patch_conn):
     assert any("Meses sem nenhum balancete" in i.value and "01/2026" in i.value for i in at.info)
 
 
+def test_faltando_mes_a_usuaria_escolhe_ano_completo_depois_da_lacuna_ou_ate_a_lacuna(patch_conn):
+    emp_id = _semear(patch_conn, meses=(1, 3, 4))                                            # fevereiro falta
+    chave = f"dem_per_{emp_id}_2026-04"
+    at = _app("2_Demonstrativos.py", patch_conn).run()
+    assert not at.exception, at.exception
+    assert any("Faltam os balancetes mensais de 02/2026" in w.value for w in at.warning)
+    assert at.radio(key=chave).value == "ano" and len(at.radio(key=chave).options) == 3      # padrão = como era: ano completo com n/d
+    assert any("n/d em" in w.value for w in at.warning)
+    at.radio(key=chave).set_value("apos").run()                                              # só março–abril, abertura em 28/02
+    assert not at.exception, at.exception
+    assert not any("n/d em" in w.value for w in at.warning)
+    assert "28/02/2026" in _textos(at) and len(at.tabs) == 5 and len(at.dataframe) >= 4
+    at.radio(key=chave).set_value("ate").run()                                               # só janeiro (último completo antes da lacuna)
+    assert not at.exception, at.exception
+    assert not any("n/d em" in w.value for w in at.warning) and "01/2026" in _textos(at)
+    assert len(at.dataframe) >= 4
+
+
+def test_pdf_depois_da_lacuna_registra_o_periodo_e_nao_tem_n_d(patch_conn):
+    emp_id = _semear(patch_conn, meses=(1, 3, 4))
+    chave = f"pdf_per_{emp_id}_2026-04"
+    at = _app("5_Relatorio_PDF.py", patch_conn).run()
+    assert not at.exception, at.exception
+    at.radio(key=chave).set_value("apos").run()
+    at.button(key="pdf_gerar").click().run()
+    assert not at.exception, at.exception
+    rel = db.listar_relatorios(patch_conn, emp_id)[0]
+    assert str(rel["periodo"])[:7] == "2026-04" and rel["meta"]["mes_ini"] == 3 and not rel["meta"].get("pendencias")
+    assert at.session_state["pdf_pronto"]["nome"].startswith("GDF_ANASTACIO_2026-04_desde-03_v1_")
+    import pdfplumber, io
+    with pdfplumber.open(io.BytesIO(at.session_state["pdf_pronto"]["bytes"])) as pdf:
+        txt = " ".join(pg.extract_text() or "" for pg in pdf.pages)
+    assert "n/d" not in txt and "28/02/2026" in txt
+    at.radio(key=chave).set_value("ate").run()                                               # até janeiro: relatório de 01/2026, sem sufixo
+    at.button(key="pdf_gerar").click().run()
+    assert not at.exception, at.exception
+    assert at.session_state["pdf_pronto"]["mes"] == "2026-01" and "_desde-" not in at.session_state["pdf_pronto"]["nome"]
+
+
 def test_versao_final_nao_trava_com_pendencias_e_fica_registrada(patch_conn):
     emp_id = _semear_ate(patch_conn)                                                         # 3 meses em RASCUNHO, sem assinantes
     at = _app("5_Relatorio_PDF.py", patch_conn).run()
@@ -713,7 +752,7 @@ def _acumulado_ate(patch_conn, emp_id, ate_mes):
     from test_fontes import _acum
     per = {}
     for m in range(1, ate_mes + 1):
-        ult = {1: "31", 2: "28", 3: "31"}[m]
+        ult = {1: "31", 2: "28", 3: "31", 4: "30"}[m]
         per[f"2026-{m:02d}"] = I.ler_bytes(csv_texto(MESES[f"2026-{m:02d}"], cnpj=CNPJ, ini=f"01/{m:02d}/2026", fim=f"{ult}/{m:02d}/2026"), f"{m}.csv")[1]
     ult = {1: "31", 2: "28", 3: "31"}[ate_mes]
     cab, _ = I.ler_bytes(csv_texto(MESES[f"2026-{ate_mes:02d}"], cnpj=CNPJ, ini="01/01/2026", fim=f"{ult}/{ate_mes:02d}/2026"), "acum.csv")

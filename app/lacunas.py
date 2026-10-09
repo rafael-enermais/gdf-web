@@ -10,6 +10,7 @@ import streamlit as st
 
 import db
 import fontes
+import formatacao as F
 import motor
 
 
@@ -72,9 +73,48 @@ def mostrar_lacunas(dados: dict, expandido: bool = True) -> None:
     for n in dados["notas"]:
         st.caption(n)
     if dados["fontes"]:
-        ROT = {"bp_abertura": "Balanço — 31/12 anterior", "bp_ant": "Balanço — mês anterior", "bp_ref": "Balanço — mês de referência",
-               "dre_ate_ant": "DRE — acumulado até o mês anterior", "dre_mes": "DRE — mês", "dre_acum": "DRE — acumulado do ano"}
+        per = dados.get("ini", 1) > 1
+        ROT = {"bp_abertura": "Balanço — abertura do período" if per else "Balanço — 31/12 anterior", "bp_ant": "Balanço — mês anterior", "bp_ref": "Balanço — mês de referência",
+               "dre_ate_ant": "DRE — acumulado até o mês anterior", "dre_mes": "DRE — mês", "dre_acum": "DRE — acumulado do período" if per else "DRE — acumulado do ano"}
         with st.expander("De onde vêm os números"):
             for k in ROT:
                 if k in dados["fontes"]:
                     st.markdown(f"- **{ROT[k]}:** {dados['fontes'][k]}")
+
+
+_AB = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
+
+
+def escolher_periodo(conn, empresa_id: int, mes_ref: str, dados: dict, key: str) -> tuple:
+    """Quando faltam balancetes mensais no ano, deixa a usuária escolher COMO gerar (nada trava, e cada caminho diz o que entrega):
+    ano completo com n/d · só o período depois da lacuna · até o último mês completo antes da lacuna.
+    Devolve (mês de referência a usar, 1º mês do período, dados calculados para essa escolha)."""
+    import contexto
+    op = fontes.opcoes_periodo(dados, mes_ref)
+    if not op:
+        return mes_ref, 1, dados
+    ano, M = mes_ref[:4], int(mes_ref[5:7])
+    faltam = ", ".join(F.mes_br(m) for m in op["faltam"])
+    descr = {"ano": (f"Ano completo (jan–{_AB[M - 1]}/{ano}), com n/d onde faltar",
+                     f"Mostra o ano todo. A DRE acumulada e o que depende dela ficam **n/d** por falta de {faltam}; o Balanço sai completo. Quando importar o que falta, basta gerar de novo.")}
+    if op["apos"]:
+        s = int(op["apos"][5:7])
+        descr["apos"] = ((f"Só o período depois da lacuna: {_AB[s - 1]}–{_AB[M - 1]}/{ano}" if s < M else f"Só {_AB[M - 1]}/{ano} (o mês depois da lacuna)") + " — completo, sem n/d",
+                         f"Balanço com abertura no fim de {_AB[s - 2]}/{ano} e DRE somando só {'os meses de ' + _AB[s - 1] + ' a ' + _AB[M - 1] if s < M else _AB[M - 1]}. "
+                         f"O resultado de jan–{_AB[s - 2]} não entra nas colunas de resultado (já está no patrimônio líquido de abertura). O relatório diz isso na página “Fontes dos números”.")
+    if op["ate"]:
+        e = int(op["ate"][5:7])
+        descr["ate"] = (f"Até o último mês completo: jan–{_AB[e - 1]}/{ano} (relatório de {F.mes_br(op['ate'])}) — completo, sem n/d",
+                        f"Gera o relatório de {F.mes_br(op['ate'])}, que tem todos os meses de janeiro a {_AB[e - 1]}. O mês {F.mes_br(mes_ref)} não entra.")
+    st.warning(f"**Faltam os balancetes mensais de {faltam}.** Escolha como gerar este relatório (nada trava):")
+    esc = st.radio("Período do relatório", list(descr), format_func=lambda k: descr[k][0], key=f"{key}_per_{empresa_id}_{mes_ref}")
+    st.caption(descr[esc][1])
+    try:
+        if esc == "apos":
+            ini = int(op["apos"][5:7])
+            return mes_ref, ini, contexto.carregar(conn, empresa_id, mes_ref, ini)
+        if esc == "ate":
+            return op["ate"], 1, contexto.carregar(conn, empresa_id, op["ate"])
+    except motor.ErroDados as exc:
+        st.error(str(exc))
+    return mes_ref, 1, dados

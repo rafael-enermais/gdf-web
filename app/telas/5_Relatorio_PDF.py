@@ -40,6 +40,7 @@ try:
 except motor.ErroDados as exc:
     st.error(str(exc))
     st.stop()
+mes_ref, mes_ini, dados = lacunas.escolher_periodo(conn, emp["id"], mes_ref, dados, "pdf")      # faltando mês: ano completo / só depois da lacuna / até o último completo
 b, bp, d, mapa, periodos, falhas = dados["b"], dados["bp"], dados["d"], dados["mapa"], dados["periodos"], dados["falhas"]
 
 n_rev, n_ras, pend_ras = contexto.status_usados(dados, contexto.status_por_periodo(conn, emp["id"]))
@@ -67,7 +68,7 @@ with st.expander("Textos de leitura (editáveis)"):
     textos = {}
     for k, rot in ROT.items():
         if k in padrao and padrao[k]:
-            kk = f"txt_{emp['id']}_{mes_ref}_{k}_{hashlib.md5(padrao[k].encode()).hexdigest()[:6]}"
+            kk = f"txt_{emp['id']}_{mes_ref}_{mes_ini}_{k}_{hashlib.md5(padrao[k].encode()).hexdigest()[:6]}"
             textos[k] = st.text_area(rot, value=padrao[k], key=kk, height=110)
     editados = {k: v for k, v in textos.items() if v.strip() and v.strip() != padrao[k].strip()}
 st.subheader("Assinantes")
@@ -97,6 +98,7 @@ final_liberado = final_ok or final_forcar
 ids_usados = sorted(db.ids_importacoes_mensais(conn, emp["id"], mes_ref) + (db.ids_importacoes_acumuladas(conn, emp["id"], dados["usados_acum"]) if dados["fonte"] != "completo" else []))
 regras = db.ids_regras_ativas(conn, emp["id"])
 periodo_rel = date(int(mes_ref[:4]), int(mes_ref[5:7]), 1)
+rot_per = "" if mes_ini == 1 else f" (período a partir de {mes_ini:02d}/{mes_ref[:4]})"
 
 
 def _gerar(status: str, pendencias=None):
@@ -108,19 +110,19 @@ def _gerar(status: str, pendencias=None):
         sha = hashlib.sha256(pdf).hexdigest()
         rid, ver = db.registrar_relatorio(conn, emp["id"], periodo_rel, sha, editados, assinantes, usuario,
                                           {"importacoes": ids_usados, "mapa": regras["mapa"], "apelidos": regras["apelidos"], "importacoes_revisadas": n_rev, "importacoes_rascunho": n_ras, "conferencias_falhas": len(falhas), **({"pendencias": pendencias} if pendencias else {}), **({"lacunas": [l["onde"] for l in dados["lacunas"]]} if dados["lacunas"] else {}),
-                                           "fonte": dados["fonte"]},
+                                           "fonte": dados["fonte"], "mes_ini": mes_ini},
                                           status=status, versao=ver)
         marca = "RASCUNHO" if status == "RASCUNHO" else "FINAL"
         if pendencias:
-            db.registrar_evento(conn, "relatorio", "aviso", f"Relatório {mes_ref} v{ver}: versão final gerada com pendências — " + "; ".join(pendencias),
+            db.registrar_evento(conn, "relatorio", "aviso", f"Relatório {mes_ref}{rot_per} v{ver}: versão final gerada com pendências — " + "; ".join(pendencias),
                                 empresa_id=emp["id"], usuario=usuario)
         if dados["lacunas"]:
-            db.registrar_evento(conn, "relatorio", "aviso", f"Relatório {mes_ref} v{ver} ({status.lower()}) gerado com n/d em: " + "; ".join(l["onde"] for l in dados["lacunas"]),
+            db.registrar_evento(conn, "relatorio", "aviso", f"Relatório {mes_ref}{rot_per} v{ver} ({status.lower()}) gerado com n/d em: " + "; ".join(l["onde"] for l in dados["lacunas"]),
                                 empresa_id=emp["id"], usuario=usuario)
-        st.session_state["pdf_pronto"] = {"bytes": pdf, "nome": f"GDF_{emp['codigo']}_{mes_ref}_v{ver}_{marca}.pdf", "ver": ver, "sha": sha, "mes": mes_ref,
+        st.session_state["pdf_pronto"] = {"bytes": pdf, "nome": f"GDF_{emp['codigo']}_{mes_ref}{('_desde-%02d' % mes_ini) if mes_ini > 1 else ''}_v{ver}_{marca}.pdf", "ver": ver, "sha": sha, "mes": mes_ref,
                                           "emp": emp["id"], "status": status}
     except Exception as exc:
-        db.registrar_evento(conn, "relatorio", "erro", f"Falha ao gerar PDF {mes_ref}: {exc}", empresa_id=emp["id"], usuario=usuario)
+        db.registrar_evento(conn, "relatorio", "erro", f"Falha ao gerar PDF {mes_ref}{rot_per}: {exc}", empresa_id=emp["id"], usuario=usuario)
         st.error(f"Não consegui gerar o PDF ({exc}). Nada foi alterado nos dados.")
 
 
@@ -154,8 +156,11 @@ if rels:
         if "mapa" in meta and (meta["mapa"] != regras["mapa"] or meta.get("apelidos") != regras["apelidos"]):
             return "desatualizados (mapa de contas ou apelidos mudaram depois)"
         return "atuais"
+    def _periodo(r):
+        i = int((r["meta"] or {}).get("mes_ini", 1) or 1)
+        return f"jan–{relatorio_dados.MESES_ABREV[int(mes_ref[5:7]) - 1].lower()}" if i == 1 else f"{relatorio_dados.MESES_ABREV[i - 1].lower()}–{relatorio_dados.MESES_ABREV[int(mes_ref[5:7]) - 1].lower()} (só o período)"
     st.markdown("**Relatórios já gerados deste mês**")
-    st.dataframe(pd.DataFrame([{"Versão": f"v{r['versao']}", "Status": r["status"], "Dados": _dados(r), "Gerado por": r["gerado_por"],
+    st.dataframe(pd.DataFrame([{"Versão": f"v{r['versao']}", "Período": _periodo(r), "Status": r["status"], "Dados": _dados(r), "Gerado por": r["gerado_por"],
                                 "Em": fmt_br(r["gerado_em"]), "Código": (r["pdf_sha256"] or "")[:8]} for r in rels]),
                  hide_index=True, width="stretch")
     finais = [r for r in rels if r["status"] in ("REVISADO", "ASSINADO")]

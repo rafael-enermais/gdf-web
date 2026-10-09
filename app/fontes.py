@@ -16,6 +16,8 @@ Caminhos (do melhor para o alternativo):
   DRE janeiro..k ...... soma dos mensais  >  acumulado ate' k  >  acumulado ate' x (x<k) + mensais x+1..k
   DRE do mes M ........ mensal de M  >  acumulado ate' M - DRE janeiro..M-1
   DRE janeiro..M-1 .... (como janeiro..k)  >  acumulado ate' M - mensal de M
+Periodo do relatorio: por padrao o ano inteiro (janeiro..M). Com `mes_ini` > 1 o relatorio cobre so' o periodo mes_ini..M (util quando falta um mes no
+meio do ano): a abertura passa a ser a posicao no fim de mes_ini-1 (coluna "saldo anterior" do mensal de mes_ini) e a DRE soma so' os meses mes_ini..M.
 So' entra um acumulado se ele for coerente com o balancete mensal vizinho (saldo final do acumulado = saldo anterior do mes seguinte);
 se nao for, ele e' deixado de lado e o motivo aparece nas lacunas.
 """
@@ -38,6 +40,11 @@ def _br(m: str) -> str:
 def _jan_ate(m: str) -> str:
     """'2026-07' -> 'jan–07/2026'."""
     return f"jan–{m[5:7]}/{m[:4]}" if m[5:7] != "01" else f"01/{m[:4]}"
+
+
+def _rot_acum(ini: int, k: int) -> str:
+    """'Jan–Abr' (ou so' 'Abr' quando o periodo tem um mes)."""
+    return f"{_NOME_ABREV(ini)}–{_NOME_ABREV(k)}" if k > ini else _NOME_ABREV(k)
 
 
 def _lista(ms) -> str:
@@ -78,8 +85,8 @@ def _comb(a: dict, b: dict, sinal: int) -> dict:
 
 
 class _Calculo:
-    def __init__(self, mo: dict, ac: dict, mapa, ano: str):
-        self.mo, self.ac, self.mapa, self.ano = mo, ac, mapa, ano
+    def __init__(self, mo: dict, ac: dict, mapa, ano: str, ini: int = 1):
+        self.mo, self.ac, self.mapa, self.ano, self.ini = mo, ac, mapa, ano, ini
         self._seg_m, self._seg_a, self._ate, self.incoerencias = {}, {}, {}, []
         self._ok_acum: dict = {}
 
@@ -123,23 +130,23 @@ class _Calculo:
             self._ok_acum[x] = ok
         return self._ok_acum[x]
 
-    # ---- DRE acumulada de janeiro a k
+    # ---- DRE acumulada do inicio do periodo (janeiro, por padrao) ate' o mes k
     def acum_ate(self, k: int):
         """(DRE bruta, descricao, meses mensais usados, acumulados usados) ou None quando nao da' para calcular."""
         if k in self._ate:
             return self._ate[k]
         res = None
-        if k == 0:
+        if k == self.ini - 1:
             zero = {key: 0.0 for key in self.seg_acum_vazio()}
-            res = (zero, "início do ano (sem movimento)", [], [])
+            res = (zero, "início do ano (sem movimento)" if self.ini == 1 else f"início do período (antes de {_br(_mk(self.ano, self.ini))}, sem movimento)", [], [])
         else:
-            meses = [_mk(self.ano, i) for i in range(1, k + 1)]
+            meses = [_mk(self.ano, i) for i in range(self.ini, k + 1)]
             if all(m in self.mo for m in meses):
                 bruta = None
                 for m in meses:
                     bruta = self.seg_mes(m) if bruta is None else _comb(bruta, self.seg_mes(m), 1)
-                res = (bruta, f"soma dos balancetes mensais de {_br(meses[0])} a {_br(meses[-1])}" if k > 1 else f"balancete mensal de {_br(meses[0])}", meses, [])
-            else:
+                res = (bruta, f"soma dos balancetes mensais de {_br(meses[0])} a {_br(meses[-1])}" if k > self.ini else f"balancete mensal de {_br(meses[0])}", meses, [])
+            elif self.ini == 1:
                 for x in sorted((x for x in self.ac if int(x[5:7]) <= k), reverse=True):
                     resto = [_mk(self.ano, i) for i in range(int(x[5:7]) + 1, k + 1)]
                     if all(m in self.mo for m in resto) and self.acum_coerente(x):
@@ -162,18 +169,25 @@ def _col_bp(contas, per, mapa):
     return motor.coluna_bp(Balancetes({per: contas}, mapa), per)
 
 
-def calcular(mensais: dict, acumulados: dict, mapa, mes_ref: str) -> dict:
-    """Tudo do mes_ref, com o que existir. Levanta ErroDados so' quando nao ha' nenhum balancete (mensal ou acumulado) desse mes."""
+def calcular(mensais: dict, acumulados: dict, mapa, mes_ref: str, mes_ini: int = 1) -> dict:
+    """Tudo do mes_ref, com o que existir. Levanta ErroDados so' quando nao ha' nenhum balancete (mensal ou acumulado) desse mes.
+    `mes_ini` (1 = ano inteiro) = primeiro mes do periodo do relatorio; acima de 1, exige o balancete mensal desse mes (traz a abertura do periodo)."""
     ano, M = mes_ref[:4], int(mes_ref[5:7])
+    ini = int(mes_ini or 1)
+    if not 1 <= ini <= M:
+        raise ErroDados(f"O período do relatório começa em um mês inválido ({ini}) para {_br(mes_ref)}.")
     mo = {m: v for m, v in mensais.items() if m[:4] == ano and m <= mes_ref}
     ac = {m: v for m, v in acumulados.items() if m[:4] == ano and m <= mes_ref}
     if mes_ref not in mo and mes_ref not in ac:
         raise ErroDados(f"Não há balancete (mensal ou acumulado) ativo para {_br(mes_ref)}. Importe um deles em **Importar balancete**.")
-    K = _Calculo(mo, ac, mapa, ano)
+    if ini > 1 and _mk(ano, ini) not in mo:
+        raise ErroDados(f"Para o relatório a partir de {_br(_mk(ano, ini))} é preciso o balancete mensal desse mês (dele vem o saldo de abertura do período).")
+    K = _Calculo(mo, ac, mapa, ano, ini)
     mapa_n = motor.normalizar_mapa(mapa) if mapa else None
-    jan, ant = _mk(ano, 1), (motor._mes_anterior(mes_ref) if M > 1 else mes_ref)
-    meses_ano = [_mk(ano, i) for i in range(1, M + 1)]
+    jan, ant = _mk(ano, 1), (motor._mes_anterior(mes_ref) if M > ini else mes_ref)
+    meses_ano = [_mk(ano, i) for i in range(ini, M + 1)]                  # meses do periodo do relatorio (o ano todo quando ini = 1)
     faltam_mensais = [m for m in meses_ano if m not in mo]
+    faltam_ano = [_mk(ano, i) for i in range(1, M + 1) if _mk(ano, i) not in mo]
     fontes, lacunas, notas = {}, [], []
     usa_mensais, usa_acum = set(), set()
 
@@ -189,7 +203,7 @@ def calcular(mensais: dict, acumulados: dict, mapa, mes_ref: str) -> dict:
         col_ref, fontes["bp_ref"] = _col_bp(ac[mes_ref], mes_ref, mapa), f"balancete acumulado {_jan_ate(mes_ref)} (não há o mensal de {_br(mes_ref)})"
         usa_acum.add(mes_ref)
     # posicao em M-1
-    if M == 1:
+    if M == ini:
         col_ant = None                                         # preenchido com a abertura mais abaixo
     elif ant in mo:
         col_ant, fontes["bp_ant"] = _col_bp(mo[ant], ant, mapa), f"balancete mensal de {_br(ant)}"
@@ -206,8 +220,13 @@ def calcular(mensais: dict, acumulados: dict, mapa, mes_ref: str) -> dict:
         _nd(f"Balanço — coluna do mês anterior ({motor_data(ant)}) e os indicadores dessa data",
             f"não há o balancete mensal de {_br(ant)}, nem o de {_br(mes_ref)} (que traria esse saldo), nem um acumulado até {_br(ant)}",
             f"importe o balancete mensal de {_br(mes_ref)} ou o de {_br(ant)} (ou o acumulado até {_br(ant)})")
-    # abertura
-    if jan in mo:
+    # abertura (31/12 do ano anterior; num periodo que comeca depois de janeiro, a posicao no fim do mes anterior ao inicio)
+    ini_m = _mk(ano, ini)
+    if ini > 1:
+        col_ab = motor.coluna_bp(Balancetes({ini_m: mo[ini_m]}, mapa), ini_m, True)
+        fontes["bp_abertura"] = f"“saldo anterior” do balancete mensal de {_br(ini_m)} (posição em {motor_data(motor._mes_anterior(ini_m))})"
+        usa_mensais.add(ini_m)
+    elif jan in mo:
         col_ab = motor.coluna_bp(Balancetes({jan: mo[jan]}, mapa), jan, True)
         fontes["bp_abertura"] = f"“saldo anterior” do balancete mensal de {_br(jan)}"
         usa_mensais.add(jan)
@@ -222,7 +241,7 @@ def calcular(mensais: dict, acumulados: dict, mapa, mes_ref: str) -> dict:
             _nd(f"Balanço — coluna de 31/12/{int(ano) - 1} (abertura) e os indicadores dessa data",
                 "o saldo de 31/12 só vem do balancete mensal de janeiro ou de um balancete acumulado do ano",
                 f"importe o balancete mensal de {_br(jan)} ou um acumulado de janeiro em diante")
-    if M == 1:                                                  # o 'mes anterior' de janeiro e' dezembro = a propria abertura
+    if M == ini:                                                # o 'mes anterior' do 1o mes do periodo e' o fim do mes anterior ao inicio = a propria abertura
         col_ant = col_ab
         if col_ab is not None:
             fontes["bp_ant"] = fontes["bp_abertura"]
@@ -251,13 +270,16 @@ def calcular(mensais: dict, acumulados: dict, mapa, mes_ref: str) -> dict:
     d = {"ate_mes_ant": _pronta(ate_ant[0]) if ate_ant else None, "mes": _pronta(mes_b[0]) if mes_b else None,
          "acumulado": _pronta(ac_M[0]) if ac_M else None}
     if d["acumulado"] is None:
-        _nd(f"DRE — coluna “Acumulado jan–{_NOME_ABREV(M)}” e os indicadores de resultado",
-            "a DRE do ano precisa dos balancetes de todos os meses (ou de um balancete acumulado que cubra os que faltam)",
-            (f"importe o balancete acumulado de janeiro a {_br(mes_ref)} (um único arquivo resolve) ou os mensais que faltam: {_lista(faltam_mensais)}"))
-    if d["ate_mes_ant"] is None and M > 1:
-        _nd(f"DRE — coluna “Jan–{_NOME_ABREV(M - 1)}” (acumulado até o mês anterior)",
-            f"faltam os balancetes de {_lista([m for m in meses_ano[:-1] if m not in mo])}, e não há acumulado que cubra esse período",
-            f"importe o acumulado de janeiro a {_br(ant)} ou os mensais que faltam: {_lista([m for m in meses_ano[:-1] if m not in mo])}")
+        _nd(f"DRE — coluna “Acumulado {_rot_acum(ini, M)}” e os indicadores de resultado",
+            "a DRE do ano precisa dos balancetes de todos os meses (ou de um balancete acumulado que cubra os que faltam)" if ini == 1
+            else "a DRE do período precisa dos balancetes mensais de todos os meses dele",
+            (f"importe o balancete acumulado de janeiro a {_br(mes_ref)} (um único arquivo resolve) ou os mensais que faltam: {_lista(faltam_mensais)}" if ini == 1
+             else f"importe os mensais que faltam: {_lista(faltam_mensais)}"))
+    if d["ate_mes_ant"] is None and M > ini:
+        _nd(f"DRE — coluna “{_rot_acum(ini, M - 1)}” (acumulado até o mês anterior)",
+            f"faltam os balancetes de {_lista([m for m in meses_ano[:-1] if m not in mo])}" + (", e não há acumulado que cubra esse período" if ini == 1 else ""),
+            (f"importe o acumulado de janeiro a {_br(ant)} ou os mensais que faltam: " if ini == 1 else "importe os mensais que faltam: ")
+            + _lista([m for m in meses_ano[:-1] if m not in mo]))
     if d["mes"] is None:
         _nd(f"DRE — coluna do mês ({_br(mes_ref)})",
             f"não há o balancete mensal de {_br(mes_ref)} e faltam os acumulados para obter o mês por diferença",
@@ -266,6 +288,9 @@ def calcular(mensais: dict, acumulados: dict, mapa, mes_ref: str) -> dict:
         _nd("Balancete acumulado", inc, "confira o arquivo acumulado (período e CNPJ) e importe novamente, ou use os balancetes mensais")
     bp = {"abertura": col_ab, "mes_ant": col_ant, "mes_ref": col_ref}
 
+    if ini > 1:
+        notas.append(f"Este relatório cobre só o período de {_br(ini_m)} a {_br(mes_ref)}: a abertura é a posição de {motor_data(motor._mes_anterior(ini_m))} e a DRE soma apenas esses meses. "
+                     f"O resultado dos meses anteriores não entra nas colunas de resultado (ele já está no patrimônio líquido de abertura).")
     usados_acum_ids = sorted(usa_acum)
     if faltam_mensais and fonte_ok(bp, d):
         notas.append(f"Não há balancete mensal de {_lista(faltam_mensais)}. Isso não impede o relatório: os números foram obtidos por outro caminho (veja “De onde vêm os números”), "
@@ -307,8 +332,23 @@ def calcular(mensais: dict, acumulados: dict, mapa, mes_ref: str) -> dict:
         pontos.append({"per": m, "bp": bm, "dre_mes": motor.dre_calcular(sm) if sm else (d["mes"] if m == mes_ref else None)})
     return {"mapa": mapa, "periodos": mo, "acumulados": ac, "b": b, "mes_ant": ant, "bp": bp, "d": d, "conf": conf,
             "falhas": [c for c in conf if not c["ok"]], "contas_ref": contas_ref, "fonte": fonte, "fontes": fontes,
-            "lacunas": lacunas, "notas": notas, "faltam_mensais": faltam_mensais, "pontos": pontos,
+            "lacunas": lacunas, "notas": notas, "faltam_mensais": faltam_mensais, "faltam_ano": faltam_ano, "ini": ini, "pontos": pontos,
             "usados_mensais": sorted(usa_mensais), "usados_acum": usados_acum_ids, "mensais_do_ano": sorted(mo)}
+
+
+def opcoes_periodo(dados: dict, mes_ref: str) -> dict | None:
+    """Caminhos para gerar o relatorio quando faltam meses (None = nada a oferecer: o ano completo ja' sai sem n/d).
+    {'faltam': meses sem balancete mensal de janeiro a M,
+     'ate': ultimo mes COMPLETO antes da lacuna (relatorio de janeiro ate' ele) ou None,
+     'apos': 1o mes depois da ultima lacuna (relatorio so' do periodo apos..M, com abertura no fim do mes anterior) ou None}."""
+    faltam = dados.get("faltam_ano") or []
+    if not dados["lacunas"] or not faltam or dados.get("ini", 1) != 1:
+        return None
+    ano, M = mes_ref[:4], int(mes_ref[5:7])
+    primeiro, ultimo = int(faltam[0][5:7]), int(faltam[-1][5:7])
+    ate = _mk(ano, primeiro - 1) if primeiro > 1 else None                  # janeiro..primeiro-1 tem todos os mensais
+    apos = _mk(ano, ultimo + 1) if ultimo < M else None                      # ultimo+1..M tem todos os mensais (o mes M entra se tiver mensal)
+    return {"faltam": faltam, "ate": ate, "apos": apos}
 
 
 def fonte_ok(bp: dict, d: dict) -> bool:
