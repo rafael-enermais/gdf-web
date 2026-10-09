@@ -573,3 +573,56 @@ def test_tela_assinatura_opcional_sem_trava(patch_conn):
         at.run()
         at.button(key="ass_desfazer").click().run()
     assert {r["id"]: r for r in db.listar_relatorios(patch_conn, emp_id)}[rid]["status"] == "REVISADO"
+
+
+def test_categorias_do_log():
+    import logui
+    assert logui.categoria_evento("importar", "x") == "Importações" and logui.categoria_evento("historico", "x") == "Importações"
+    assert logui.categoria_evento("relatorio", "Relatório 08/2026 v1 gerado (RASCUNHO)") == "Relatórios"
+    assert logui.categoria_evento("relatorio", "Configuração do relatório da empresa atualizada (assinantes)") == "Edições"
+    assert logui.categoria_evento("mapa", "x") == "Edições" and logui.categoria_evento("composicao", "x") == "Edições"
+    assert logui.categoria_evento("outra", "x") == "Outros"
+
+
+def test_importar_mostra_log_e_registra_tentativas_sem_repetir(patch_conn):
+    v1 = _Upload("jan.csv", csv_texto(MESES["2026-01"], cnpj=CNPJ, ini="01/01/2026", fim="31/01/2026"))
+    at = _importar(patch_conn, [])
+    assert not at.exception, at.exception
+    assert any("Log de importação" in s.value for s in at.subheader)           # painel aparece mesmo sem arquivo
+    at = _importar(patch_conn, [v1])
+    with patch("streamlit.file_uploader", return_value=[v1]):
+        [b for b in at.button if "Importar 1 arquivo" in b.label][0].click().run()
+    assert not at.exception
+    patch_conn.cursor().execute("DELETE FROM evento WHERE mensagem LIKE '%%já estava importado%%'")   # (o mock do uploader nao limpa apos importar)
+    at = _importar(patch_conn, [v1])                                          # reenvio: nada importa, mas fica no log
+    with patch("streamlit.file_uploader", return_value=[v1]):
+        at.run()
+        at.run()                                                              # rerun (qualquer clique) nao repete a linha
+    assert not at.exception, at.exception
+    emp = db.empresa_por_cnpj(patch_conn, CNPJ)
+    msgs = [e["mensagem"] for e in db.listar_eventos(patch_conn, emp["id"])]
+    assert len([m for m in msgs if "já estava importado" in m]) == 1, msgs
+    assert any(m.startswith("Importado jan.csv") for m in msgs)
+    # os dois quadros do painel tem conteudo (importacoes e eventos)
+    assert len(at.dataframe) >= 2
+
+
+def test_importar_arquivo_ilegivel_e_cnpj_desconhecido_vao_para_o_log_como_erro(patch_conn):
+    db.garantir_empresa(patch_conn, "ANASTACIO", "Anastácio Transmissora de Energia S.A.", CNPJ)
+    desconhecido = _Upload("x.csv", csv_texto(MESES["2026-01"], cnpj="11.111.111/0001-11", ini="01/01/2026", fim="31/01/2026"))
+    lixo = _Upload("lixo.csv", b"nada a ver")
+    _importar(patch_conn, [desconhecido, lixo])
+    erros = [e["mensagem"] for e in db.listar_eventos(patch_conn, None) if e["nivel"] == "erro"]
+    assert any("lixo.csv não foi lido" in m for m in erros) and any("CNPJ 11.111.111/0001-11 não cadastrado" in m for m in erros), erros
+
+
+def test_historico_log_por_categoria(patch_conn):
+    emp_id = _semear(patch_conn, meses=(1,))
+    db.registrar_evento(patch_conn, "importar", "erro", "Falha de teste", empresa_id=emp_id, usuario="u")
+    db.registrar_evento(patch_conn, "relatorio", "info", "Relatório 01/2026 v1 gerado (RASCUNHO)", empresa_id=emp_id, usuario="u")
+    db.registrar_evento(patch_conn, "mapa", "aviso", "Mapa de contas: linha 'x' alterada — teste", empresa_id=emp_id, usuario="u")
+    at = _app("3_Historico.py", patch_conn).run()
+    assert not at.exception, at.exception
+    rotulos = [t.label for t in at.tabs]
+    for esperado in ("Todos (", "Importações (", "Relatórios (1)", "Edições (1)", "Erros e avisos (2)"):
+        assert any(r.startswith(esperado) or r == esperado for r in rotulos), (esperado, rotulos)
