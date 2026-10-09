@@ -367,16 +367,16 @@ def p_capa(c, n, N):
 @pagina
 def p_destaques(c, n, N):
     moldura(c, n, N, "Destaques do Período")
-    ate = f"Jan–{X['mes_abrev']}" if X["mes"] > 1 else "Jan"
+    ate = X["acum_rot"]
     y = titulo(c, TOPY, "Destaques em " + X["data_base"], E("nome") + " — " + X["periodo"].lower())
     ativo, caixa, caixa0 = BP("ativo"), BP("caixa_eq"), BP("caixa_eq", 0)
     divb, divl = IN("div_bruta"), IN("div_liquida")
     cw2 = (CW - 12) / 2
-    sub_res = "Custos de construção sem a receita correspondente (ver nota na página 4)" if E("nota_resultado") else "Resultado líquido acumulado do ano"
-    kpi(c, MX, y, cw2, 66, f"Resultado líquido {ate.lower()}", mmx(DR("res_liq")), sub_res if not nd(DR("res_liq")) else "n/d: faltam balancetes para o acumulado do ano", dark=True, vsize=19)
+    sub_res = "Custos de construção sem a receita correspondente (ver nota na página 4)" if E("nota_resultado") else f"Resultado líquido acumulado {X['escopo']}"
+    kpi(c, MX, y, cw2, 66, f"Resultado líquido {ate.lower()}", mmx(DR("res_liq")), sub_res if not nd(DR("res_liq")) else f"n/d: faltam balancetes para o acumulado {X['escopo']}", dark=True, vsize=19)
     kpi(c, MX + cw2 + 12, y, cw2, 66, "Caixa e equivalentes", mm(caixa),
         (f"Variação de {mm(caixa - caixa0, 2, True)} desde {X['abertura']}" + (f" ({pct(razao(caixa - caixa0, abs(caixa0)))})" if abs(caixa0) >= 0.005 else ""))
-        if not nd(caixa0) else f"Variação desde {X['abertura']}: n/d (falta o saldo de 31/12)", vsize=19)
+        if not nd(caixa0) else f"Variação desde {X['abertura']}: n/d (falta o saldo de abertura)", vsize=19)
     y -= 78
     cw3 = (CW - 24) / 3
     conc = BP("conc_liq")
@@ -482,7 +482,7 @@ def p_evolucao(c, n, N):
 def p_resultado(c, n, N):
     S = X["serie"]
     moldura(c, n, N, "Formação do Resultado")
-    y = titulo(c, TOPY, f"Formação do resultado de janeiro a {X['mes_nome']}/{X['ano']}" if X["mes"] > 1 else f"Formação do resultado de janeiro/{X['ano']}",
+    y = titulo(c, TOPY, f"Formação do resultado de {X['periodo_ext']}/{X['ano']}",
                "Da receita líquida ao resultado líquido do período — valores em R$ milhões")
     RES, RESF, CUSTO, OPEX = DR("res_liq"), DR("res_fin"), DR("custo_constr"), DR("desp_adm")
     et = [("Receita líquida (após deduções)", DR("rec_liq"), "total"), ("Custo de construção", CUSTO, "delta"),
@@ -521,10 +521,10 @@ _DRE_SUB = {"deducoes", "rec_liq", "custos_serv", "res_bruto", "desp_adm", "ebit
 def p_dre(c, n, N):
     moldura(c, n, N, "Demonstração do Resultado")
     mes, ano = X["mes"], X["ano"]
-    y = titulo(c, TOPY, "Demonstração do Resultado do Exercício", f"Em R$ — período de 01/01/{ano} a {X['data_base']} · contas de resultado encerradas mensalmente")
+    y = titulo(c, TOPY, "Demonstração do Resultado do Exercício", f"Em R$ — período de {('01/01/' + str(ano)) if X['ini'] == 1 else ('01/' + format(X['ini'], '02d') + '/' + str(ano))} a {X['data_base']} · contas de resultado encerradas mensalmente")
     cols = [(235, "l"), (92, "r"), (92, "r"), (96, "r")]
     ab = RD.MESES_ABREV
-    hdr = ["", (f"Jan–{ab[mes - 2]}/{ano}" if mes > 1 else "—"), f"{ab[mes - 1]}/{ano}", f"Acumulado Jan–{ab[mes - 1]}/{ano}" if mes > 1 else f"Acumulado Jan/{ano}"]
+    hdr = ["", (f"{X['ate_ant_rot']}/{ano}" if X["tem_ant"] else "—"), f"{ab[mes - 1]}/{ano}", f"Acumulado {X['acum_rot']}/{ano}"]
     rows = []
     for rotulo, lid, tipo in tabelas.DRE_LINHAS_EXIBIR:
         if tipo == "secao":
@@ -533,10 +533,10 @@ def p_dre(c, n, N):
         lab = X["rot"].get(lid, lid)
         if t == "norm": lab = "   " + lab
         v = X["dre"][lid]
-        rows.append((t, [(lab, None), num_cell(v[0], 2, t == "tot") if mes > 1 else ("–", None), num_cell(v[1], 2, t == "tot"), num_cell(v[2], 2, t == "tot")]))
+        rows.append((t, [(lab, None), num_cell(v[0], 2, t == "tot") if X["tem_ant"] else ("–", None), num_cell(v[1], 2, t == "tot"), num_cell(v[2], 2, t == "tot")]))
     y = tabela(c, MX, y, cols, hdr, rows, rh=13.6, fs=7.2)
     y -= 12
-    notas = [f"(1) Resultado acumulado = resultado dos meses anteriores + resultado de {X['mes_nome']}; as contas de resultado de cada mês são encerradas no próprio mês."]
+    notas = [f"(1) Resultado acumulado = resultado dos meses anteriores {'do período ' if X['ini'] > 1 else ''}+ resultado de {X['mes_nome']}; as contas de resultado de cada mês são encerradas no próprio mês."]
     if E("nota_resultado"):
         notas.append("(2) " + E("nota_resultado"))
     if not nd(X["ajustes"]) and abs(X["ajustes"]) >= 0.005:
@@ -601,7 +601,7 @@ _BP_SUB = {"caixa_eq", "ac", "rlp", "conc_liq", "anc", "pc", "pnc", "pl"}
 def p_balanco(c, n, N):
     moldura(c, n, N, "Balanço Patrimonial")
     yy = str(X["ano"])[2:]; yy0 = str(X["ano"] - 1)[2:]; ab = X["mes_abrev"].lower()
-    y = titulo(c, TOPY, "Balanço Patrimonial", f"Em R$ — posição em {X['abertura']}, {X['data_ant']} e {X['data_base']} · variação entre dezembro/{yy0} e {ab}/{yy}")
+    y = titulo(c, TOPY, "Balanço Patrimonial", f"Em R$ — posição em {X['abertura']}, {X['data_ant']} e {X['data_base']} · variação entre {X['abertura_rot'].lower()} e {ab}/{yy}")
     cols = [(188, "l"), (66, "r"), (66, "r"), (66, "r"), (66, "r"), (63, "r")]
 
     def bloco(linhas):
@@ -614,7 +614,7 @@ def p_balanco(c, n, N):
             v = X["bp"][lid]
             out.append((t, [(("   " + lab) if t == "norm" else lab, None)] + [num_cell(v[i], 2, t == "tot") for i in range(4)] + [(varp(v[4]), None if t != "tot" else WHITE)]))
         return out
-    hdr = ["ATIVO", X["abertura"], X["data_ant"], X["data_base"], f"Var. R$ dez/{yy0} a {ab}/{yy}", "Var. %"]
+    hdr = ["ATIVO", X["abertura"], X["data_ant"], X["data_base"], f"Var. R$ {X['abertura_rot'].lower()} a {ab}/{yy}", "Var. %"]
     y = tabela(c, MX, y, cols, hdr, bloco(tabelas.BP_ATIVO_LINHAS), rh=11.3, fs=6.8, head_h=22)
     y -= 8
     hdr2 = ["PASSIVO E PATRIMÔNIO LÍQUIDO"] + hdr[1:]
@@ -629,7 +629,7 @@ def p_indicadores(c, n, N):
     moldura(c, n, N, "Indicadores")
     y = titulo(c, TOPY, "Indicadores econômico-financeiros", "Calculados a partir do Balanço Patrimonial e da DRE · com explicação em linguagem simples")
     cw4 = (CW - 24) / 4
-    ab0 = f"Dez/{str(X['ano'] - 1)[2:]}"
+    ab0 = X["abertura_rot"]
     for i, (a, b_, d_) in enumerate([("Liquidez corrente", xx(IN("liq_corrente")), f"{ab0}: {xx(IN('liq_corrente', 0))}"),
                                      ("Dívida líquida", mm(IN("div_liquida")), f"{ab0}: {mmx(IN('div_liquida', 0))}"),
                                      ("Capital circulante líquido", mm(IN("ccl")), f"{ab0}: {mmx(IN('ccl', 0))}"),
@@ -649,7 +649,7 @@ def p_indicadores(c, n, N):
             if k == "x": return (fnum(v) + "x", None)
             if k == "p": return (pct(v), NEG_TXT) if v < 0 else (pct(v), None)
             return (fnum(v / 1e6, 2) + " MM", NEG_TXT) if v < 0 else (fnum(v / 1e6, 2) + " MM", None)
-        rows.append(("ind", [(rotulo, None)] + [fm(v) for v in X["ind"][chave]] + [(RD.EXPLICACAO.get(chave, formula), GREY)]))
+        rows.append(("ind", [(rotulo, None)] + [fm(v) for v in X["ind"][chave]] + [(RD.EXPLICACAO.get(chave, formula).replace("{no_escopo}", X["no_escopo"]), GREY)]))
     y = tabela(c, MX, y, cols, hdr, rows, rh=14.5, fs=6.5, head_h=20)
     y -= 10
     caixa_nota(c, y, "Prazo médio de recebimento/pagamento (PMR, PMP) e cobertura do serviço da dívida (ICSD) não foram calculados enquanto não houver receita de construção/"
@@ -687,19 +687,19 @@ def p_comp2(c, n, N):
 
 
 # ================================================================== 11. DADOS INCOMPLETOS / FONTES (so' entra quando ha' n/d ou numeros por outro caminho)
-_ROT_FONTES = {"bp_abertura": "Balanço — 31/12 anterior", "bp_ant": "Balanço — mês anterior", "bp_ref": "Balanço — mês de referência",
-               "dre_ate_ant": "DRE — acumulado até o mês anterior", "dre_mes": "DRE — mês", "dre_acum": "DRE — acumulado do ano"}
+_ROT_FONTES = {"bp_abertura": "Balanço — abertura", "bp_ant": "Balanço — mês anterior", "bp_ref": "Balanço — mês de referência",
+               "dre_ate_ant": "DRE — acumulado até o mês anterior", "dre_mes": "DRE — mês", "dre_acum": "DRE — acumulado do ano/período"}
 
 
 def _precisa_pagina_fontes():
-    return bool(X.get("lacunas")) or X.get("fonte", "completo") != "completo"
+    return bool(X.get("lacunas")) or X.get("fonte", "completo") != "completo" or X.get("ini", 1) > 1
 
 
 @pagina
 def p_lacunas(c, n, N):
     moldura(c, n, N, "Dados incompletos" if X.get("lacunas") else "Fontes dos números")
     y = titulo(c, TOPY, "Dados incompletos e fontes dos números" if X.get("lacunas") else "De onde vêm os números",
-               "O que não pôde ser calculado (n/d) e como cada coluna foi obtida" if X.get("lacunas") else "Como cada coluna do relatório foi obtida, já que faltam balancetes mensais")
+               "O que não pôde ser calculado (n/d) e como cada coluna foi obtida" if X.get("lacunas") else "Como cada coluna do relatório foi obtida" + (" — relatório de um período, não do ano inteiro" if X.get("ini", 1) > 1 else ", já que faltam balancetes mensais"))
     if X.get("lacunas"):
         y = secao(c, y, "O que ficou n/d — e como resolver")
         y = para(c, "Os itens abaixo aparecem como “n/d” neste relatório porque faltam balancetes. Nenhum valor foi estimado: o que está calculado está correto e "
@@ -715,6 +715,9 @@ def p_lacunas(c, n, N):
         rows = [("ind", [(_ROT_FONTES[k], None), (fontes[k][:1].upper() + fontes[k][1:], None)]) for k in _ROT_FONTES if k in fontes]
         y = tabela(c, MX, y - 4, [(190, "l"), (325, "l")], ["Coluna do relatório", "Fonte"], rows, rh=14, fs=6.8, head_h=18)
         y -= 12
+    if X.get("ini", 1) > 1:
+        y = caixa_nota(c, y, f"Este relatório cobre só o período de {X['ini_nome']} a {X['mes_nome']} de {X['ano']}. A abertura é a posição de {X['abertura']} e a DRE soma apenas esses meses; "
+                       "o resultado dos meses anteriores não aparece nas colunas de resultado porque já está no patrimônio líquido de abertura.", size=7.4)
     if X.get("usa_acum"):
         caixa_nota(c, y, "Parte dos valores vem de balancete acumulado em vez da soma dos balancetes mensais. Totais e subtotais batem com a soma dos meses; "
                    "uma linha isolada da DRE pode ter diferença de centavos de classificação, porque o acumulado já traz os estornos líquidos.", size=7.4)
@@ -726,8 +729,8 @@ def p_fechamento(c, n, N):
     moldura(c, n, N, "Fechamento")
     y = titulo(c, TOPY, "Nota sobre este relatório")
     db = X["data_base"]
-    t1 = (f"Os valores deste relatório foram extraídos dos Balancetes Societários de 01/01/{X['ano']} a {db} da {E('nome')}, não auditados, e organizados em Balanço Patrimonial, "
-          f"Demonstração do Resultado, indicadores e composição de saldos. Os saldos patrimoniais correspondem à posição de {db}; o resultado é acumulado de janeiro a {X['mes_nome']}.")
+    t1 = (f"Os valores deste relatório foram extraídos dos Balancetes Societários de 01/{X.get('ini', 1):02d}/{X['ano']} a {db} da {E('nome')}, não auditados, e organizados em Balanço Patrimonial, "
+          f"Demonstração do Resultado, indicadores e composição de saldos. Os saldos patrimoniais correspondem à posição de {db}; o resultado é acumulado de {X['periodo_ext']}.")
     t3 = ("Indicadores (liquidez, endividamento, estrutura de capital) são medidas de apoio à gestão, calculadas a partir das demonstrações acima, e não substituem o parecer contábil. "
           "Os textos de leitura são gerados por modelo padronizado, preenchido com os valores das demonstrações, e podem ser ajustados pela contadora responsável antes da emissão.")
     for t_ in [t1] + ([E("nota_resultado")] if E("nota_resultado") else []) + [t3]:

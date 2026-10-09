@@ -99,10 +99,15 @@ def _nd(col, lid):
     return ND if col is None else F.num_br(col[lid])
 
 
-def tabela_balanco(bp: dict, mes_ref: str, mes_ant: str):
+def _rot_abertura(mes_ref: str, mes_ini: int = 1) -> str:
+    """Data da coluna de abertura: 31/12 do ano anterior, ou o fim do mes anterior ao inicio do periodo."""
+    ano = int(mes_ref[:4])
+    return f"31/12/{ano - 1}" if mes_ini <= 1 else _data_fim_mes(f"{ano}-{mes_ini - 1:02d}")
+
+
+def tabela_balanco(bp: dict, mes_ref: str, mes_ant: str, mes_ini: int = 1):
     """Duas tabelas (ativo, passivo+PL). Colunas: 31/12 anterior, mes anterior, mes atual, Var R$ e Var % (abertura -> atual)."""
-    ano_ant = int(mes_ref[:4]) - 1
-    cols = [f"31/12/{ano_ant}", _col_mes_ant(mes_ant, mes_ref), _data_fim_mes(mes_ref), "Var. R$", "Var. %"]
+    cols = [_rot_abertura(mes_ref, mes_ini), _col_mes_ant(mes_ant, mes_ref), _data_fim_mes(mes_ref), "Var. R$", "Var. %"]
     out = []
     for titulo, linhas in (("ATIVO", BP_ATIVO_LINHAS), ("PASSIVO E PATRIMÔNIO LÍQUIDO", BP_PASSIVO_LINHAS)):
         rows, estilos = [], []
@@ -118,23 +123,25 @@ def tabela_balanco(bp: dict, mes_ref: str, mes_ant: str):
     return out
 
 
-def tabela_dre(d: dict, mes_ref: str):
+def tabela_dre(d: dict, mes_ref: str, mes_ini: int = 1):
     ano, mes = mes_ref[:4], int(mes_ref[5:7])
     meses = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
-    c1 = f"Jan–{meses[mes - 2].capitalize()}/{ano}" if mes > 1 else "—"
-    cols = [c1, f"{meses[mes - 1].capitalize()}/{ano}", f"Acumulado Jan–{meses[mes - 1].capitalize()}/{ano}"]
+    ini = max(1, mes_ini)
+    tem_ant = mes > ini
+    ini_n = meses[ini - 1].capitalize()
+    c1 = (f"{ini_n}–{meses[mes - 2].capitalize()}/{ano}" if mes - 1 > ini else f"{ini_n}/{ano}") if tem_ant else "—"
+    cols = [c1, f"{meses[mes - 1].capitalize()}/{ano}", f"Acumulado {ini_n}–{meses[mes - 1].capitalize()}/{ano}" if tem_ant else f"Acumulado {ini_n}/{ano}"]
     rows, estilos = [], []
     for rot, lid, tipo in DRE_LINHAS_EXIBIR:
         if tipo == "secao":
             rows.append([rot, "", "", ""]); estilos.append("secao"); continue
-        rows.append([_rotulo(lid, rot), (_nd(d["ate_mes_ant"], lid) if mes > 1 else "–"), _nd(d["mes"], lid), _nd(d["acumulado"], lid)])
+        rows.append([_rotulo(lid, rot), (_nd(d["ate_mes_ant"], lid) if tem_ant else "–"), _nd(d["mes"], lid), _nd(d["acumulado"], lid)])
         estilos.append(tipo)
     return pd.DataFrame(rows, columns=["Demonstração do Resultado"] + cols), estilos
 
 
-def tabela_indicadores(bp: dict, d: dict, mes_ref: str, mes_ant: str):
-    ano_ant = int(mes_ref[:4]) - 1
-    cols = [f"31/12/{ano_ant}", _col_mes_ant(mes_ant, mes_ref), _data_fim_mes(mes_ref)]
+def tabela_indicadores(bp: dict, d: dict, mes_ref: str, mes_ant: str, mes_ini: int = 1):
+    cols = [_rot_abertura(mes_ref, mes_ini), _col_mes_ant(mes_ant, mes_ref), _data_fim_mes(mes_ref)]
     i0 = motor.indicadores(bp["abertura"], None)
     i1 = motor.indicadores(bp["mes_ant"], d["ate_mes_ant"])
     i2 = motor.indicadores(bp["mes_ref"], d["acumulado"])

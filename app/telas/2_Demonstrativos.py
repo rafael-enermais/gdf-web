@@ -32,6 +32,7 @@ try:
 except motor.ErroDados as exc:
     st.error(str(exc))
     st.stop()
+mes_ref, mes_ini, ctx_dados = lacunas.escolher_periodo(conn, emp["id"], mes_ref, ctx_dados, "dem")      # faltando mês: escolhe ano completo / só depois da lacuna / até o último completo
 mapa, periodos, b, mes_ant = ctx_dados["mapa"], ctx_dados["periodos"], ctx_dados["b"], ctx_dados["mes_ant"]
 bp, d, conf = ctx_dados["bp"], ctx_dados["d"], ctx_dados["conf"]
 
@@ -56,12 +57,12 @@ except Exception:      # fora do menu (testes isolados) o link nao existe
 
 aba_bp, aba_dre, aba_ind, aba_comp, aba_conf = st.tabs(["Balanço Patrimonial", "DRE", "Indicadores", "Composição de Saldos", "Conferências"])
 with aba_bp:
-    st.caption(f"Em R$ — posição em 31/12/{int(mes_ref[:4]) - 1}, {tabelas._data_fim_mes(mes_ant)} e {tabelas._data_fim_mes(mes_ref)}. O resultado do período compõe o patrimônio líquido.")
-    for df, est in tabelas.tabela_balanco(bp, mes_ref, mes_ant):
+    st.caption(f"Em R$ — posição em {tabelas._rot_abertura(mes_ref, mes_ini)}, {tabelas._data_fim_mes(mes_ant)} e {tabelas._data_fim_mes(mes_ref)}. O resultado do período compõe o patrimônio líquido.")
+    for df, est in tabelas.tabela_balanco(bp, mes_ref, mes_ant, mes_ini):
         st.dataframe(tabelas.estilizar(df, est), hide_index=True, width="stretch", height=min(35 * (len(df) + 1) + 3, 760))
 with aba_dre:
-    st.caption(f"Em R$ — período de 01/01/{mes_ref[:4]} a {tabelas._data_fim_mes(mes_ref)}.")
-    df, est = tabelas.tabela_dre(d, mes_ref)
+    st.caption(f"Em R$ — período de 01/{mes_ini:02d}/{mes_ref[:4]} a {tabelas._data_fim_mes(mes_ref)}.")
+    df, est = tabelas.tabela_dre(d, mes_ref, mes_ini)
     st.dataframe(tabelas.estilizar(df, est), hide_index=True, width="stretch", height=min(35 * (len(df) + 1) + 3, 1100))
     aj = d["acumulado"]["ajustes"] if d["acumulado"] else 0.0
     notas = ["A receita de construção e a remuneração do ativo de contrato são reconhecidas ao final do exercício e/ou na entrada em operação da obra "
@@ -71,8 +72,8 @@ with aba_dre:
     for n in notas:
         st.caption(n)
 with aba_ind:
-    st.caption("Calculados a partir do Balanço e da DRE. Resultados são acumulados no ano.")
-    df, est = tabelas.tabela_indicadores(bp, d, mes_ref, mes_ant)
+    st.caption("Calculados a partir do Balanço e da DRE. Resultados são acumulados " + ("no ano." if mes_ini == 1 else "no período do relatório."))
+    df, est = tabelas.tabela_indicadores(bp, d, mes_ref, mes_ant, mes_ini)
     st.dataframe(tabelas.estilizar(df, est), hide_index=True, width="stretch", height=min(35 * (len(df) + 1) + 3, 900))
     st.caption("PMR, PMP e ICSD não são calculados enquanto não houver receita de construção/remuneração reconhecida.")
 with aba_conf:
