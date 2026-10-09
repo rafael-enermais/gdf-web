@@ -159,6 +159,29 @@ def definir_ativo(conn, importacao_id: int, ativo: bool, usuario: str) -> None:
         _evento(cur, emp, "historico", "info", f"Importação #{importacao_id} {'reativada' if ativo else 'desfeita (inativa)'}", usuario, {"importacao_id": importacao_id})
 
 
+def reativar_trocando(conn, importacao_id: int, usuario: str) -> int | None:
+    """Reativa uma importacao inativa; se outra do mesmo periodo estiver ativa, ela e' inativada (fica guardada) na MESMA transacao.
+    Retorna o id da que foi inativada (ou None)."""
+    with transacao(conn):
+        with conn.cursor() as cur:
+            cur.execute("SELECT empresa_id, tipo, periodo_ini, periodo_fim, ativo FROM importacao WHERE id = %s", (importacao_id,))
+            r = cur.fetchone()
+            if not r:
+                raise ValueError("Importação não encontrada.")
+            emp, tipo, ini, fim, atual = r
+            if atual:
+                return None
+            cur.execute("SELECT id FROM importacao WHERE empresa_id=%s AND tipo=%s AND periodo_ini=%s AND periodo_fim=%s AND ativo AND id<>%s",
+                        (emp, tipo, ini, fim, importacao_id))
+            outra = cur.fetchone()
+            if outra:
+                cur.execute("UPDATE importacao SET ativo = false WHERE id = %s", (outra[0],))
+                _evento(cur, emp, "historico", "info", f"Importação #{outra[0]} desfeita (inativa) ao reativar a #{importacao_id}", usuario, {"importacao_id": outra[0]})
+            cur.execute("UPDATE importacao SET ativo = true WHERE id = %s", (importacao_id,))
+            _evento(cur, emp, "historico", "info", f"Importação #{importacao_id} reativada", usuario, {"importacao_id": importacao_id})
+    return outra[0] if outra else None
+
+
 def definir_status(conn, importacao_id: int, status: str, usuario: str) -> None:
     with conn.cursor() as cur:
         cur.execute("UPDATE importacao SET status = %s WHERE id = %s RETURNING empresa_id", (status, importacao_id))
