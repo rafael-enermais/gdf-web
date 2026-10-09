@@ -207,6 +207,17 @@ def ids_importacoes_mensais(conn, empresa_id: int, ate: str) -> list:
         return [r[0] for r in cur.fetchall()]
 
 
+def ids_regras_ativas(conn, empresa_id: int) -> dict:
+    """Ids das linhas ATIVAS do mapa de contas e dos apelidos. Editar uma dessas regras muda os numeros/nomes do relatorio sem mudar nenhum balancete;
+    o relatorio guarda esta 'foto' para a lista avisar 'desatualizado' quando as regras mudarem depois."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM mapa_conta WHERE empresa_id=%s AND ativo ORDER BY id", (empresa_id,))
+        mapa = [r[0] for r in cur.fetchall()]
+        cur.execute("SELECT id FROM apelido WHERE empresa_id=%s AND ativo ORDER BY id", (empresa_id,))
+        apel = [r[0] for r in cur.fetchall()]
+    return {"mapa": mapa, "apelidos": apel}
+
+
 def listar_meses_ativos(conn, empresa_id: int) -> list:
     with conn.cursor() as cur:
         cur.execute("SELECT periodo_fim FROM importacao WHERE empresa_id=%s AND tipo='MENSAL' AND ativo ORDER BY periodo_fim", (empresa_id,))
