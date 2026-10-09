@@ -191,6 +191,16 @@ def test_apelidos_salvar_trocar_e_limpar(conn, emp):
         assert cur.fetchone() == (2, 0)                                                              # nada apagado
 
 
+def test_apelido_apagado_na_tabela_vem_como_nan_e_nao_quebra(conn, emp):
+    """Bug achado ao vivo: apagar a celula no data_editor devolve NaN (float) -> AttributeError. Deve voltar ao nome original."""
+    nan = float("nan")
+    assert db.txt(None) == "" and db.txt(nan) == "" and db.txt("  a   b ") == "a b"
+    assert db.salvar_apelidos(conn, emp, {"Gsm Ambiental Ltda": "GSM"}, "u") == 1
+    assert db.salvar_apelidos(conn, emp, {"Gsm Ambiental Ltda": nan}, "u") == 1
+    assert db.listar_apelidos(conn, emp) == {}
+    assert db.salvar_apelidos(conn, emp, {"Gsm Ambiental Ltda": None, "Outro": nan}, "u") == 0
+
+
 def test_mapa_edicao_cria_nova_linha_e_guarda_a_anterior(conn, emp):
     antes = {m[0]: m for m in db.mapa_vigente(conn, emp)}["juros"]
     db.salvar_mapa_linha(conn, emp, "juros", "(−) Juros e encargos", ["5.7.11.001.005", "5.7.11.001.006"], "D", "u", "nova conta de encargos")
