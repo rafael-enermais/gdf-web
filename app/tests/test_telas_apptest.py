@@ -277,13 +277,14 @@ def test_versao_final_bloqueada_ate_revisar_e_ter_assinante(patch_conn):
     at = _app("5_Relatorio_PDF.py", patch_conn).run()
     assert not at.exception, at.exception
     assert at.button(key="pdf_final").disabled
-    assert any("A versão final só é liberada quando" in c.value for c in at.caption)
+    texto = " ".join(m.value for m in at.markdown)
+    assert "❌ Balancetes de janeiro a 03/2026 todos **REVISADA**" in texto and "faltam: 01/2026, 02/2026, 03/2026" in texto and "❌ Assinantes" in texto
     _revisar_todas(patch_conn, emp_id)
     at = _app("5_Relatorio_PDF.py", patch_conn).run()
     assert at.button(key="pdf_final").disabled                                  # ainda sem nome de assinante
-    at.text_input(key=f"ass_n1_{emp_id}").set_value("Fulano de Tal")
-    at.text_input(key=f"ass_n2_{emp_id}").set_value("Beltrano")
-    at.run()
+    db.salvar_config_empresa(patch_conn, emp_id, {"assinantes": [{"nome": "Fulano de Tal", "cargo": "Diretor"}, {"nome": "Beltrano", "cargo": "Contador"},
+                                                                  {"nome": "Ciclana", "cargo": "Conselheira"}]}, "t")        # padrao salvo da empresa (3 assinantes)
+    at = _app("5_Relatorio_PDF.py", patch_conn).run()
     assert not at.button(key="pdf_final").disabled
     at.button(key="pdf_final").click().run()
     assert not at.exception, at.exception
@@ -371,3 +372,31 @@ def test_conexao_viva_e_reabre(patch_conn):
     assert conexao.conexao_viva(SimpleNamespace(closed=1)) is False                       # fechada
     quebrada = SimpleNamespace(closed=0, cursor=lambda: (_ for _ in ()).throw(RuntimeError("server closed the connection")))
     assert conexao.conexao_viva(quebrada) is False                                        # o banco derrubou a conexao ociosa
+
+
+def test_historico_marcar_varios_como_revisada(patch_conn):
+    emp_id = _semear_ate(patch_conn)
+    at = _app("3_Historico.py", patch_conn).run()
+    assert not at.exception, at.exception
+    at.checkbox(key="hist_multi_ok").check().run()
+    at.button(key="hist_multi_btn").click().run()
+    assert not at.exception, at.exception
+    assert {i["status"] for i in db.listar_importacoes(patch_conn, emp_id)} == {"REVISADA"}
+
+
+def test_assinantes_padrao_da_empresa_persistem_e_vao_no_pdf(patch_conn):
+    import io
+    import pdfplumber
+    emp_id = _semear_ate(patch_conn)
+    _revisar_todas(patch_conn, emp_id)
+    db.salvar_config_empresa(patch_conn, emp_id, {"assinantes": [{"nome": f"Pessoa {n}", "cargo": f"Cargo {n}"} for n in range(1, 6)]}, "t")
+    at = _app("5_Relatorio_PDF.py", patch_conn).run()
+    at.button(key="pdf_final").click().run()
+    assert not at.exception, at.exception
+    with pdfplumber.open(io.BytesIO(st_pdf(at))) as p:
+        texto = p.pages[-1].extract_text()
+    assert all(f"Pessoa {n}" in texto for n in range(1, 6)) and "assinatura digital dos responsáveis" in texto
+
+
+def st_pdf(at):
+    return at.session_state["pdf_pronto"]["bytes"]

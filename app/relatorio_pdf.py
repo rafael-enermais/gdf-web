@@ -648,14 +648,17 @@ def p_fechamento(c, n, N):
     for t_ in [t1] + ([E("nota_resultado")] if E("nota_resultado") else []) + [t3]:
         y = para(c, t_, MX, y, CW, size=8.4, lead=12.8, gap=7)
     y -= 70
-    ass = E("assinantes")
+    ass = [a for a in E("assinantes") if a[0] or a[1]][:6]
     cw2 = (CW - 30) / 2
-    for i, (nome, cargo) in enumerate(ass[:2]):
-        x = MX + i * (cw2 + 30)
-        hline(c, x, x + cw2, y, NAVY, 0.9)
-        txt(c, x, y - 12, nome or cargo, "PB", 8.4, NAVY)
-        if nome: txt(c, x, y - 23, cargo, "P", 7.4, GREY)
-    txt(c, MX, y - 44, "Assinatura digital dos responsáveis: a definir (fora do escopo desta versão).", "PI", 6.8, GREY)
+    for i, (nome, cargo) in enumerate(ass):
+        r, col = divmod(i, 2)
+        x = MX + col * (cw2 + 30); yi = y - r * 48
+        hline(c, x, x + cw2, yi, NAVY, 0.9)
+        txt(c, x, yi - 12, nome or cargo, "PB", 8.4, NAVY)
+        if nome: txt(c, x, yi - 23, cargo, "P", 7.4, GREY)
+    y -= (max(1, (len(ass) + 1) // 2) - 1) * 48
+    txt(c, MX, y - 44, ("Documento emitido para assinatura digital dos responsáveis." if STATUS.get("final") else
+                        "Assinatura digital dos responsáveis: a definir (fora do escopo desta versão)."), "PI", 6.8, GREY)
     yy = y - 100
     rect(c, MX, yy - 70, CW, 70, fill=WHITE, stroke=BORDER, r=6)
     lg = _logo(); tx = MX + 16
@@ -681,6 +684,7 @@ def gerar_pdf(ctx: dict, textos: dict | None = None, status: str = "RASCUNHO", g
         X.clear(); X.update(ctx)
         T.clear(); T.update(RD.textos_padrao(ctx)); T.update({k: v for k, v in (textos or {}).items() if k in T and (v or "").strip()})
         rot = ROTULO_STATUS.get(status, status)
+        STATUS["final"] = status == "REVISADO"
         STATUS["txt"] = rot + (f" · v{versao}" if versao else "") + (f" · gerado em {gerado_em}" if gerado_em else "")
         buf = io.BytesIO()
         c = canvas.Canvas(buf, pagesize=(W, H), invariant=1)
