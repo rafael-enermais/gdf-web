@@ -65,7 +65,7 @@ for arq in arquivos or []:
         if acum_info:
             st.info(acum_info)
         falhas = [c for c in conf if not c["ok"]]
-        item = {"cab": cab, "contas": contas, "emp": emp, "conf": conf, "falhas": falhas, "substituir": False, "forcar": True}
+        item = {"cab": cab, "contas": contas, "emp": emp, "conf": conf, "falhas": falhas, "substituir": False, "forcar": True, "status": "RASCUNHO"}
         if falhas:
             st.warning(f"{len(falhas)} conferência(s) com falha. Confira os detalhes acima antes de importar.")
             item["forcar"] = st.checkbox("Importar mesmo assim (fica como RASCUNHO e o aviso fica registrado)", key=f"forcar_{cab['sha256']}")
@@ -86,6 +86,12 @@ for arq in arquivos or []:
                 continue
         if falhas and not item["forcar"]:
             continue
+        if falhas:
+            st.caption("Com conferência falhando o balancete entra como RASCUNHO; depois de corrigir, confirme no Histórico.")
+        else:
+            if st.checkbox("Revisei os números e confirmo: este balancete confere com a contabilidade (entra já como REVISADA, com o seu nome)",
+                           key=f"rev_{cab['sha256']}"):
+                item["status"] = "REVISADA"
         prontos.append(item)
 
 if prontos:
@@ -93,9 +99,9 @@ if prontos:
         for it in prontos:
             cab = it["cab"]
             try:
-                imp_id = db.inserir_importacao(conn, it["emp"]["id"], cab, it["contas"], usuario, it["conf"], substituir=it["substituir"])
+                imp_id = db.inserir_importacao(conn, it["emp"]["id"], cab, it["contas"], usuario, it["conf"], status=it["status"], substituir=it["substituir"])
                 flash("ok" if not it["falhas"] else "warn",
-                      f"{cab['arquivo']}: importado (#{imp_id}, {cab['periodo']})" + (f" com {len(it['falhas'])} aviso(s)." if it["falhas"] else "."))
+                      f"{cab['arquivo']}: importado (#{imp_id}, {cab['periodo']}, {it['status']})" + (f" com {len(it['falhas'])} aviso(s)." if it["falhas"] else "."))
             except (db.ImportacaoDuplicada, db.PeriodoJaImportado) as exc:
                 flash("warn", f"{cab['arquivo']}: {exc}")
             except Exception as exc:

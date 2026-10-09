@@ -5,7 +5,7 @@ from __future__ import annotations
 FLUXO = [
     ("Receber o balancete", "O contador envia o balancete de cada mês em CSV ou PDF (pode ser o PDF assinado; o GDF só lê, nunca altera)."),
     ("Importar balancete", "Menu **Importar balancete**: envie o arquivo do mês. Veja a lista de conferências (✅/❌) antes de confirmar. Se houver ❌, consulte o guia abaixo."),
-    ("Revisar", "Menu **Histórico**: depois de conferir com o contador/Excel, marque a importação como **REVISADA**."),
+    ("Revisar", "Na própria tela de **Importar**: veja as conferências e, se os números batem com a contabilidade, marque **\"Revisei os números e confirmo\"** — o balancete entra já como **REVISADA**. Quem já entrou como rascunho é confirmado em **Histórico**."),
     ("Conferir os demonstrativos", "Menu **Demonstrativos**: Balanço, DRE, Indicadores, Composição de Saldos (aqui dá para digitar apelidos para os nomes cortados) e Conferências."),
     ("Gerar o relatório", "Menu **Relatório PDF**: gere o rascunho, ajuste os textos de leitura, e quando tudo estiver revisado gere a **versão final**."),
     ("Assinar e registrar", "Assine a versão final no Autentique (fora do GDF) e, em **Relatório PDF → Registrar assinatura**, envie o PDF assinado só para registrar."),

@@ -400,3 +400,23 @@ def test_assinantes_padrao_da_empresa_persistem_e_vao_no_pdf(patch_conn):
 
 def st_pdf(at):
     return at.session_state["pdf_pronto"]["bytes"]
+
+
+def test_importar_com_confirmacao_entra_revisada_e_sem_confirmacao_rascunho(patch_conn):
+    """v0.4.3: 'Revisei e confirmo' na propria tela de importar grava REVISADA (com o nome no log); sem marcar, fica RASCUNHO."""
+    arqs = [_Upload(f"{m}.csv", csv_texto(MESES[f"2026-0{m}"], cnpj=CNPJ, ini=f"01/0{m}/2026", fim={1: "31", 2: "28", 3: "31"}[m] + f"/0{m}/2026")) for m in (1, 2)]
+    at = _importar(patch_conn, arqs)
+    assert not at.exception, at.exception
+    caixas = [c for c in at.checkbox if "Revisei os números" in c.label]
+    assert len(caixas) == 2 and not any(c.value for c in caixas)                      # nunca vem marcada de fabrica
+    caixas[0].check()                                                                  # confirma so' o primeiro arquivo (janeiro)
+    with patch("streamlit.file_uploader", return_value=arqs):
+        at.run()
+    botao = [b for b in at.button if "Importar 2 arquivo" in b.label]
+    with patch("streamlit.file_uploader", return_value=arqs):
+        botao[0].click().run()
+    assert not at.exception
+    emp = db.empresa_por_cnpj(patch_conn, CNPJ)
+    st_ = {i["periodo_fim"].month: i["status"] for i in db.listar_importacoes(patch_conn, emp["id"])}
+    assert st_ == {1: "REVISADA", 2: "RASCUNHO"}
+    assert any("confirmado como REVISADA" in e["mensagem"] for e in db.listar_eventos(patch_conn, emp["id"]))
