@@ -109,6 +109,19 @@ def montar(emp: dict, b: motor.Balancetes, mes_ref: str, bp: dict, d: dict, cont
 
 
 # ------------------------------------------------------------------ textos de leitura (modelos preenchidos com os valores)
+def _variacao(v0, v1, d=2):
+    """Frase curta e correta para qualquer sinal: 'aumento de R$ X', 'redução de R$ X' ou 'sem variação'."""
+    dv = round(v1 - v0, d)
+    if abs(dv) < 0.005:
+        return "sem variação"
+    return ("aumento de " if dv > 0 else "redução de ") + brl(abs(dv))
+
+
+def _de_para(v0, v1):
+    """'passou de A para B' ou 'permaneceu em A' quando nao mudou."""
+    return f"permaneceu em {brl(v1)}" if abs(v1 - v0) < 0.005 else f"passou de {brl(v0)} para {brl(v1)}"
+
+
 def textos_padrao(x: dict) -> dict:
     """{chave: texto}. Cada paragrafo e' separado por linha em branco; a contadora pode editar qualquer um antes de gerar."""
     E = x["empresa"]; bp = x["bp"]; dr = x["dre"]; ind = x["ind"]; S = x["serie"]
@@ -126,16 +139,18 @@ def textos_padrao(x: dict) -> dict:
     t = {}
     t["dest_1"] = (f"Em {db}, o ativo total da {E['curto']} era de {brl(atv)}" +
                    (f", dos quais {brl(conc)} ({pct(razao(conc, atv))}) correspondem ao ativo de concessão líquido." if abs(conc) >= 0.005 else "."))
-    t["dest_2"] = (f"O caixa e equivalentes totalizou {brl(caixa)}, variação de {brl(caixa - caixa0)}"
-                   + (f" ({pct(razao(caixa - caixa0, abs(caixa0)))})" if abs(caixa0) >= 0.005 else "") + f" em relação a {x['abertura']}. "
-                   f"No mesmo período, a dívida bruta passou de {brl(divb0)} para {brl(divb)}; a dívida líquida (dívida bruta menos caixa) é de {brl(divl)}.")
+    t["dest_2"] = (f"O caixa e equivalentes totalizou {brl(caixa)}, {_variacao(caixa0, caixa)}"
+                   + (f" ({pct(razao(abs(caixa - caixa0), abs(caixa0)))})" if abs(caixa0) >= 0.005 and abs(caixa - caixa0) >= 0.005 else "") + f" em relação a {x['abertura']}. "
+                   f"No mesmo período, a dívida bruta {_de_para(divb0, divb)}; a dívida líquida (dívida bruta menos caixa) é de {brl(divl)}.")
     t["dest_3"] = (f"O resultado líquido acumulado até {per} foi de {brl(res)}, composto por custo de construção de {brl(-custo)}, "
                    f"demais custos e despesas de {brl(-(D('deducoes') + D('fretes') + D('desp_adm')))} e resultado financeiro de {brl(resf)}. "
-                   f"O patrimônio líquido passou de {brl(pl0)} para {brl(pl)}, com AFAC de {brl(B('afac', 3))} de variação no período.")
+                   f"O patrimônio líquido {_de_para(pl0, pl)}" + (f", com variação de AFAC de {brl(B('afac', 3))} no período." if abs(B('afac', 3)) >= 0.005 else "."))
     n = len(S["caixa"])
     mn_i = min(range(n), key=lambda i: S["caixa"][i])
-    t["evo_1"] = (f"O caixa e equivalentes passou de {brl(S['caixa'][0])} em {S['rotulos'][0].lower()} para {brl(S['caixa'][mn_i])} em {S['rotulos'][mn_i].lower()} (menor saldo do período) "
-                  f"e fechou {per} em {brl(S['caixa'][-1])}. A dívida bruta foi de {brl(S['bndes'][0])} para {brl(S['bndes'][-1])} no período.")
+    meio = 0 < mn_i < n - 1 and S["caixa"][mn_i] < min(S["caixa"][0], S["caixa"][-1])
+    t["evo_1"] = (f"O caixa e equivalentes passou de {brl(S['caixa'][0])} em {S['rotulos'][0].lower()} para {brl(S['caixa'][-1])} em {S['rotulos'][-1].lower()}"
+                  + (f", com o menor saldo do período em {S['rotulos'][mn_i].lower()} ({brl(S['caixa'][mn_i])})" if meio else "") + ". "
+                  f"A dívida bruta {_de_para(S['bndes'][0], S['bndes'][-1])} no período.")
     cc = S["custo_constr"]
     imax = max(range(len(cc)), key=lambda i: cc[i]) if cc else 0
     t["evo_2"] = (f"O custo de construção do ativo de concessão somou {brl(sum(cc))} no ano (média mensal de {brl(sum(cc) / max(len(cc), 1))}); "
@@ -146,7 +161,7 @@ def textos_padrao(x: dict) -> dict:
     t["evo_3"] = (f"O patrimônio líquido passou de {brl(plm[0])} em {S['rotulos'][0].lower()} para {brl(plm[-1])} em {S['rotulos'][-1].lower()}." +
                   (f" A mudança de sinal ocorre em {S['rotulos'][mudou].lower()} ({brl(plm[mudou])})." if mudou else ""))
     t["res_1"] = (f"O resultado líquido acumulado até {per} foi de {brl(res)}. O custo de construção do ativo de concessão, de {brl(-custo)}, "
-                  + (f"equivale a {pct(razao(custo, res))} desse valor; " if res and abs(res) >= 0.005 else "") + f"as deduções da receita (PIS e COFINS) somaram {brl(-dedu)}.")
+                  + (f"equivale a {pct(razao(custo, res))} desse valor; " if res < -0.005 else "") + f"as deduções da receita (PIS e COFINS) somaram {brl(-dedu)}.")
     t["res_2"] = (f"As despesas operacionais somaram {brl(-opex)} e o resultado financeiro líquido foi de {brl(resf)}, formado por rendimentos de aplicações "
                   f"financeiras de {brl(D('rend_aplic'))} e receitas de aplicações (NT) de {brl(D('rec_nt'))}, entre outros.")
     exig = B("pc") + B("pnc")
@@ -175,7 +190,8 @@ def textos_padrao(x: dict) -> dict:
     fo = c.get("fornec")
     if fo and fo["itens"] and abs(fo["total"]) >= 0.005:
         reais = [v for n_, v in fo["itens"] if not (fo["demais"] and n_.startswith("Demais"))][:3]
-        p2.append(f"Os três maiores fornecedores representam {pct(razao(sum(reais), fo['total']))} do saldo de fornecedores ({brl(fo['total'])}).")
+        quem = "Os três maiores fornecedores representam" if len(reais) >= 3 else ("O único fornecedor com saldo representa" if len(reais) == 1 else f"Os {len(reais)} fornecedores com saldo representam")
+        p2.append(f"{quem} {pct(razao(sum(reais), fo['total']))} do saldo de fornecedores ({brl(fo['total'])}).")
     cp = c.get("capital")
     if cp and cp["itens"] and abs(cp["total"]) >= 0.005:
         top = max(cp["itens"], key=lambda kv: kv[1])

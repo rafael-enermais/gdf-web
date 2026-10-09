@@ -5,8 +5,9 @@ from __future__ import annotations
 import psycopg2
 import streamlit as st
 
-APP_VERSION = "0.3.0"        # 0.MAJOR.MINOR ate' o lancamento oficial (mesma regra do EGC)
+APP_VERSION = "0.4.0"        # 0.MAJOR.MINOR ate' o lancamento oficial (mesma regra do EGC)
 NOME_APP = "GDF — Gestão de Demonstrativo Financeiro"
+CONTATO = "rafael.nakahara@enermais.com.br"       # mesmo contato do rodape do EGC/RADAR
 
 EMPRESA_INICIAL = ("ANASTACIO", "Anastácio Transmissora de Energia S.A.", "54.800.488/0001-60")
 
@@ -29,9 +30,21 @@ def preparar_conexao(conn) -> str:
     return usuario
 
 
+def conexao_viva(conn) -> bool:
+    """True se a conexao ainda responde (o pooler do Supabase derruba conexoes ociosas; a conexao fica guardada entre as telas)."""
+    if conn is None or getattr(conn, "closed", 1):
+        return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+        return True
+    except Exception:
+        return False
+
+
 @st.cache_resource(show_spinner=False)
-def get_conn():
-    """Conexao cacheada pelo processo Streamlit. Precisa de st.secrets['DATABASE_URL'] (Supabase, role gdf_app —
+def _abrir_conn():
+    """Abre a conexao (cacheada pelo processo Streamlit). Precisa de st.secrets['DATABASE_URL'] (Supabase, role gdf_app —
     nunca postgres/service_role). Se faltar, mostra aviso simples e para a tela (nunca traceback bruto)."""
     try:
         database_url = st.secrets["DATABASE_URL"]
@@ -57,6 +70,15 @@ def get_conn():
     return conn
 
 
+def get_conn():
+    """Conexao do app. Se a guardada caiu (ociosidade, reinicio do banco), descarta e abre outra sozinha — o usuario nao precisa 'rebootar' o app."""
+    conn = _abrir_conn()
+    if not conexao_viva(conn):
+        _abrir_conn.clear()
+        conn = _abrir_conn()
+    return conn
+
+
 def flash(nivel: str, texto: str) -> None:
     """Mensagem que sobrevive ao st.rerun(). nivel: ok | warn | erro | info."""
     st.session_state.setdefault("_flash_msgs", []).append((nivel, texto))
@@ -67,21 +89,12 @@ def mostrar_flash() -> None:
         {"ok": st.success, "warn": st.warning, "erro": st.error}.get(nivel, st.info)(texto)
 
 
-def _contato() -> str:
-    """Contato mostrado no rodape. Vem do secret CONTATO_APP (nao fica no codigo: o repositorio e' publico)."""
-    try:
-        return str(st.secrets.get("CONTATO_APP", "") or "").strip()
-    except Exception:
-        return ""
-
-
 def sidebar_rodape() -> None:
     """Rodape fixo no fundo da coluna cinza (sidebar): nome do app + versao + contato. Mesmo padrao do EGC: a sidebar tem uma cadeia de
     containers que precisam virar flex column para o 'margin-top: auto' empurrar o ultimo elemento (este) para baixo; 'sticky' segura o
     rodape no fundo quando o menu e' mais alto que a tela. Esta funcao tem que ser a ULTIMA coisa desenhada na sidebar de cada pagina."""
     import html
-    contato = _contato()
-    linha_contato = f"<br>{html.escape(contato)}" if contato else ""
+    linha_contato = f"<br>{html.escape(CONTATO)}"
     st.sidebar.markdown(
         f"""
         <style>

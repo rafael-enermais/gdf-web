@@ -264,3 +264,110 @@ def test_painel_com_um_mes_so(patch_conn):
     at = _app("6_Painel.py", patch_conn).run()
     assert not at.exception, at.exception
     assert any("ainda não há mês anterior" in c.value for c in at.caption)
+
+
+# ------------------------------------------------------------------ v0.4.0: ciclo do relatorio, ajuda, inicio, conexao
+def _revisar_todas(conn, emp_id):
+    for i in db.listar_importacoes(conn, emp_id):
+        db.definir_status(conn, i["id"], "REVISADA", "t")
+
+
+def test_versao_final_bloqueada_ate_revisar_e_ter_assinante(patch_conn):
+    emp_id = _semear_ate(patch_conn)
+    at = _app("5_Relatorio_PDF.py", patch_conn).run()
+    assert not at.exception, at.exception
+    assert at.button(key="pdf_final").disabled
+    assert any("A versão final só é liberada quando" in c.value for c in at.caption)
+    _revisar_todas(patch_conn, emp_id)
+    at = _app("5_Relatorio_PDF.py", patch_conn).run()
+    assert at.button(key="pdf_final").disabled                                  # ainda sem nome de assinante
+    at.text_input(key=f"ass_n1_{emp_id}").set_value("Fulano de Tal")
+    at.text_input(key=f"ass_n2_{emp_id}").set_value("Beltrano")
+    at.run()
+    assert not at.button(key="pdf_final").disabled
+    at.button(key="pdf_final").click().run()
+    assert not at.exception, at.exception
+    rels = db.listar_relatorios(patch_conn, emp_id)
+    assert len(rels) == 1 and rels[0]["status"] == "REVISADO" and rels[0]["meta"]["importacoes"]
+    assert any("VERSÃO FINAL" in s.value for s in at.success)
+
+
+def test_relatorio_fica_desatualizado_quando_o_balancete_muda(patch_conn):
+    emp_id = _semear_ate(patch_conn)
+    at = _app("5_Relatorio_PDF.py", patch_conn).run()
+    at.button(key="pdf_gerar").click().run()
+    tab = [d.value for d in at.dataframe if "Dados" in d.value.columns][0]
+    assert tab.iloc[0]["Dados"] == "atuais"
+    # o contador retifica marco: a importacao antiga fica inativa e entra outra (arquivo diferente)
+    marco = [i for i in db.listar_importacoes(patch_conn, emp_id) if i["periodo_fim"].month == 3][0]
+    contas = [dict(c) for c in MESES["2026-03"]]
+    for c in contas:
+        if c["cl"] == "1.1.01.002.001":
+            c["sal"] += 5.0
+    cab, lidas = I.ler_bytes(csv_texto(contas, cnpj=CNPJ, ini="01/03/2026", fim="31/03/2026"), "marco_retificado.csv")
+    db.inserir_importacao(patch_conn, emp_id, cab, lidas, "t", [], substituir=True)
+    assert marco["id"] not in db.ids_importacoes_mensais(patch_conn, emp_id, "2026-03")
+    at = _app("5_Relatorio_PDF.py", patch_conn).run()
+    tab = [d.value for d in at.dataframe if "Dados" in d.value.columns][0]
+    assert tab.iloc[0]["Dados"].startswith("desatualizados")
+
+
+def test_registrar_assinatura_regras(patch_conn):
+    emp_id = _semear_ate(patch_conn)
+    from datetime import date
+    per = date(2026, 3, 1)
+    r1, _ = db.registrar_relatorio(patch_conn, emp_id, per, "a" * 64, {}, [], "t")                      # rascunho
+    r2, v2 = db.registrar_relatorio(patch_conn, emp_id, per, "b" * 64, {}, [], "t", status="REVISADO")
+    assert v2 == 2
+    with pytest.raises(db.AssinaturaInvalida, match="versão final"):
+        db.registrar_assinatura(patch_conn, r1, "x.pdf", "c" * 64, "t")
+    with pytest.raises(db.AssinaturaInvalida, match="idêntico"):
+        db.registrar_assinatura(patch_conn, r2, "x.pdf", "b" * 64, "t")
+    db.registrar_assinatura(patch_conn, r2, "assinado.pdf", "c" * 64, "t")
+    rel = {r["id"]: r for r in db.listar_relatorios(patch_conn, emp_id)}
+    assert rel[r2]["status"] == "ASSINADO" and rel[r2]["pdf_sha256"] == "b" * 64
+    with pytest.raises(db.AssinaturaInvalida, match="já está"):
+        db.registrar_assinatura(patch_conn, r2, "assinado.pdf", "d" * 64, "t")
+    with pytest.raises(ValueError):
+        db.definir_status_relatorio(patch_conn, r2, "RASCUNHO", "t")
+    with pytest.raises(ValueError):
+        db.registrar_relatorio(patch_conn, emp_id, per, "e" * 64, {}, [], "t", status="ASSINADO")
+
+
+def test_ids_das_importacoes_usadas(patch_conn):
+    emp_id = _semear_ate(patch_conn)
+    ids = db.ids_importacoes_mensais(patch_conn, emp_id, "2026-02")
+    todos = [i["id"] for i in db.listar_importacoes(patch_conn, emp_id) if i["periodo_fim"].month <= 2]
+    assert ids == sorted(todos) and len(ids) == 2
+    assert len(db.ids_importacoes_mensais(patch_conn, emp_id, "2026-03")) == 3 and db.ids_importacoes_mensais(patch_conn, emp_id, "2025-12") == []
+
+
+def test_ajuda_e_inicio(patch_conn):
+    at = _app("7_Ajuda.py", patch_conn).run()
+    assert not at.exception, at.exception
+    assert [t.label for t in at.tabs] == ["Fluxo do mês", "Quando algo não bate", "Glossário"]
+    at.selectbox(key="ajuda_grupo").select("Mapa de contas").run()
+    assert not at.exception and any("sem chave" in m.value or "Mapa de contas" in m.value for m in at.markdown)
+    _semear_ate(patch_conn, 2)
+    at = AppTest.from_file(str(APP / "app.py"), default_timeout=30)
+    at.session_state["auth_session"] = SESSAO
+    with patch("conexao.get_conn", return_value=patch_conn):
+        at.run()
+    assert not at.exception, at.exception
+    assert any("Situação do ano" in s.value for s in at.subheader)
+    assert any("Gere o relatório" in m.value or "REVISADA" in m.value for m in at.markdown)
+
+
+def test_rodape_tem_versao_e_contato(patch_conn):
+    import conexao
+    at = _app("7_Ajuda.py", patch_conn).run()
+    corpo = " ".join(m.value for m in at.sidebar.markdown)
+    assert f"v{conexao.APP_VERSION}" in corpo and conexao.CONTATO in corpo
+
+
+def test_conexao_viva_e_reabre(patch_conn):
+    import conexao
+    assert conexao.conexao_viva(patch_conn) is True and conexao.conexao_viva(None) is False
+    assert conexao.conexao_viva(SimpleNamespace(closed=1)) is False                       # fechada
+    quebrada = SimpleNamespace(closed=0, cursor=lambda: (_ for _ in ()).throw(RuntimeError("server closed the connection")))
+    assert conexao.conexao_viva(quebrada) is False                                        # o banco derrubou a conexao ociosa

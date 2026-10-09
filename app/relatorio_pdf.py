@@ -671,16 +671,20 @@ def p_fechamento(c, n, N):
 
 
 # ------------------------------------------------------------------ build
-def gerar_pdf(ctx: dict, textos: dict | None = None, status: str = "RASCUNHO", gerado_em: str = "") -> bytes:
-    """Gera o PDF em memoria. `textos`: edicoes da contadora (chave -> texto); o que faltar usa o modelo padrao."""
+ROTULO_STATUS = {"RASCUNHO": "RASCUNHO", "REVISADO": "VERSÃO FINAL"}
+
+
+def gerar_pdf(ctx: dict, textos: dict | None = None, status: str = "RASCUNHO", gerado_em: str = "", versao: int | None = None) -> bytes:
+    """Gera o PDF em memoria. status: RASCUNHO (marca de rascunho no rodape) ou REVISADO (versao final, para assinatura). `textos`: edicoes da contadora (chave -> texto); o que faltar usa o modelo padrao."""
     _registrar_fontes()
     with _LOCK:
         X.clear(); X.update(ctx)
         T.clear(); T.update(RD.textos_padrao(ctx)); T.update({k: v for k, v in (textos or {}).items() if k in T and (v or "").strip()})
-        STATUS["txt"] = f"{status}" + (f" · gerado em {gerado_em}" if gerado_em else "")
+        rot = ROTULO_STATUS.get(status, status)
+        STATUS["txt"] = rot + (f" · v{versao}" if versao else "") + (f" · gerado em {gerado_em}" if gerado_em else "")
         buf = io.BytesIO()
         c = canvas.Canvas(buf, pagesize=(W, H), invariant=1)
-        c.setTitle(f"Demonstrativos Financeiros — {E('nome')} — {X['data_base']}"); c.setAuthor("Grupo Enermais — GDF"); c.setSubject(f"{status} · {X['periodo']}")
+        c.setTitle(f"Demonstrativos Financeiros — {E('nome')} — {X['data_base']}"); c.setAuthor("Grupo Enermais — GDF"); c.setSubject(f"{rot} · {X['periodo']}")
         N = len(PAGES)
         for i, fn in enumerate(PAGES, 1):
             fn(c, i, N); c.showPage()
