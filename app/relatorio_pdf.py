@@ -107,19 +107,26 @@ def caixa_nota(c, y, s, h=None, x=MX, w=CW, size=7.6, fill=GREY_BG):
     for ln in lines: txt(c, x + 11, yy, ln, "P", size, GREY); yy -= size + 3.4
     return y - hh - 8
 
-def kpi(c, x, y, w, h, rot, valor, sub, dark=False, accent=None, vsize=15):
+def unidade(c, xr, y, s="R$ MM"):
+    """Etiqueta discreta com a unidade do grafico (canto direito, alinhada em xr)."""
+    wd = pdfmetrics.stringWidth(s, "PB", 5.8) + 10
+    rect(c, xr - wd, y - 2.5, wd, 11, fill=GREY_BG, stroke=BORDER, r=5.5, lw=0.4)
+    txt(c, xr - wd / 2, y + 0.6, s, "PB", 5.8, GREY, "c")
+
+
+def kpi(c, x, y, w, h, rot, valor, sub, dark=False, accent=None, vsize=15, maxl=2):
     if dark:
         rect(c, x, y - h, w, h, fill=NAVY, r=6)
         txt(c, x + 11, y - 15, rot.upper(), "PB", 6.2, BRAND_OR)
         txt(c, x + 11, y - 15 - 21, valor, "PB", vsize, WHITE)
-        for i, ln in enumerate(simpleSplit(sub, "P", 6.6, w - 20)[:2]): txt(c, x + 11, y - 15 - 34 - i * 8.6, ln, "P", 6.6, HexColor("#D6D9EA"))
+        for i, ln in enumerate(simpleSplit(sub, "P", 6.6, w - 28)[:maxl]): txt(c, x + 11, y - 15 - 34 - i * 8.6, ln, "P", 6.6, HexColor("#D6D9EA"))
     else:
         rect(c, x, y - h, w, h, fill=GREY_BG, r=4)
         rect(c, x, y - h, 3, h, fill=accent or NAVY)
         txt(c, x + 11, y - 14, rot.upper(), "PB", 6.2, accent if accent else NAVY)
         vcol = NEG_TXT if valor.startswith("−") else NAVY
         txt(c, x + 11, y - 14 - 21, valor, "PB", vsize, vcol)
-        for i, ln in enumerate(simpleSplit(sub, "P", 6.6, w - 18)[:2]): txt(c, x + 11, y - 14 - 33 - i * 8.6, ln, "P", 6.6, GREY)
+        for i, ln in enumerate(simpleSplit(sub, "P", 6.6, w - 26)[:maxl]): txt(c, x + 11, y - 14 - 33 - i * 8.6, ln, "P", 6.6, GREY)
 def variacoes(c, x, y, w, itens, lab_w=190, rh=14):
     area = w - lab_w - 60
     mn = max([-v for _, v in itens if v < 0] or [0]); mp = max([v for _, v in itens if v > 0] or [0])
@@ -262,7 +269,8 @@ def barra_h(c, x, y, w, h, partes, escala_total):
         rect(c, xx, y, ww - 1.6, h, fill=cor); xx += ww
     return xx
 def lista_barras(c, x, y, w, titulo_, itens, total, cor=BLUES[3], rot_w=150, maxn=None, destaque_ultimo=False):
-    txt(c, x, y, titulo_, "PB", 9, NAVY); y -= 6
+    txt(c, x, y, titulo_, "PB", 9, NAVY)
+    txt(c, x + w - 38, y, "R$", "PB", 6, GREY, "r"); txt(c, x + w, y, "% do grupo", "PB", 6, GREY, "r"); y -= 6
     hline(c, x, x + w, y, BORDER, 0.5); y -= 13
     mx = max(v for _, v in itens)
     bw_max = w - rot_w - 92
@@ -272,7 +280,7 @@ def lista_barras(c, x, y, w, titulo_, itens, total, cor=BLUES[3], rot_w=150, max
         last = destaque_ultimo and i == len(itens) - 1
         rect(c, x + rot_w, y - 1.5, max(bw_max * v / mx, 0.8), 7.2, fill=LIGHT if last else cor)
         txt(c, x + w - 38, y, fnum(v, 2), "P", 6.9, NAVY, "r")
-        txt(c, x + w, y, pct(v / total), "PB", 6.9, NAVY, "r")
+        txt(c, x + w, y, ("< 0,1%" if 0 < v / total < 0.0005 else pct(v / total)), "PB", 6.9, NAVY, "r")
         y -= 15.6
     hline(c, x, x + w, y + 8, BORDER, 0.5)
     txt(c, x, y - 3, "Total", "PB", 7.2, NAVY); txt(c, x + w - 38, y - 3, fnum(total, 2), "PB", 7.2, NAVY, "r"); txt(c, x + w, y - 3, "100,0%", "PB", 7.2, NAVY, "r")
@@ -325,8 +333,9 @@ def p_capa(c, n, N):
     txt(c, MX + 8, 282, "Posição em " + X["data_base"], "P", 9.5, GREY)
     rect(c, MX + 8, 238, 232, 24, fill=ORANGE, r=12)
     txt(c, MX + 8 + 116, 246.5, "PERÍODO · " + X["periodo_curto"], "PB", 7.6, WHITE, "c")
-    g = ImageReader(str(ASSETS / "GRUPO.png")); gw, gh = g.getSize()
-    c.drawImage(g, MX + 8, 84, width=84, height=84 * gh / gw, mask="auto")
+    if E("logo_grupo_capa"):                       # Anastacio: sem logo do grupo na capa; outra empresa pode ligar com a config logo_grupo_capa
+        g = ImageReader(str(ASSETS / "GRUPO.png")); gw, gh = g.getSize()
+        c.drawImage(g, MX + 8, 84, width=84, height=84 * gh / gw, mask="auto")
     txt(c, MX + 8, 70, "Informações elaboradas pelo Grupo Enermais a partir dos Balancetes Societários.", "P", 6.4, GREY)
     txt(c, MX + 8, 26, STATUS["txt"], "PB", 6, ORANGE)
 
@@ -370,7 +379,8 @@ def p_destaques(c, n, N):
     for pg, a, b_ in itens:
         rect(c, MX, y - 3, 30, 12, fill=NAVY, r=3); txt(c, MX + 15, y, pg, "PB", 6.6, WHITE, "c")
         txt(c, MX + 38, y, a, "PB", 7.8, NAVY); txt(c, MX + 148, y, b_, "P", 7.4, GREY); y -= 17
-    y = secao(c, y - 8, f"Principais variações desde {X['abertura']} (R$ MM)")
+    y = secao(c, y - 8, f"Principais variações desde {X['abertura']}")
+    unidade(c, MX + CW, y + 14)
     itens = [(f"Resultado do período ({ate.lower()})", DR("res_liq")), ("Caixa e equivalentes", caixa - caixa0),
              ("Dívida bruta (BNDES)", divb - IN("div_bruta", 0)), ("Fornecedores", BP("fornec", 3)),
              ("Adiantamento p/ futuro aumento de capital", BP("afac", 3))]
@@ -393,7 +403,8 @@ def p_evolucao(c, n, N):
     moldura(c, n, N, "Evolução Mensal")
     y = titulo(c, TOPY, f"Evolução de {MESES[0].lower()} a {MESES[-1].lower()}", "Saldos no fim de cada mês · valores em R$ milhões · posições mensais dos Balancetes Societários")
     y = secao(c, y, "Caixa e equivalentes × dívida bruta (BNDES)")
-    legenda(c, MX + 300, y + 14, [(BLUES[3], "Caixa e equivalentes", "bar"), (NAVY, "Dívida bruta", "line")])
+    legenda(c, MX + 262, y + 14, [(BLUES[3], "Caixa e equivalentes", "bar"), (NAVY, "Dívida bruta", "line")])
+    unidade(c, MX + CW, y + 14)
     gh = 135; gy = y - gh - 14; gx = MX + 4; gw = CW - 8
     lo, hi = eixo_y(SC + SD)
     sc = gh / (hi - lo); n_ = len(MESES); slot = gw / n_; bw = slot * 0.5
@@ -415,11 +426,13 @@ def p_evolucao(c, n, N):
     for i in range(0, n_, 1 if n_ <= 9 else 2): txt(c, pts[i][0], pts[i][1] + 6, mmn(SD[i]), "PB", 6.4, NAVY, "c")
     y = gy - 34
     half = (CW - 20) / 2
-    txt(c, MX, y, "Custo de construção do mês (R$ MM)", "PB", 9, NAVY)
+    txt(c, MX, y, "Custo de construção do mês", "PB", 9, NAVY)
+    unidade(c, MX + half, y)
     gy2 = y - 12 - 112
     barras(c, MX + 2, gy2, half - 4, 108, [m[:3] for m in S["meses"]], list(SCC), fmt=lambda v: mmn(v), size=6.2 if len(SCC) <= 9 else 5.2)
     x2 = MX + half + 20
-    txt(c, x2, y, "Patrimônio líquido no fim do mês (R$ MM)", "PB", 9, NAVY)
+    txt(c, x2, y, "Patrimônio líquido no fim do mês", "PB", 9, NAVY)
+    unidade(c, MX + CW, y)
     barras(c, x2 + 2, gy2, half - 4, 108, [m[:3] for m in MESES], SPL, fmt=lambda v: mmn(v, 1), size=5.6 if n_ <= 10 else 4.8)
     y = gy2 - 30
     wcol = (CW - 104) / n_
@@ -451,17 +464,20 @@ def p_resultado(c, n, N):
         et.append(("IRPJ e CSLL", DR("ir_cs"), "delta"))
     et.append(("Resultado líquido do período", RES, "final"))
     calc_levels(et)
+    unidade(c, MX + CW, y + 6)
     gy = y - 175
     cascata(c, MX + 4, gy, CW - 8, 150, et)
     y = gy - 34
-    cw4 = (CW - 24) / 4
     cs = [("Custo de construção", mm(-CUSTO), f"Equivale a {pct(razao(CUSTO, RES))} do resultado líquido" if abs(RES) >= 0.005 else "Custo do período"),
           ("Média mensal do custo", mm(-CUSTO / max(X["n_meses"], 1)), f"Acumulado ÷ {X['n_meses']} meses"),
           ("Despesas operacionais", mm(-OPEX), "Serviços, cartório, seguro e outras"),
           ("Resultado financeiro", mm(RESF, 2, True), "Aplicações e descontos obtidos")]
-    for i, (a, b_, d_) in enumerate(cs): kpi(c, MX + i * (cw4 + 8), y, cw4, 54, a, b_, d_, accent=NEG_FILL if b_.startswith("−") else NAVY, vsize=10.5)
-    y -= 76
-    txt(c, MX, y, "Resultado líquido do mês (R$ MM)", "PB", 9, NAVY)
+    gap4 = 8
+    cw4 = (CW - 3 * gap4) / 4
+    for i, (a, b_, d_) in enumerate(cs): kpi(c, MX + i * (cw4 + gap4), y, cw4, 66, a, b_, d_, accent=NEG_FILL if b_.startswith("−") else NAVY, vsize=10.5, maxl=3)
+    y -= 88
+    txt(c, MX, y, "Resultado líquido do mês", "PB", 9, NAVY)
+    unidade(c, MX + CW, y)
     gy2 = y - 12 - 92
     barras(c, MX + 2, gy2, CW - 4, 88, S["meses"], S["resultado_mes"], fmt=lambda v: mmn(v), size=6.4)
     y = gy2 - 26
@@ -525,6 +541,7 @@ def p_posicao(c, n, N):
     txt(c, MX, y - 48, f"Patrimônio líquido: {mm(PL)} ({pct(razao(PL, ATIVO))} do ativo) — passivo exigível equivale a {pct(razao(exig, ATIVO))} do ativo", "PB", 6.9, NEG_TXT if PL < 0 else NAVY)
     y -= 70
     y = secao(c, y, f"Do patrimônio líquido de {X['abertura']} ao de {X['data_base']}")
+    unidade(c, MX + CW, y + 14)
     d_cap = round(BP("capital", 3) + BP("afac", 3), 2)
     outras = round(PL - PL0 - d_cap - RES, 2)
     et = [(f"PL em {X['abertura']}", PL0, "total"), ("Capital social e AFAC", d_cap, "delta"), (f"Resultado até {X['mes_abrev'].lower()}", RES, "delta")]
@@ -536,11 +553,11 @@ def p_posicao(c, n, N):
     cascata(c, MX + 30, gy, CW - 60, 125, et, size=6.6)
     y = gy - 32
     cw3 = (CW - 16) / 3
-    for i, (a, b_, d_) in enumerate([("Liquidez corrente", fnum(IN("liq_corrente")), "Ativo circulante ÷ passivo circulante"),
+    for i, (a, b_, d_) in enumerate([("Liquidez corrente", fnum(IN("liq_corrente")) + "x", "Ativo circulante ÷ passivo circulante"),
                                      ("Endividamento geral", pct(IN("endiv_geral")), "Obrigações ÷ ativo total"),
                                      ("PL / ativo total", pct(IN("pl_ativo")), "Participação de capital próprio")]):
-        kpi(c, MX + i * (cw3 + 8), y, cw3, 50, a, b_, d_, accent=NEG_FILL if b_.startswith("−") else NAVY, vsize=13)
-    y -= 72
+        kpi(c, MX + i * (cw3 + 8), y, cw3, 54, a, b_, d_, accent=NEG_FILL if b_.startswith("−") else NAVY, vsize=13)
+    y -= 76
     y = secao(c, y, "Leitura do Balanço")
     paras(c, "bal", y, size=8, lead=11.8, gap=3)
 
@@ -550,8 +567,8 @@ _BP_SUB = {"caixa_eq", "ac", "rlp", "conc_liq", "anc", "pc", "pnc", "pl"}
 @pagina
 def p_balanco(c, n, N):
     moldura(c, n, N, "Balanço Patrimonial")
-    yy = str(X["ano"])[2:]; ab = X["mes_abrev"].lower()
-    y = titulo(c, TOPY, "Balanço Patrimonial", f"Em R$ — posição em {X['abertura']}, {X['data_ant']} e {X['data_base']} · variação entre dezembro/{yy} e {ab}/{yy}")
+    yy = str(X["ano"])[2:]; yy0 = str(X["ano"] - 1)[2:]; ab = X["mes_abrev"].lower()
+    y = titulo(c, TOPY, "Balanço Patrimonial", f"Em R$ — posição em {X['abertura']}, {X['data_ant']} e {X['data_base']} · variação entre dezembro/{yy0} e {ab}/{yy}")
     cols = [(188, "l"), (66, "r"), (66, "r"), (66, "r"), (66, "r"), (63, "r")]
 
     def bloco(linhas):
@@ -564,7 +581,7 @@ def p_balanco(c, n, N):
             v = X["bp"][lid]
             out.append((t, [(("   " + lab) if t == "norm" else lab, None)] + [num_cell(v[i], 2, t == "tot") for i in range(4)] + [(varp(v[4]), None if t != "tot" else WHITE)]))
         return out
-    hdr = ["ATIVO", X["abertura"], X["data_ant"], X["data_base"], f"Var. R$ dez/{yy} a {ab}/{yy}", "Var. %"]
+    hdr = ["ATIVO", X["abertura"], X["data_ant"], X["data_base"], f"Var. R$ dez/{yy0} a {ab}/{yy}", "Var. %"]
     y = tabela(c, MX, y, cols, hdr, bloco(tabelas.BP_ATIVO_LINHAS), rh=11.3, fs=6.8, head_h=22)
     y -= 8
     hdr2 = ["PASSIVO E PATRIMÔNIO LÍQUIDO"] + hdr[1:]
@@ -580,12 +597,12 @@ def p_indicadores(c, n, N):
     y = titulo(c, TOPY, "Indicadores econômico-financeiros", "Calculados a partir do Balanço Patrimonial e da DRE · com explicação em linguagem simples")
     cw4 = (CW - 24) / 4
     ab0 = f"Dez/{str(X['ano'] - 1)[2:]}"
-    for i, (a, b_, d_) in enumerate([("Liquidez corrente", fnum(IN("liq_corrente")), f"{ab0}: {fnum(IN('liq_corrente', 0))}"),
+    for i, (a, b_, d_) in enumerate([("Liquidez corrente", fnum(IN("liq_corrente")) + "x", f"{ab0}: {fnum(IN('liq_corrente', 0))}x"),
                                      ("Dívida líquida", mm(IN("div_liquida")), f"{ab0}: {mm(IN('div_liquida', 0))}"),
                                      ("Capital circulante líquido", mm(IN("ccl")), f"{ab0}: {mm(IN('ccl', 0))}"),
                                      ("PL / ativo total", pct(IN("pl_ativo")), f"{ab0}: {pct(IN('pl_ativo', 0))}")]):
-        kpi(c, MX + i * (cw4 + 8), y, cw4, 50, a, b_, d_, accent=NEG_FILL if b_.startswith("−") else NAVY, vsize=11.5)
-    y -= 62
+        kpi(c, MX + i * (cw4 + 8), y, cw4, 52, a, b_, d_, accent=NEG_FILL if b_.startswith("−") else NAVY, vsize=11.5)
+    y -= 64
     cols = [(138, "l"), (50, "r"), (50, "r"), (50, "r"), (227, "l")]
     hdr = ["Indicador", X["abertura"], X["data_ant"], X["data_base"], "O que mede (em linguagem simples)"]
     rows = []
@@ -595,7 +612,7 @@ def p_indicadores(c, n, N):
         k = KINDS_PDF[kind]
         def fm(v, k=k):
             if v is None or isinstance(v, str): return ("–", None)
-            if k == "x": return (fnum(v), None)
+            if k == "x": return (fnum(v) + "x", None)
             if k == "p": return (pct(v), NEG_TXT) if v < 0 else (pct(v), None)
             return (fnum(v / 1e6, 2) + " MM", NEG_TXT) if v < 0 else (fnum(v / 1e6, 2) + " MM", None)
         rows.append(("ind", [(rotulo, None)] + [fm(v) for v in X["ind"][chave]] + [(RD.EXPLICACAO.get(chave, formula), GREY)]))

@@ -2,14 +2,39 @@
 """GDF - conexao com o Supabase (schema `gdf`) e utilitarios comuns das telas."""
 from __future__ import annotations
 
+import threading
+
 import psycopg2
+import psycopg2.extensions
 import streamlit as st
 
-APP_VERSION = "0.4.1"        # 0.MAJOR.MINOR ate' o lancamento oficial (mesma regra do EGC)
+APP_VERSION = "0.4.2"        # 0.MAJOR.MINOR ate' o lancamento oficial (mesma regra do EGC)
 NOME_APP = "GDF — Gestão de Demonstrativo Financeiro"
 CONTATO = "rafael.nakahara@enermais.com.br"       # mesmo contato do rodape do EGC/RADAR
 
 EMPRESA_INICIAL = ("ANASTACIO", "Anastácio Transmissora de Energia S.A.", "54.800.488/0001-60")
+
+
+class _CursorComTrava(psycopg2.extensions.cursor):
+    """Cursor que so' executa com a trava da conexao. O Streamlit atende varias pessoas ao mesmo tempo (uma thread por sessao) usando
+    a MESMA conexao; sem a trava, o comando de outra pessoa podia cair no meio da transacao de uma importacao."""
+
+    def execute(self, query, vars=None):
+        with self.connection.trava:
+            return super().execute(query, vars)
+
+    def executemany(self, query, vars_list):
+        with self.connection.trava:
+            return super().executemany(query, vars_list)
+
+
+class ConexaoGDF(psycopg2.extensions.connection):
+    """Conexao psycopg2 com uma trava reentrante (`trava`). `db.transacao` segura a trava do BEGIN ate' o COMMIT/ROLLBACK."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.trava = threading.RLock()
+        self.cursor_factory = _CursorComTrava
 
 
 class ConexaoInvalida(Exception):
@@ -54,7 +79,7 @@ def _abrir_conn():
         st.stop()
         return None
     try:
-        conn = psycopg2.connect(database_url)
+        conn = psycopg2.connect(database_url, connection_factory=ConexaoGDF)
     except Exception as exc:
         st.error(f"Não consegui conectar ao banco: {exc}")
         st.stop()

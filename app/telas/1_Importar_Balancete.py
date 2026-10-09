@@ -61,7 +61,7 @@ for arq in arquivos or []:
                 acum_info = "Ainda não há todos os balancetes mensais de janeiro até este mês; a conferência mensal × acumulado fica para depois."
         tipo_txt = "mês isolado" if cab["tipo"] == "MENSAL" else "acumulado do ano"
         st.write(f"{emp['razao_social']} · {cab.get('formato', 'CSV')} · {tipo_txt} · {cab['ini']:%d/%m/%Y} a {cab['fim']:%d/%m/%Y} · {cab['n_contas']} contas")
-        st.dataframe(_tabela_conf(conf), hide_index=True, use_container_width=True)
+        st.dataframe(_tabela_conf(conf), hide_index=True, width="stretch")
         if acum_info:
             st.info(acum_info)
         falhas = [c for c in conf if not c["ok"]]

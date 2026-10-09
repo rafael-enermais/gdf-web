@@ -6,6 +6,7 @@ import streamlit as st
 import db
 import formatacao as F
 from auth import usuario_atual
+from fuso import fmt_br
 from conexao import empresa_atual, flash, get_conn, mostrar_flash, sidebar_rodape
 
 usuario = usuario_atual()
@@ -31,8 +32,8 @@ with aba_imp:
                              "Período": F.mes_br(f"{i['periodo_fim'].year}-{i['periodo_fim'].month:02d}") if i["tipo"] == "MENSAL"
                              else f"{i['periodo_ini']:%d/%m/%Y} a {i['periodo_fim']:%d/%m/%Y}",
                              "Arquivo": i["arquivo_nome"], "Status": i["status"], "Ativa": "sim" if i["ativo"] else "não (desfeita)",
-                             "Falhas": int(i["falhas"]), "Importado por": i["importado_por"], "Em": i["importado_em"].strftime("%d/%m/%Y %H:%M")} for i in imps])
-        st.dataframe(tab, hide_index=True, use_container_width=True)
+                             "Falhas": int(i["falhas"]), "Importado por": i["importado_por"], "Em": fmt_br(i["importado_em"])} for i in imps])
+        st.dataframe(tab, hide_index=True, width="stretch")
         st.divider()
         escolha = st.selectbox("Importação", imps, format_func=lambda i: f"#{i['id']} — {i['arquivo_nome']} ({'ativa' if i['ativo'] else 'inativa'})", key="hist_escolha")
         col1, col2, col3 = st.columns(3)
@@ -69,13 +70,13 @@ with aba_imp:
             conf = db.conferencias_da_importacao(conn, escolha["id"])
             if conf:
                 st.dataframe(pd.DataFrame([{"": "✅" if c["ok"] else "❌", "Conferência": c["descricao"], "Detalhe": c["detalhe"]} for c in conf]),
-                             hide_index=True, use_container_width=True)
+                             hide_index=True, width="stretch")
             else:
                 st.caption("Sem conferências gravadas.")
 with aba_log:
     ev = db.listar_eventos(conn, emp["id"])
     if ev:
-        st.dataframe(pd.DataFrame([{"Quando": e["criado_em"].strftime("%d/%m/%Y %H:%M"), "Nível": e["nivel"], "Origem": e["origem"],
-                                    "Mensagem": e["mensagem"], "Usuário": e["usuario"]} for e in ev]), hide_index=True, use_container_width=True)
+        st.dataframe(pd.DataFrame([{"Quando": fmt_br(e["criado_em"]), "Nível": e["nivel"], "Origem": e["origem"],
+                                    "Mensagem": e["mensagem"], "Usuário": e["usuario"]} for e in ev]), hide_index=True, width="stretch")
     else:
         st.caption("Sem eventos.")
