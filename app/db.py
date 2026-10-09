@@ -186,6 +186,16 @@ def acumulados_ativos(conn, empresa_id: int) -> dict:
     return _periodos(conn, empresa_id, "ACUMULADO")
 
 
+def ids_importacoes_mensais(conn, empresa_id: int, ate: str) -> list:
+    """Ids (ordenados) das importacoes MENSAL ativas de janeiro ate' o mes `ate` ('AAAA-MM') do mesmo ano.
+    Serve para o relatorio saber quais dados usou e avisar quando eles mudarem depois."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM importacao WHERE empresa_id=%s AND tipo='MENSAL' AND ativo AND periodo_fim >= %s AND periodo_fim <= "
+                    "(date_trunc('month', %s::date) + interval '1 month - 1 day')::date ORDER BY id",
+                    (empresa_id, f"{ate[:4]}-01-01", f"{ate}-01"))
+        return [r[0] for r in cur.fetchall()]
+
+
 def listar_meses_ativos(conn, empresa_id: int) -> list:
     with conn.cursor() as cur:
         cur.execute("SELECT periodo_fim FROM importacao WHERE empresa_id=%s AND tipo='MENSAL' AND ativo ORDER BY periodo_fim", (empresa_id,))
@@ -297,31 +307,40 @@ def salvar_config_empresa(conn, empresa_id: int, novos: dict, usuario: str) -> N
         _evento(cur, empresa_id, "relatorio", "info", "Configuração do relatório da empresa atualizada (" + ", ".join(novos) + ")", usuario)
 
 
-def registrar_relatorio(conn, empresa_id: int, periodo, pdf_sha256: str, textos: dict, assinantes: list, usuario: str, meta: dict | None = None) -> tuple:
-    """Grava um relatorio gerado como RASCUNHO (nova versao do periodo; nunca regrava uma linha existente). Retorna (id, versao)."""
+def proxima_versao_relatorio(conn, empresa_id: int, periodo) -> int:
+    with conn.cursor() as cur:
+        cur.execute("SELECT COALESCE(MAX(versao),0)+1 FROM relatorio WHERE empresa_id=%s AND periodo=%s", (empresa_id, periodo))
+        return cur.fetchone()[0]
+
+
+def registrar_relatorio(conn, empresa_id: int, periodo, pdf_sha256: str, textos: dict, assinantes: list, usuario: str, meta: dict | None = None,
+                        status: str = "RASCUNHO", versao: int | None = None) -> tuple:
+    """Grava um relatorio gerado (nova versao do periodo; nunca regrava uma linha existente). status: RASCUNHO ou REVISADO (versao final,
+    sem a marca de rascunho). `versao`: a mesma usada na legenda do PDF (a restricao UNIQUE barra duas pessoas gerando juntas). Retorna (id, versao)."""
+    if status not in ("RASCUNHO", "REVISADO"):
+        raise ValueError("Status inválido para um relatório recém-gerado.")
     with transacao(conn):
         with conn.cursor() as cur:
-            cur.execute("SELECT COALESCE(MAX(versao),0)+1 FROM relatorio WHERE empresa_id=%s AND periodo=%s", (empresa_id, periodo))
-            v = cur.fetchone()[0]
+            v = versao or proxima_versao_relatorio(conn, empresa_id, periodo)
             corpo = dict(textos)
             if meta:
                 corpo["_meta"] = meta
             cur.execute("INSERT INTO relatorio (empresa_id, periodo, versao, status, pdf_sha256, textos, assinantes, gerado_por) "
-                        "VALUES (%s,%s,%s,'RASCUNHO',%s,%s::jsonb,%s::jsonb,%s) RETURNING id",
-                        (empresa_id, periodo, v, pdf_sha256, json.dumps(corpo), json.dumps(assinantes), usuario))
+                        "VALUES (%s,%s,%s,%s,%s,%s::jsonb,%s::jsonb,%s) RETURNING id",
+                        (empresa_id, periodo, v, status, pdf_sha256, json.dumps(corpo), json.dumps(assinantes), usuario))
             rid = cur.fetchone()[0]
-            _evento(cur, empresa_id, "relatorio", "info", f"Relatório {periodo:%m/%Y} v{v} gerado (RASCUNHO)", usuario, {"relatorio_id": rid, "sha256": pdf_sha256})
+            _evento(cur, empresa_id, "relatorio", "info", f"Relatório {periodo:%m/%Y} v{v} gerado ({status})", usuario, {"relatorio_id": rid, "sha256": pdf_sha256})
     return rid, v
 
 
 def listar_relatorios(conn, empresa_id: int, periodo=None) -> list:
-    sql = "SELECT id, periodo, versao, status, pdf_sha256, gerado_por, gerado_em FROM relatorio WHERE empresa_id=%s"
+    sql = "SELECT id, periodo, versao, status, pdf_sha256, gerado_por, gerado_em, COALESCE(textos->'_meta','{}'::jsonb) FROM relatorio WHERE empresa_id=%s"
     par = [empresa_id]
     if periodo:
         sql += " AND periodo=%s"; par.append(periodo)
     with conn.cursor() as cur:
         cur.execute(sql + " ORDER BY periodo DESC, versao DESC", par)
-        cols = ("id", "periodo", "versao", "status", "pdf_sha256", "gerado_por", "gerado_em")
+        cols = ("id", "periodo", "versao", "status", "pdf_sha256", "gerado_por", "gerado_em", "meta")
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
@@ -338,6 +357,31 @@ def definir_status_relatorio(conn, relatorio_id: int, status: str, usuario: str)
             raise ValueError("Relatório assinado não pode ser alterado; gere uma nova versão.")
         cur.execute("UPDATE relatorio SET status=%s WHERE id=%s", (status, relatorio_id))
         _evento(cur, r[0], "relatorio", "info", f"Relatório {r[2]:%m/%Y} v{r[3]} marcado como {status}", usuario, {"relatorio_id": relatorio_id})
+
+
+class AssinaturaInvalida(Exception):
+    """O arquivo enviado nao serve como registro de assinatura (mensagem em linguagem simples)."""
+
+
+def registrar_assinatura(conn, relatorio_id: int, nome_arquivo: str, sha256_assinado: str, usuario: str) -> None:
+    """Fecha o ciclo: o relatorio REVISADO foi assinado fora do GDF (Autentique). Guarda so' o nome e o hash do PDF assinado (o arquivo nao e' guardado
+    nem alterado) e muda o status para ASSINADO. Dali em diante a linha nao muda mais; correcao = nova versao."""
+    with transacao(conn):
+        with conn.cursor() as cur:
+            cur.execute("SELECT empresa_id, status, periodo, versao, pdf_sha256 FROM relatorio WHERE id=%s FOR UPDATE", (relatorio_id,))
+            r = cur.fetchone()
+            if not r:
+                raise AssinaturaInvalida("Relatório não encontrado.")
+            if r[1] == "ASSINADO":
+                raise AssinaturaInvalida("Este relatório já está registrado como assinado.")
+            if r[1] != "REVISADO":
+                raise AssinaturaInvalida("Só uma versão final (REVISADO) pode ser registrada como assinada. Gere a versão final primeiro.")
+            if sha256_assinado == r[4]:
+                raise AssinaturaInvalida("Este arquivo é idêntico ao PDF gerado pelo GDF, ou seja, ainda não tem assinatura. Envie o PDF que voltou do Autentique.")
+            info = {"arquivo": nome_arquivo, "sha256": sha256_assinado, "por": usuario}
+            cur.execute("UPDATE relatorio SET status='ASSINADO', textos = jsonb_set(textos, '{_assinatura}', %s::jsonb, true) WHERE id=%s", (json.dumps(info), relatorio_id))
+            _evento(cur, r[0], "relatorio", "info", f"Relatório {r[2]:%m/%Y} v{r[3]} registrado como ASSINADO ({nome_arquivo})", usuario,
+                    {"relatorio_id": relatorio_id, "sha256_assinado": sha256_assinado})
 
 
 # ---------------------------------------------------------------- log

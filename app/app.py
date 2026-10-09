@@ -8,7 +8,9 @@ st.navigation()/st.Page() e' a UNICA fonte da lista de paginas (mesma solucao do
 import streamlit as st
 
 from auth import require_login
-from conexao import NOME_APP, mostrar_flash, sidebar_rodape
+import db
+import situacao
+from conexao import NOME_APP, empresa_atual, get_conn, mostrar_flash, sidebar_rodape
 
 st.set_page_config(page_title="GDF — EnerMais", page_icon="📑", layout="wide")
 
@@ -26,9 +28,30 @@ def pagina_inicio():
         "3. **Relatório PDF** — gera o relatório do mês (textos editáveis, assinantes, versões).\n"
         "4. **Painel** — KPIs e evolução mês a mês para estudo e acompanhamento do histórico.\n"
         "5. **Histórico** — importações, status (rascunho/revisada), desfazer e log de eventos.\n"
-        "6. **Mapa de contas** — como cada conta do balancete vira uma linha do demonstrativo (editável, com histórico)."
+        "6. **Mapa de contas** — como cada conta do balancete vira uma linha do demonstrativo (editável, com histórico).\n"
+        "7. **Ajuda** — fluxo do mês, o que fazer quando uma conferência falha e glossário."
     )
     sidebar_rodape()
+    _quadro_situacao()
+
+
+def _quadro_situacao():
+    """Quadro 'onde estou' do ano: mes a mes, balancete, status, falhas e relatorio + proxima acao."""
+    import pandas as pd
+    conn = get_conn()
+    st.subheader("Situação do ano")
+    for emp in empresa_atual(conn):
+        imps = db.listar_importacoes(conn, emp["id"])
+        anos = situacao.anos_com_dados(imps)
+        if not anos:
+            st.info(f"{emp['razao_social']}: ainda não há balancete mensal importado. Comece por **Importar balancete**.")
+            continue
+        ano = anos[0] if len(anos) == 1 else st.selectbox(f"Ano — {emp['razao_social']}", anos, key=f"ini_ano_{emp['id']}")
+        linhas = situacao.quadro(ano, imps, db.listar_relatorios(conn, emp["id"]))
+        st.markdown(f"**{emp['razao_social']}** — {situacao.proxima_acao(linhas)}")
+        tab = pd.DataFrame([{"Mês": l["rotulo"], "Balancete": "importado" if l["importado"] else "–", "Status": l["status"],
+                             "Conferências com falha": "–" if l["falhas"] is None else l["falhas"], "Relatório": l["relatorio"]} for l in linhas])
+        st.dataframe(tab, hide_index=True, use_container_width=True, height=35 * 13 + 3)
 
 
 paginas = [
@@ -39,5 +62,6 @@ paginas = [
     st.Page("telas/6_Painel.py", title="Painel", icon="📈", url_path="painel"),
     st.Page("telas/3_Historico.py", title="Histórico", icon="🗂️", url_path="historico"),
     st.Page("telas/4_Mapa_de_Contas.py", title="Mapa de contas", icon="🧭", url_path="mapa"),
+    st.Page("telas/7_Ajuda.py", title="Ajuda", icon="❓", url_path="ajuda"),
 ]
 st.navigation(paginas).run()

@@ -13,15 +13,17 @@ import motor
 import relatorio_dados
 import relatorio_pdf
 from auth import usuario_atual
-from conexao import empresa_atual, get_conn, sidebar_rodape
+from conexao import empresa_atual, flash, get_conn, mostrar_flash, sidebar_rodape
 
 usuario = usuario_atual()
 conn = get_conn()
 sidebar_rodape()
 
 st.title("Relatório PDF")
-st.caption("Gera o relatório em PDF (layout padrão Enermais) com os mesmos números da tela Demonstrativos. "
-           "Cada geração fica registrada como **RASCUNHO**; um relatório assinado nunca é regravado.")
+mostrar_flash()
+st.caption("Gera o relatório em PDF (layout padrão Enermais) com os mesmos números da tela Demonstrativos. Caminho: **rascunho** (para revisar) → "
+           "**versão final** (sem marca de rascunho, para assinar no Autentique) → **registrar assinatura**. Cada geração vira uma versão nova; "
+           "um relatório assinado nunca é regravado.")
 empresas = empresa_atual(conn)
 emp = st.selectbox("Empresa", empresas, format_func=lambda e: e["razao_social"], key="pdf_empresa")
 
@@ -85,28 +87,81 @@ assinantes = [{"nome": n1.strip(), "cargo": c1.strip()}, {"nome": n2.strip(), "c
 
 liberar = True
 if falhas:
-    liberar = st.checkbox(f"Gerar mesmo com {len(falhas)} conferência(s) com falha (o relatório sai como RASCUNHO)", key="pdf_forcar")
-if st.button("Gerar PDF (rascunho)", type="primary", disabled=not liberar, key="pdf_gerar"):
+    liberar = st.checkbox(f"Gerar rascunho mesmo com {len(falhas)} conferência(s) com falha", key="pdf_forcar")
+nomes_ok = any(a["nome"] for a in assinantes) and all(a["nome"] for a in assinantes if a["cargo"])
+final_ok = n_ras == 0 and not falhas and nomes_ok
+ids_usados = db.ids_importacoes_mensais(conn, emp["id"], mes_ref)
+periodo_rel = date(int(mes_ref[:4]), int(mes_ref[5:7]), 1)
+
+
+def _gerar(status: str):
     try:
         agora = datetime.now().strftime("%d/%m/%Y %H:%M")
+        ver = db.proxima_versao_relatorio(conn, emp["id"], periodo_rel)
         ctx["empresa"]["assinantes"] = [(a["nome"], a["cargo"]) for a in assinantes]
-        pdf = relatorio_pdf.gerar_pdf(ctx, editados, "RASCUNHO", agora)
+        pdf = relatorio_pdf.gerar_pdf(ctx, editados, status, agora, ver)
         sha = hashlib.sha256(pdf).hexdigest()
-        ano_m, mes_m = int(mes_ref[:4]), int(mes_ref[5:7])
-        rid, ver = db.registrar_relatorio(conn, emp["id"], date(ano_m, mes_m, 1), sha, editados, assinantes, usuario,
-                                          {"importacoes_revisadas": n_rev, "importacoes_rascunho": n_ras, "conferencias_falhas": len(falhas)})
+        rid, ver = db.registrar_relatorio(conn, emp["id"], periodo_rel, sha, editados, assinantes, usuario,
+                                          {"importacoes": ids_usados, "importacoes_revisadas": n_rev, "importacoes_rascunho": n_ras, "conferencias_falhas": len(falhas)},
+                                          status=status, versao=ver)
         if salvar_ass:
             db.salvar_config_empresa(conn, emp["id"], {"assinantes": assinantes}, usuario)
-        st.session_state["pdf_pronto"] = {"bytes": pdf, "nome": f"GDF_{emp['codigo']}_{mes_ref}_v{ver}_RASCUNHO.pdf", "ver": ver, "sha": sha, "mes": mes_ref, "emp": emp["id"]}
+        marca = "RASCUNHO" if status == "RASCUNHO" else "FINAL"
+        st.session_state["pdf_pronto"] = {"bytes": pdf, "nome": f"GDF_{emp['codigo']}_{mes_ref}_v{ver}_{marca}.pdf", "ver": ver, "sha": sha, "mes": mes_ref,
+                                          "emp": emp["id"], "status": status}
     except Exception as exc:
         db.registrar_evento(conn, "relatorio", "erro", f"Falha ao gerar PDF {mes_ref}: {exc}", empresa_id=emp["id"], usuario=usuario)
         st.error(f"Não consegui gerar o PDF ({exc}). Nada foi alterado nos dados.")
+
+
+b1, b2 = st.columns(2)
+if b1.button("Gerar PDF (rascunho)", type="primary" if not final_ok else "secondary", disabled=not liberar, key="pdf_gerar"):
+    _gerar("RASCUNHO")
+if b2.button("Gerar versão final (para assinatura)", type="primary" if final_ok else "secondary", disabled=not final_ok, key="pdf_final"):
+    _gerar("REVISADO")
+if not final_ok:
+    faltam = []
+    if n_ras:
+        faltam.append(f"{n_ras} balancete(s) ainda em RASCUNHO (marque como revisada no Histórico)")
+    if falhas:
+        faltam.append(f"{len(falhas)} conferência(s) com falha")
+    if not nomes_ok:
+        faltam.append("nome do(s) assinante(s) em branco")
+    st.caption("A versão final só é liberada quando " + "; ".join(faltam) + ".")
 pronto = st.session_state.get("pdf_pronto")
 if pronto and pronto["mes"] == mes_ref and pronto["emp"] == emp["id"]:
-    st.success(f"Relatório v{pronto['ver']} gerado e registrado como RASCUNHO (código {pronto['sha'][:8]}).")
+    tipo = "RASCUNHO" if pronto["status"] == "RASCUNHO" else "VERSÃO FINAL (REVISADO)"
+    st.success(f"Relatório v{pronto['ver']} gerado e registrado como {tipo} (código {pronto['sha'][:8]}).")
     st.download_button("Baixar o PDF", data=pronto["bytes"], file_name=pronto["nome"], mime="application/pdf", key="pdf_baixar")
-rels = db.listar_relatorios(conn, emp["id"], date(int(mes_ref[:4]), int(mes_ref[5:7]), 1))
+
+rels = db.listar_relatorios(conn, emp["id"], periodo_rel)
 if rels:
+    def _dados(r):
+        usados = (r["meta"] or {}).get("importacoes")
+        if usados is None:
+            return "–"
+        return "atuais" if usados == ids_usados else "desatualizados (os balancetes mudaram depois)"
     st.markdown("**Relatórios já gerados deste mês**")
-    st.dataframe(pd.DataFrame([{"Versão": f"v{r['versao']}", "Status": r["status"], "Gerado por": r["gerado_por"], "Em": r["gerado_em"].strftime("%d/%m/%Y %H:%M"),
-                                "Código": (r["pdf_sha256"] or "")[:8]} for r in rels]), hide_index=True, use_container_width=True)
+    st.dataframe(pd.DataFrame([{"Versão": f"v{r['versao']}", "Status": r["status"], "Dados": _dados(r), "Gerado por": r["gerado_por"],
+                                "Em": r["gerado_em"].strftime("%d/%m/%Y %H:%M"), "Código": (r["pdf_sha256"] or "")[:8]} for r in rels]),
+                 hide_index=True, use_container_width=True)
+    finais = [r for r in rels if r["status"] == "REVISADO"]
+    if finais:
+        with st.expander("Registrar assinatura (PDF que voltou do Autentique)"):
+            st.caption("O GDF não assina. Depois de assinar fora, envie aqui o PDF assinado só para registrar: o sistema guarda o nome e o código (SHA-256) do arquivo, "
+                       "não o guarda nem o altera, e a versão passa a ASSINADO (não muda mais).")
+            alvo = st.selectbox("Versão assinada", finais, format_func=lambda r: f"v{r['versao']} (código {(r['pdf_sha256'] or '')[:8]})", key="ass_versao")
+            arq = st.file_uploader("PDF assinado", type=["pdf"], key="ass_arquivo")
+            if arq is not None:
+                raw = arq.getvalue()
+                sem_assinatura = b"/ByteRange" not in raw
+                if sem_assinatura:
+                    st.warning("Não encontrei assinatura digital dentro deste PDF. Confirme que é o arquivo assinado.")
+                ok_conf = st.checkbox("Confirmo que é o PDF assinado desta versão", key="ass_confirma") if sem_assinatura else True
+                if ok_conf and st.button("Registrar como assinado", key="ass_registrar"):
+                    try:
+                        db.registrar_assinatura(conn, alvo["id"], arq.name, hashlib.sha256(raw).hexdigest(), usuario)
+                        flash("ok", f"Versão v{alvo['versao']} registrada como ASSINADO.")
+                        st.rerun()
+                    except db.AssinaturaInvalida as exc:
+                        st.error(str(exc))
