@@ -5,6 +5,7 @@ import streamlit as st
 
 import db
 import formatacao as F
+import logui
 from auth import usuario_atual
 from fuso import fmt_br
 from conexao import empresa_atual, flash, get_conn, mostrar_flash, sidebar_rodape
@@ -79,9 +80,5 @@ with aba_imp:
             else:
                 st.caption("Sem conferências gravadas.")
 with aba_log:
-    ev = db.listar_eventos(conn, emp["id"])
-    if ev:
-        st.dataframe(pd.DataFrame([{"Quando": fmt_br(e["criado_em"]), "Nível": e["nivel"], "Origem": e["origem"],
-                                    "Mensagem": e["mensagem"], "Usuário": e["usuario"]} for e in ev]), hide_index=True, width="stretch")
-    else:
-        st.caption("Sem eventos.")
+    st.caption("Tudo o que foi feito no app, separado por categoria. Os mais recentes primeiro (últimos 500).")
+    logui.abas_log(db.listar_eventos(conn, emp["id"], limite=500))

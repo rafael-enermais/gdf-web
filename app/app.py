@@ -27,7 +27,7 @@ def pagina_inicio():
         "2. **Demonstrativos** — escolha o mês e veja Balanço, DRE, indicadores, composição de saldos e conferências.\n"
         "3. **Relatório PDF** — gera o relatório do mês (textos editáveis, assinantes, versões).\n"
         "4. **Painel** — KPIs e evolução mês a mês para estudo e acompanhamento do histórico.\n"
-        "5. **Histórico** — importações, status (rascunho/revisada), desfazer e log de eventos.\n"
+        "5. **Histórico** — importações, status (rascunho/revisada), desfazer e o log por categoria (importações, relatórios, edições, erros e avisos).\n"
         "6. **Mapa de contas** — como cada conta do balancete vira uma linha do demonstrativo (editável, com histórico).\n"
         "7. **Ajuda** — fluxo do mês, o que fazer quando uma conferência falha e glossário."
     )

@@ -3,6 +3,7 @@
 import streamlit as st
 
 import db
+import logui
 import motor
 from auth import usuario_atual
 from conexao import empresa_atual, flash, get_conn, mostrar_flash, sidebar_rodape
@@ -18,7 +19,7 @@ st.caption("Envie o balancete do sistema contábil em **CSV** (relatório *Balan
            "inclusive o assinado — o PDF só é lido, nunca alterado). Um arquivo por mês (01/01 a 31/01, 01/02 a 28/02...). "
            "O acumulado (01/01 até o mês) também é aceito e serve para conferir os meses. Os dois formatos dão os mesmos números e passam pelas mesmas conferências.")
 
-empresa_atual(conn)
+empresas = empresa_atual(conn)
 st.session_state.setdefault("upl_n", 0)
 arquivos = st.file_uploader("Arquivos CSV ou PDF", type=["csv", "pdf"], accept_multiple_files=True, key=f"upl_{st.session_state['upl_n']}")
 
@@ -39,10 +40,13 @@ for arq in arquivos or []:
             cab, contas = ler_bytes(raw, arq.name)
         except ErroImportacao as exc:
             st.error(str(exc))
+            logui.registrar_uma_vez(conn, ("ilegivel", arq.name, len(raw)), "importar", "erro", f"Arquivo {arq.name} não foi lido: {exc}", usuario=usuario)
             continue
         emp = db.empresa_por_cnpj(conn, cab["cnpj"])
         if not emp:
             st.error(f"O CNPJ {cab['cnpj']} ({cab['empresa']}) não está cadastrado no GDF. Peça o cadastro da empresa antes de importar.")
+            logui.registrar_uma_vez(conn, ("cnpj", cab["sha256"]), "importar", "erro",
+                                    f"Arquivo {arq.name} não importado: CNPJ {cab['cnpj']} não cadastrado", usuario=usuario)
             continue
         mapa = db.mapa_vigente(conn, emp["id"])
         conf = motor.conferencias_arquivo(contas, mapa, cab["periodo"])
@@ -78,6 +82,9 @@ for arq in arquivos or []:
         if dup:
             # o mesmo arquivo nunca entra duas vezes (os dados ja estao guardados); em vez de "nada a fazer", oferece o que faz sentido
             d_id, d_ativo, d_status = dup
+            logui.registrar_uma_vez(conn, ("dup", cab["sha256"]), "importar", "info",
+                                    f"Arquivo {arq.name} já estava importado (#{d_id}, {'ativa' if d_ativo else 'inativa'}, {d_status}) — nenhuma importação nova",
+                                    empresa_id=emp["id"], usuario=usuario)
             if d_ativo and d_status == "REVISADA":
                 st.info(f"Este arquivo já está importado (importação #{d_id}, ativa, REVISADA). Nada a fazer.")
             elif d_ativo:
@@ -137,3 +144,5 @@ if prontos:
                 flash("erro", f"{cab['arquivo']}: não consegui gravar ({exc}). Nada foi alterado.")
         st.session_state["upl_n"] += 1            # troca a chave do uploader para limpar os arquivos
         st.rerun()
+
+logui.painel_importacao(conn, empresas)
