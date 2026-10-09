@@ -56,7 +56,7 @@ def test_demonstrativos_com_dados(patch_conn):
     at = _app("2_Demonstrativos.py", patch_conn).run()
     assert not at.exception, at.exception
     assert any("conferências passaram" in s.value for s in at.success)
-    assert len(at.tabs) == 6 and len(at.dataframe) >= 4
+    assert len(at.tabs) == 5 and len(at.dataframe) >= 4
     assert at.selectbox(key="dem_mes").value == "2026-03"
     at.selectbox(key="dem_mes").select("2026-02").run()
     assert not at.exception
@@ -185,7 +185,7 @@ def test_demonstrativos_mostra_status_e_abas_novas(patch_conn):
     at = _app("2_Demonstrativos.py", patch_conn).run()
     assert not at.exception, at.exception
     assert any("RASCUNHO" in i.value and "Status dos balancetes" in i.value for i in at.info)
-    assert [t.label for t in at.tabs] == ["Balanço Patrimonial", "DRE", "Indicadores", "Composição de Saldos", "Conferências", "Relatório PDF"]
+    assert [t.label for t in at.tabs] == ["Balanço Patrimonial", "DRE", "Indicadores", "Composição de Saldos", "Conferências"]
     imps = db.listar_importacoes(patch_conn, emp_id)
     for i in imps:
         db.definir_status(patch_conn, i["id"], "REVISADA", "t")
@@ -195,7 +195,7 @@ def test_demonstrativos_mostra_status_e_abas_novas(patch_conn):
 
 def test_gerar_pdf_registra_rascunho_e_oferece_download(patch_conn):
     emp_id = _semear_ate(patch_conn)
-    at = _app("2_Demonstrativos.py", patch_conn).run()
+    at = _app("5_Relatorio_PDF.py", patch_conn).run()
     assert not at.exception, at.exception
     botao = [b for b in at.button if b.label == "Gerar PDF (rascunho)"]
     assert botao and not botao[0].disabled
@@ -226,3 +226,41 @@ def test_mapa_editar_linha_pela_tela(patch_conn):
     [b for b in at.button if b.label == "Salvar alteração"][0].click().run()
     assert not at.exception, at.exception
     assert {m[0]: m for m in db.mapa_vigente(patch_conn, emp_id)}["fretes"][1] == "(−) Fretes e transportes"
+
+
+def test_relatorio_pdf_sem_dados_e_sem_janeiro(patch_conn):
+    at = _app("5_Relatorio_PDF.py", patch_conn).run()
+    assert not at.exception and any("Ainda não há balancete" in i.value for i in at.info)
+    _semear(patch_conn, meses=(2, 3))
+    at = _app("5_Relatorio_PDF.py", patch_conn).run()
+    assert not at.exception and any("falta o mês de janeiro" in w.value for w in at.warning)
+
+
+def test_relatorio_pdf_troca_de_mes(patch_conn):
+    _semear_ate(patch_conn)
+    at = _app("5_Relatorio_PDF.py", patch_conn).run()
+    assert at.selectbox(key="pdf_mes").value == "2026-03"
+    at.selectbox(key="pdf_mes").select("2026-02").run()
+    assert not at.exception, at.exception
+
+
+def test_painel_sem_dados_e_com_dados(patch_conn):
+    at = _app("6_Painel.py", patch_conn).run()
+    assert not at.exception and any("Ainda não há balancete" in i.value for i in at.info)
+    _semear_ate(patch_conn)
+    at = _app("6_Painel.py", patch_conn).run()
+    assert not at.exception, at.exception
+    assert [t.label for t in at.tabs] == ["Evolução", "Indicadores", "Tabela mensal", "Qualidade dos dados"]
+    rotulos = [m.label for m in at.metric]
+    assert "Caixa e aplicações" in rotulos and "Dívida líquida" in rotulos and len(rotulos) == 6
+    caixa = [m for m in at.metric if m.label == "Caixa e aplicações"][0]
+    assert caixa.value.startswith("R$ 1,0 mi") and caixa.delta is not None
+    tabelas_ = [df.value for df in at.dataframe]
+    assert any("Indicador" in t.columns and "Mar/26" in t.columns for t in tabelas_)
+
+
+def test_painel_com_um_mes_so(patch_conn):
+    _semear_ate(patch_conn, 1)
+    at = _app("6_Painel.py", patch_conn).run()
+    assert not at.exception, at.exception
+    assert any("ainda não há mês anterior" in c.value for c in at.caption)

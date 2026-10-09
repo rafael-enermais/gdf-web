@@ -215,3 +215,12 @@ def test_relatorio_pdf_com_dados_reais_tem_os_valores_do_excel(b, wb):
     caixa = next(ws.cell(r, 5).value for r in range(10, 54) if ws.cell(r, 2).value and "Caixa e equivalentes" in str(ws.cell(r, 2).value))
     assert RP.fnum(caixa) in todo
     assert RP.fnum(dr["acumulado"]["res_liq"]) in todo
+
+
+def test_painel_serie_com_dados_reais(b):
+    import painel
+    linhas = painel.serie_mensal(b)
+    assert len(linhas) == len(b.ordem) and linhas[0]["periodo"].endswith("-01")
+    assert abs(sum(l["resultado_mes"] for l in linhas) - linhas[-1]["resultado_acum"]) < 0.05
+    assert abs(linhas[-1]["resultado_acum"] - M.dre(b, b.ordem[-1])["acumulado"]["res_liq"]) < 0.005
+    assert linhas[-1]["periodo"] == b.ordem[-1] and linhas[-1]["caixa"] > 0
