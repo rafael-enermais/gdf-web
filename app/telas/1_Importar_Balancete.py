@@ -70,13 +70,33 @@ for arq in arquivos or []:
             st.warning(f"{len(falhas)} conferência(s) com falha. Confira os detalhes acima antes de importar.")
             item["forcar"] = st.checkbox("Importar mesmo assim (fica como RASCUNHO e o aviso fica registrado)", key=f"forcar_{cab['sha256']}")
         with conn.cursor() as cur:
-            cur.execute("SELECT id, ativo FROM importacao WHERE empresa_id=%s AND arquivo_sha256=%s", (emp["id"], cab["sha256"]))
+            cur.execute("SELECT id, ativo, status FROM importacao WHERE empresa_id=%s AND arquivo_sha256=%s", (emp["id"], cab["sha256"]))
             dup = cur.fetchone()
             cur.execute("SELECT id FROM importacao WHERE empresa_id=%s AND tipo=%s AND periodo_ini=%s AND periodo_fim=%s AND ativo",
                         (emp["id"], cab["tipo"], cab["ini"], cab["fim"]))
             ativa = cur.fetchone()
         if dup:
-            st.info(f"Este arquivo já foi importado (importação #{dup[0]}{'' if dup[1] else ', hoje inativa — reative no Histórico'}). Nada a fazer.")
+            # o mesmo arquivo nunca entra duas vezes (os dados ja estao guardados); em vez de "nada a fazer", oferece o que faz sentido
+            d_id, d_ativo, d_status = dup
+            if d_ativo and d_status == "REVISADA":
+                st.info(f"Este arquivo já está importado (importação #{d_id}, ativa, REVISADA). Nada a fazer.")
+            elif d_ativo:
+                st.info(f"Este arquivo já está importado (importação #{d_id}, ativa), mas ainda como {d_status}.")
+                if st.button(f"Confirmar #{d_id} como REVISADA", key=f"dup_rev_{cab['sha256']}"):
+                    db.definir_status(conn, d_id, "REVISADA", usuario)
+                    flash("ok", f"Importação #{d_id} confirmada como REVISADA.")
+                    st.session_state["upl_n"] += 1
+                    st.rerun()
+            else:
+                outra_txt = f" A #{ativa[0]}, hoje ativa neste período, fica guardada (inativa)." if ativa else ""
+                st.info(f"Este arquivo já foi importado antes (importação #{d_id}, hoje inativa). Os dados dele estão guardados.")
+                if st.button(f"Usar este arquivo de novo (reativar #{d_id})", key=f"dup_reat_{cab['sha256']}"):
+                    trocada = db.reativar_trocando(conn, d_id, usuario)
+                    flash("ok", f"Importação #{d_id} reativada." + (f" A #{trocada} ficou guardada, inativa." if trocada else ""))
+                    st.session_state["upl_n"] += 1
+                    st.rerun()
+                if outra_txt:
+                    st.caption(outra_txt.strip())
             continue
         if ativa:
             item["substituir"] = st.checkbox(f"Já existe a importação #{ativa[0]} ativa para este período. Substituir? (a anterior fica guardada, inativa)",

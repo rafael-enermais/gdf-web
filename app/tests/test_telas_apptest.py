@@ -113,10 +113,49 @@ def test_importar_fluxo_completo(patch_conn):
     assert not at.exception
     emp = db.empresa_por_cnpj(patch_conn, CNPJ)
     assert db.listar_meses_ativos(patch_conn, emp["id"]) == ["2026-01", "2026-02"]
-    # reenviar os mesmos arquivos: avisa que ja' foram importados e nao oferece importar de novo
+    # reenviar os mesmos arquivos: avisa que ja' foram importados, nao oferece importar de novo e oferece confirmar (ainda sao RASCUNHO)
     at2 = _importar(patch_conn, arqs)
-    assert any("já foi importado" in i.value for i in at2.info)
+    assert any("já está importado" in i.value for i in at2.info)
     assert not [b for b in at2.button if "Importar" in b.label and "arquivo" in b.label]
+    conf = [b for b in at2.button if "como REVISADA" in b.label]
+    assert len(conf) == 2
+    with patch("streamlit.file_uploader", return_value=arqs):
+        conf[0].click().run()
+    assert not at2.exception, at2.exception
+    sts = {i["periodo_fim"].month: i["status"] for i in db.listar_importacoes(patch_conn, emp["id"])}
+    assert sorted(sts.values()) == ["RASCUNHO", "REVISADA"]
+    at3 = _importar(patch_conn, arqs)                      # a confirmada agora diz "Nada a fazer"; a outra ainda oferece confirmar
+    assert any("Nada a fazer" in i.value for i in at3.info)
+    assert len([b for b in at3.button if "como REVISADA" in b.label]) == 1
+
+
+def test_importar_mesmo_arquivo_inativo_oferece_reativar_trocando(patch_conn):
+    v1 = _Upload("jan_a.csv", csv_texto(MESES["2026-01"], cnpj=CNPJ, ini="01/01/2026", fim="31/01/2026"))
+    outras = [dict(c) for c in MESES["2026-01"]]
+    outras[0] = {**outras[0], "nome": outras[0]["nome"] + " (v2)"}
+    v2 = _Upload("jan_b.csv", csv_texto(outras, cnpj=CNPJ, ini="01/01/2026", fim="31/01/2026"))
+    at = _importar(patch_conn, [v1])
+    with patch("streamlit.file_uploader", return_value=[v1]):
+        [b for b in at.button if "Importar 1 arquivo" in b.label][0].click().run()
+    emp = db.empresa_por_cnpj(patch_conn, CNPJ)
+    at = _importar(patch_conn, [v2])                       # outro arquivo, mesmo periodo -> Substituir
+    [c for c in at.checkbox if "Substituir" in c.label][0].check()
+    with patch("streamlit.file_uploader", return_value=[v2]):
+        at.run()
+        [b for b in at.button if "Importar 1 arquivo" in b.label][0].click().run()
+    imps = {i["arquivo_nome"]: i for i in db.listar_importacoes(patch_conn, emp["id"])}
+    assert not imps["jan_a.csv"]["ativo"] and imps["jan_b.csv"]["ativo"]
+    at = _importar(patch_conn, [v1])                       # o primeiro de volta: nao reimporta, oferece reativar
+    assert any("hoje inativa" in i.value for i in at.info)
+    assert not [b for b in at.button if "Importar" in b.label and "arquivo" in b.label]
+    with patch("streamlit.file_uploader", return_value=[v1]):
+        [b for b in at.button if "Usar este arquivo de novo" in b.label][0].click().run()
+    assert not at.exception, at.exception
+    imps = {i["arquivo_nome"]: i for i in db.listar_importacoes(patch_conn, emp["id"])}
+    assert imps["jan_a.csv"]["ativo"] and not imps["jan_b.csv"]["ativo"] and len(imps) == 2      # troca, nada apagado
+    with patch_conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM balancete_linha WHERE importacao_id IN (%s,%s)", (imps["jan_a.csv"]["id"], imps["jan_b.csv"]["id"]))
+        assert cur.fetchone()[0] > 0
 
 
 def test_importar_cnpj_desconhecido_e_arquivo_invalido(patch_conn):
