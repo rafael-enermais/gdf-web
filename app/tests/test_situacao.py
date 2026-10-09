@@ -39,6 +39,7 @@ def test_proxima_acao_cobre_cada_situacao():
     assert "Gere o relatório de Fev/26" in acao([_imp(1), _imp(2)])
     assert "versão final" in acao([_imp(1)], [_rel(1, 1, "RASCUNHO")])
     assert "em dia" in acao([_imp(1)], [_rel(1, 1, "ASSINADO")])
+    assert "em dia" in acao([_imp(1)], [_rel(1, 1, "REVISADO")])             # assinatura e' opcional
 
 
 def test_guia_cobre_todos_os_grupos_de_conferencia():

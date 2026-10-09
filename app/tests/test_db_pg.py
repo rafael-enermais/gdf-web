@@ -233,7 +233,7 @@ def test_relatorio_versoes_status_e_config(conn, emp):
     assert [r["status"] for r in db.listar_relatorios(conn, emp, per)] == ["RASCUNHO", "REVISADO"]
     with conn.cursor() as cur:
         cur.execute("UPDATE relatorio SET status='ASSINADO' WHERE id=%s", (r1,))
-    with pytest.raises(ValueError, match="assinado"):
-        db.definir_status_relatorio(conn, r1, "RASCUNHO", "u")
+    db.definir_status_relatorio(conn, r1, "RASCUNHO", "u")                      # sem trava
+    assert db.listar_relatorios(conn, emp, per)[-1]["status"] == "RASCUNHO"
     with pytest.raises(ValueError):
         db.definir_status_relatorio(conn, r2, "ASSINADO", "u")
