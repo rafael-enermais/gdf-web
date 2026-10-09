@@ -1,5 +1,5 @@
 -- =====================================================================
--- GDF - ZERAR DADOS  |  sql/zerar_dados.sql  v1.0
+-- GDF - ZERAR DADOS  |  sql/zerar_dados.sql  v1.1
 -- Apaga TODOS os dados do schema gdf: importacoes, linhas e conferencias, mapa de contas editado, apelidos,
 -- relatorios gerados (e o registro de assinaturas), log de eventos e a empresa (assinantes padrao inclusos).
 --
@@ -40,10 +40,11 @@ BEGIN
 END
 $$;
 
--- 3. Zerar (ordem irrelevante com CASCADE; RESTART IDENTITY recomeca os numeros em 1)
+-- 3. Zerar. SEM CASCADE de proposito: so' as 8 tabelas do schema gdf listadas aqui. Se alguma tabela de OUTRO app tivesse chave
+--    estrangeira para o gdf, o Postgres daria erro (e nada seria apagado) em vez de apagar o outro app. RESTART IDENTITY recomeca os numeros em 1.
 TRUNCATE TABLE gdf.conferencia, gdf.balancete_linha, gdf.importacao, gdf.mapa_conta, gdf.apelido,
                gdf.relatorio, gdf.evento, gdf.empresa
-    RESTART IDENTITY CASCADE;
+    RESTART IDENTITY;
 
 -- 4. Foto de DEPOIS (tudo deve estar 0)
 SELECT 'DEPOIS' AS momento,
