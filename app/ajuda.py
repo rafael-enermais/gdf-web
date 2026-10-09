@@ -7,7 +7,7 @@ FLUXO = [
     ("Importar balancete", "Menu **Importar balancete**: envie o arquivo do mês. Veja a lista de conferências (✅/❌) antes de confirmar. Se houver ❌, consulte o guia abaixo."),
     ("Revisar", "Na própria tela de **Importar**: veja as conferências e, se os números batem com a contabilidade, marque **\"Revisei os números e confirmo\"** — o balancete entra já como **REVISADA**. Quem já entrou como rascunho é confirmado em **Histórico**."),
     ("Conferir os demonstrativos", "Menu **Demonstrativos**: Balanço, DRE, Indicadores, Composição de Saldos (aqui dá para digitar apelidos para os nomes cortados) e Conferências."),
-    ("Gerar o relatório", "Menu **Relatório PDF**: gere o rascunho, ajuste os textos de leitura, e quando tudo estiver revisado gere a **versão final**."),
+    ("Gerar o relatório", "Menu **Relatório PDF**: gere o rascunho, ajuste os textos de leitura, e quando tudo estiver revisado gere a **versão final**. Se ainda houver pendência (balancete em rascunho, conferência com falha, assinante sem nome), dá para gerar mesmo assim: o app pede uma marcação e deixa o aviso no log. A ordem em que os balancetes são enviados não importa."),
     ("Assinar (opcional)", "Assine a versão final no Autentique (fora do GDF). Se quiser deixar o registro no GDF, use **Relatório PDF → Registrar assinatura** e envie o PDF assinado; dá para substituir ou desfazer quando quiser (nada trava)."),
     ("Acompanhar", "Menu **Painel**: KPIs e evolução mês a mês. Na página **Início** fica o quadro de situação do ano."),
 ]

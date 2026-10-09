@@ -8,7 +8,7 @@ import psycopg2
 import psycopg2.extensions
 import streamlit as st
 
-APP_VERSION = "0.4.9"        # 0.MAJOR.MINOR ate' o lancamento oficial (mesma regra do EGC)
+APP_VERSION = "0.4.10"        # 0.MAJOR.MINOR ate' o lancamento oficial (mesma regra do EGC)
 NOME_APP = "GDF — Gestão de Demonstrativo Financeiro"
 CONTATO = "rafael.nakahara@enermais.com.br"       # mesmo contato do rodape do EGC/RADAR
 

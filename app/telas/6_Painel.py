@@ -28,8 +28,8 @@ if not meses:
     st.info("Ainda não há balancete mensal importado para esta empresa. Use **Importar balancete**.")
     st.stop()
 if not validos:
-    st.warning("Há balancetes importados, mas falta o mês de janeiro (ou um mês no meio). O painel precisa da sequência completa de "
-               "janeiro até o último mês. Meses importados: " + ", ".join(F.mes_br(m) for m in meses) + ".")
+    st.warning("Há balancetes importados, mas a sequência de janeiro até o último mês está incompleta. Os números somam os meses do ano, então precisam de todos eles. Faltam: " + ", ".join(F.mes_br(m) for m in contexto.meses_faltantes(meses))
+               + ". Importe o que falta, em qualquer ordem; já importados: " + ", ".join(F.mes_br(m) for m in meses) + ".")
     st.stop()
 
 anos = sorted({m[:4] for m in validos}, reverse=True)

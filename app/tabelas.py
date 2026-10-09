@@ -82,10 +82,15 @@ def _data_fim_mes(chave: str) -> str:
     return f"{calendar.monthrange(a, m)[1]:02d}/{m:02d}/{a}"
 
 
+def _col_mes_ant(mes_ant: str, mes_ref: str) -> str:
+    """Rótulo da coluna do mês anterior. Em janeiro (único mês importado) mes_ant == mes_ref: o rótulo precisa ser diferente, senão o Streamlit quebra."""
+    return _data_fim_mes(mes_ant) if mes_ant != mes_ref else "Mês anterior (n/d)"
+
+
 def tabela_balanco(bp: dict, mes_ref: str, mes_ant: str):
     """Duas tabelas (ativo, passivo+PL). Colunas: 31/12 anterior, mes anterior, mes atual, Var R$ e Var % (abertura -> atual)."""
     ano_ant = int(mes_ref[:4]) - 1
-    cols = [f"31/12/{ano_ant}", _data_fim_mes(mes_ant), _data_fim_mes(mes_ref), "Var. R$", "Var. %"]
+    cols = [f"31/12/{ano_ant}", _col_mes_ant(mes_ant, mes_ref), _data_fim_mes(mes_ref), "Var. R$", "Var. %"]
     out = []
     for titulo, linhas in (("ATIVO", BP_ATIVO_LINHAS), ("PASSIVO E PATRIMÔNIO LÍQUIDO", BP_PASSIVO_LINHAS)):
         rows, estilos = [], []
@@ -116,7 +121,7 @@ def tabela_dre(d: dict, mes_ref: str):
 
 def tabela_indicadores(bp: dict, d: dict, mes_ref: str, mes_ant: str):
     ano_ant = int(mes_ref[:4]) - 1
-    cols = [f"31/12/{ano_ant}", _data_fim_mes(mes_ant), _data_fim_mes(mes_ref)]
+    cols = [f"31/12/{ano_ant}", _col_mes_ant(mes_ant, mes_ref), _data_fim_mes(mes_ref)]
     i0 = motor.indicadores(bp["abertura"], None)
     i1 = motor.indicadores(bp["mes_ant"], d["ate_mes_ant"])
     i2 = motor.indicadores(bp["mes_ref"], d["acumulado"])
