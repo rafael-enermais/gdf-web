@@ -307,3 +307,37 @@ def test_pdf_ate_a_lacuna_e_um_relatorio_completo_de_janeiro():
     x, pdf = _pdf(r, "2026-01")
     n, txt = _texto_pdf(pdf)
     assert n == 11 and "n/d" not in txt and "Dados incompletos" not in txt
+
+
+def test_periodo_de_um_mes_so_nao_repete_colunas_nas_tabelas_nem_no_pdf():
+    import tabelas
+    r = fontes.calcular(SEM_FEV, {}, None, "2026-03", 3)                                     # periodo = so' marco
+    for df, _ in tabelas.tabela_balanco(r["bp"], "2026-03", "2026-02", 3):
+        assert len(df.columns) == 5 and len(set(df.columns)) == 5                           # rotulo + abertura + mes + Var R$ + Var %
+    df, _ = tabelas.tabela_dre(r["d"], "2026-03", 3)
+    assert len(df.columns) == 2 and "resultado do período" in df.columns[1]
+    df, _ = tabelas.tabela_indicadores(r["bp"], r["d"], "2026-03", "2026-02", 3)
+    assert list(df.columns) == ["Indicador", "28/02/2026", "31/03/2026", "Fórmula"]          # sem coluna repetida
+    x, pdf = _pdf(r, "2026-03")
+    n, txt = _texto_pdf(pdf)
+    t = txt.replace("\n", " ")
+    assert "Período de um mês só" in t and "resultado do período" in t
+    assert t.count("28/02/2026") >= 1 and "n/d" not in txt
+    assert "Mês anterior (= abertura)" not in t
+
+
+def test_periodo_com_varios_meses_continua_com_todas_as_colunas():
+    import tabelas
+    for df, _ in tabelas.tabela_balanco(CHEIO["bp"], "2026-04", "2026-03", 1):
+        assert len(df.columns) == 6
+    assert len(tabelas.tabela_dre(CHEIO["d"], "2026-04", 1)[0].columns) == 4
+
+
+def test_pdf_nao_deixa_marcador_sem_preencher_e_diz_periodo_nos_indicadores():
+    for r, ref in ((CHEIO, "2026-04"), (fontes.calcular(SEM_FEV, {}, None, "2026-04", 3), "2026-04")):
+        _, pdf = _pdf(r, ref)
+        _, txt = _texto_pdf(pdf)
+        assert "{" not in txt and "}" not in txt, [l for l in txt.split("\n") if "{" in l]
+    _, txt_p = _texto_pdf(_pdf(fontes.calcular(SEM_FEV, {}, None, "2026-04", 3))[1])
+    assert "Resultado (acumulado no período)" in txt_p and "acumulado no ano" not in txt_p
+    assert "Resultado (acumulado no ano)" in _texto_pdf(_pdf(CHEIO)[1])[1]

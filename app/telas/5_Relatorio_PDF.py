@@ -45,7 +45,7 @@ b, bp, d, mapa, periodos, falhas = dados["b"], dados["bp"], dados["d"], dados["m
 
 n_rev, n_ras, pend_ras = contexto.status_usados(dados, contexto.status_por_periodo(conn, emp["id"]))
 if n_ras == 0:
-    st.success(f"Balancetes usados neste relatório: todos os {n_rev} estão **REVISADA**.")
+    st.success(f"Balancete usado neste relatório: **REVISADA**." if n_rev == 1 else f"Balancetes usados neste relatório: todos os {n_rev} estão **REVISADA**.")
 else:
     st.info(f"Balancetes usados neste relatório: {n_rev} **REVISADA** e {n_ras} **RASCUNHO**. O PDF sai como RASCUNHO de qualquer forma.")
 lacunas.mostrar_lacunas(dados)

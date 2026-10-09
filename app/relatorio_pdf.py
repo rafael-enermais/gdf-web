@@ -522,21 +522,24 @@ def p_dre(c, n, N):
     moldura(c, n, N, "Demonstração do Resultado")
     mes, ano = X["mes"], X["ano"]
     y = titulo(c, TOPY, "Demonstração do Resultado do Exercício", f"Em R$ — período de {('01/01/' + str(ano)) if X['ini'] == 1 else ('01/' + format(X['ini'], '02d') + '/' + str(ano))} a {X['data_base']} · contas de resultado encerradas mensalmente")
-    cols = [(235, "l"), (92, "r"), (92, "r"), (96, "r")]
     ab = RD.MESES_ABREV
-    hdr = ["", (f"{X['ate_ant_rot']}/{ano}" if X["tem_ant"] else "—"), f"{ab[mes - 1]}/{ano}", f"Acumulado {X['acum_rot']}/{ano}"]
+    tem = X["tem_ant"]                                                       # periodo de 1 mes so': mes = acumulado do periodo, uma coluna basta
+    cols = [(235, "l"), (92, "r"), (92, "r"), (96, "r")] if tem else [(315, "l"), (200, "r")]
+    hdr = ["", f"{X['ate_ant_rot']}/{ano}", f"{ab[mes - 1]}/{ano}", f"Acumulado {X['acum_rot']}/{ano}"] if tem else ["", f"{ab[mes - 1]}/{ano} (resultado do período)"]
     rows = []
     for rotulo, lid, tipo in tabelas.DRE_LINHAS_EXIBIR:
         if tipo == "secao":
-            rows.append(("sec", [(rotulo, None), "", "", ""])); continue
+            rows.append(("sec", [(rotulo, None)] + [""] * (3 if tem else 1))); continue
         t = "tot" if lid == "res_liq" else ("sub" if lid in _DRE_SUB else "norm")
         lab = X["rot"].get(lid, lid)
         if t == "norm": lab = "   " + lab
         v = X["dre"][lid]
-        rows.append((t, [(lab, None), num_cell(v[0], 2, t == "tot") if X["tem_ant"] else ("–", None), num_cell(v[1], 2, t == "tot"), num_cell(v[2], 2, t == "tot")]))
+        rows.append((t, [(lab, None), num_cell(v[0], 2, t == "tot"), num_cell(v[1], 2, t == "tot"), num_cell(v[2], 2, t == "tot")] if tem
+                     else [(lab, None), num_cell(v[1], 2, t == "tot")]))
     y = tabela(c, MX, y, cols, hdr, rows, rh=13.6, fs=7.2)
     y -= 12
-    notas = [f"(1) Resultado acumulado = resultado dos meses anteriores {'do período ' if X['ini'] > 1 else ''}+ resultado de {X['mes_nome']}; as contas de resultado de cada mês são encerradas no próprio mês."]
+    notas = [f"(1) Resultado acumulado = resultado dos meses anteriores {'do período ' if X['ini'] > 1 else ''}+ resultado de {X['mes_nome']}; as contas de resultado de cada mês são encerradas no próprio mês."
+             if tem else f"(1) Período de um mês só: o resultado de {X['mes_nome']} é o resultado do período; as contas de resultado de cada mês são encerradas no próprio mês."]
     if E("nota_resultado"):
         notas.append("(2) " + E("nota_resultado"))
     if not nd(X["ajustes"]) and abs(X["ajustes"]) >= 0.005:
@@ -601,20 +604,22 @@ _BP_SUB = {"caixa_eq", "ac", "rlp", "conc_liq", "anc", "pc", "pnc", "pl"}
 def p_balanco(c, n, N):
     moldura(c, n, N, "Balanço Patrimonial")
     yy = str(X["ano"])[2:]; yy0 = str(X["ano"] - 1)[2:]; ab = X["mes_abrev"].lower()
-    y = titulo(c, TOPY, "Balanço Patrimonial", f"Em R$ — posição em {X['abertura']}, {X['data_ant']} e {X['data_base']} · variação entre {X['abertura_rot'].lower()} e {ab}/{yy}")
-    cols = [(188, "l"), (66, "r"), (66, "r"), (66, "r"), (66, "r"), (63, "r")]
+    tem = X["tem_ant"]                                                       # periodo de 1 mes so': "mes anterior" = abertura, coluna repetida some
+    posicoes = f"{X['abertura']}, {X['data_ant']} e {X['data_base']}" if tem else f"{X['abertura']} e {X['data_base']}"
+    y = titulo(c, TOPY, "Balanço Patrimonial", f"Em R$ — posição em {posicoes} · variação entre {X['abertura_rot'].lower()} e {ab}/{yy}")
+    cols = [(188, "l"), (66, "r"), (66, "r"), (66, "r"), (66, "r"), (63, "r")] if tem else [(188, "l"), (82, "r"), (82, "r"), (82, "r"), (81, "r")]
 
     def bloco(linhas):
         out = []
         for rotulo, lid, tipo in linhas:
             if tipo == "secao":
-                out.append(("sec", [(rotulo.upper(), None), "", "", "", "", ""])); continue
+                out.append(("sec", [(rotulo.upper(), None)] + [""] * (5 if tem else 4))); continue
             t = "tot" if lid in ("ativo", "passivo_pl") else ("sub" if lid in _BP_SUB else "norm")
             lab = X["rot"].get(lid, lid)
             v = X["bp"][lid]
-            out.append((t, [(("   " + lab) if t == "norm" else lab, None)] + [num_cell(v[i], 2, t == "tot") for i in range(4)] + [(varp(v[4]), None if t != "tot" else WHITE)]))
+            out.append((t, [(("   " + lab) if t == "norm" else lab, None)] + [num_cell(v[i], 2, t == "tot") for i in (range(4) if tem else (0, 2, 3))] + [(varp(v[4]), None if t != "tot" else WHITE)]))
         return out
-    hdr = ["ATIVO", X["abertura"], X["data_ant"], X["data_base"], f"Var. R$ {X['abertura_rot'].lower()} a {ab}/{yy}", "Var. %"]
+    hdr = ["ATIVO", X["abertura"]] + ([X["data_ant"]] if tem else []) + [X["data_base"], f"Var. R$ {X['abertura_rot'].lower()} a {ab}/{yy}", "Var. %"]
     y = tabela(c, MX, y, cols, hdr, bloco(tabelas.BP_ATIVO_LINHAS), rh=11.3, fs=6.8, head_h=22)
     y -= 8
     hdr2 = ["PASSIVO E PATRIMÔNIO LÍQUIDO"] + hdr[1:]
@@ -636,12 +641,13 @@ def p_indicadores(c, n, N):
                                      ("PL / ativo total", pct(IN("pl_ativo")), f"{ab0}: {pct(IN('pl_ativo', 0))}")]):
         kpi(c, MX + i * (cw4 + 8), y, cw4, 52, a, b_, d_, accent=NEG_FILL if b_.startswith("−") else NAVY, vsize=11.5)
     y -= 64
-    cols = [(138, "l"), (50, "r"), (50, "r"), (50, "r"), (227, "l")]
-    hdr = ["Indicador", X["abertura"], X["data_ant"], X["data_base"], "O que mede (em linguagem simples)"]
+    tem = X["tem_ant"]
+    cols = [(138, "l"), (50, "r"), (50, "r"), (50, "r"), (227, "l")] if tem else [(138, "l"), (60, "r"), (60, "r"), (257, "l")]
+    hdr = ["Indicador", X["abertura"]] + ([X["data_ant"]] if tem else []) + [X["data_base"], "O que mede (em linguagem simples)"]
     rows = []
     for rotulo, chave, kind, formula in tabelas.INDICADORES_LINHAS:
         if chave is None:
-            rows.append(("sec", [(rotulo, None), "", "", "", ""])); continue
+            rows.append(("sec", [(tabelas.escopo_txt(rotulo, X["ini"]), None)] + [""] * (4 if tem else 3))); continue
         k = KINDS_PDF[kind]
         def fm(v, k=k):
             if isinstance(v, str): return (v, None)                   # n/d
@@ -649,7 +655,7 @@ def p_indicadores(c, n, N):
             if k == "x": return (fnum(v) + "x", None)
             if k == "p": return (pct(v), NEG_TXT) if v < 0 else (pct(v), None)
             return (fnum(v / 1e6, 2) + " MM", NEG_TXT) if v < 0 else (fnum(v / 1e6, 2) + " MM", None)
-        rows.append(("ind", [(rotulo, None)] + [fm(v) for v in X["ind"][chave]] + [(RD.EXPLICACAO.get(chave, formula).replace("{no_escopo}", X["no_escopo"]), GREY)]))
+        rows.append(("ind", [(rotulo, None)] + [fm(v) for i, v in enumerate(X["ind"][chave]) if tem or i != 1] + [(RD.EXPLICACAO.get(chave, formula).replace("{no_escopo}", X["no_escopo"]).replace("{escopo}", X["escopo"]), GREY)]))
     y = tabela(c, MX, y, cols, hdr, rows, rh=14.5, fs=6.5, head_h=20)
     y -= 10
     caixa_nota(c, y, "Prazo médio de recebimento/pagamento (PMR, PMP) e cobertura do serviço da dívida (ICSD) não foram calculados enquanto não houver receita de construção/"

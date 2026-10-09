@@ -39,7 +39,7 @@ bp, d, conf = ctx_dados["bp"], ctx_dados["d"], ctx_dados["conf"]
 # status das importacoes usadas (RASCUNHO / REVISADA)
 n_rev, n_ras, pend = contexto.status_usados(ctx_dados, contexto.status_por_periodo(conn, emp["id"]))
 if n_ras == 0:
-    st.success(f"Status dos balancetes usados neste relatório: todos os {n_rev} estão **REVISADA**.")
+    st.success(f"Status do balancete usado neste relatório: **REVISADA**." if n_rev == 1 else f"Status dos balancetes usados neste relatório: todos os {n_rev} estão **REVISADA**.")
 else:
     st.info(f"Status dos balancetes usados neste relatório: {n_rev} **REVISADA** e {n_ras} **RASCUNHO** (ainda não revisados: {', '.join(pend)}). Marque como revisada no **Histórico**.")
 lacunas.mostrar_lacunas(ctx_dados)
@@ -57,7 +57,9 @@ except Exception:      # fora do menu (testes isolados) o link nao existe
 
 aba_bp, aba_dre, aba_ind, aba_comp, aba_conf = st.tabs(["Balanço Patrimonial", "DRE", "Indicadores", "Composição de Saldos", "Conferências"])
 with aba_bp:
-    st.caption(f"Em R$ — posição em {tabelas._rot_abertura(mes_ref, mes_ini)}, {tabelas._data_fim_mes(mes_ant)} e {tabelas._data_fim_mes(mes_ref)}. O resultado do período compõe o patrimônio líquido.")
+    _pos = (f"{tabelas._rot_abertura(mes_ref, mes_ini)}, {tabelas._data_fim_mes(mes_ant)} e {tabelas._data_fim_mes(mes_ref)}" if int(mes_ref[5:7]) > mes_ini
+            else f"{tabelas._rot_abertura(mes_ref, mes_ini)} e {tabelas._data_fim_mes(mes_ref)}")
+    st.caption(f"Em R$ — posição em {_pos}. O resultado do período compõe o patrimônio líquido.")
     for df, est in tabelas.tabela_balanco(bp, mes_ref, mes_ant, mes_ini):
         st.dataframe(tabelas.estilizar(df, est), hide_index=True, width="stretch", height=min(35 * (len(df) + 1) + 3, 760))
 with aba_dre:
