@@ -124,8 +124,9 @@ def inserir_importacao(conn, empresa_id: int, cab: dict, contas: list, usuario: 
                                [(imp_id, c["grupo"], c["descricao"], c["ok"], c.get("detalhe") or "") for c in conferencias])
             nfalhas = sum(1 for c in (conferencias or []) if not c["ok"])
             _evento(cur, empresa_id, "importar", "aviso" if nfalhas else "info",
-                    f"Importado {cab['arquivo']} ({cab['tipo']} {cab['periodo']}, {len(contas)} contas, {nfalhas} conferência(s) com falha)",
-                    usuario, {"importacao_id": imp_id, "sha256": cab["sha256"]})
+                    f"Importado {cab['arquivo']} ({cab['tipo']} {cab['periodo']}, {len(contas)} contas, {nfalhas} conferência(s) com falha)"
+                    + (f" — confirmado como {status} por {usuario}" if status != "RASCUNHO" else ""),
+                    usuario, {"importacao_id": imp_id, "sha256": cab["sha256"], "status": status})
     return imp_id
 
 

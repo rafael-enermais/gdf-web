@@ -47,7 +47,7 @@ def proxima_acao(linhas: list[dict]) -> str:
     if com_falha:
         return "Há conferências com falha em " + ", ".join(com_falha) + ". Veja o **Histórico** (conferências da importação) e o guia em **Ajuda**."
     if ras:
-        return "Confira e marque como **REVISADA** no Histórico: " + ", ".join(ras) + "."
+        return "Confirme (REVISADA) no Histórico ou reimporte marcando a confirmação: " + ", ".join(ras) + "."
     ref = next(l for l in linhas if l["mes"] == ultimo)
     if ref["relatorio"] == "–":
         return f"Balancetes até {ref['rotulo']} revisados. Gere o relatório de {ref['rotulo']} (menu **Relatório PDF**)."
