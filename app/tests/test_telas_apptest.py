@@ -790,3 +790,14 @@ def test_importar_mostra_cobertura_do_ano(patch_conn):
     cob = [d.value for d in at.dataframe if "Relatório deste mês" in d.value.columns][0]
     assert list(cob["Mês"]) == ["01/2026", "02/2026", "03/2026"]
     assert "sem balancete" in cob.iloc[1]["Relatório deste mês"] and "n/d" in cob.iloc[2]["Relatório deste mês"]
+
+
+def test_um_balancete_so_usa_concordancia_no_status(patch_conn):
+    emp_id = _semear(patch_conn, meses=(1,))
+    for i in db.listar_importacoes(patch_conn, emp_id):
+        db.definir_status(patch_conn, i["id"], "REVISADA", "t")
+    for tela in ("2_Demonstrativos.py", "5_Relatorio_PDF.py"):
+        at = _app(tela, patch_conn).run()
+        assert not at.exception, (tela, at.exception)
+        assert "todos os 1 " not in _textos(at), tela
+        assert "balancete usado" in _textos(at).lower(), tela
