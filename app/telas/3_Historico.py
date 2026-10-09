@@ -35,7 +35,11 @@ with aba_imp:
                              "Falhas": int(i["falhas"]), "Importado por": i["importado_por"], "Em": fmt_br(i["importado_em"])} for i in imps])
         st.dataframe(tab, hide_index=True, width="stretch")
         st.divider()
-        escolha = st.selectbox("Importação", imps, format_func=lambda i: f"#{i['id']} — {i['arquivo_nome']} ({'ativa' if i['ativo'] else 'inativa'})", key="hist_escolha")
+        # seleciona pelo NUMERO da importacao (o objeto muda a cada edicao e o Streamlit voltaria a selecao para a primeira linha)
+        _por_id = {i["id"]: i for i in imps}
+        _id = st.selectbox("Importação", list(_por_id), key="hist_escolha",
+                           format_func=lambda n: f"#{n} — {_por_id[n]['arquivo_nome']} ({'ativa' if _por_id[n]['ativo'] else 'inativa'})")
+        escolha = _por_id[_id]
         col1, col2, col3 = st.columns(3)
         if escolha["ativo"]:
             if col1.button("Desfazer (inativar)", key="hist_desfazer"):
@@ -59,8 +63,9 @@ with aba_imp:
             with st.expander(f"Marcar vários meses como REVISADA ({len(pend)} em rascunho, sem falhas)"):
                 st.caption("Marcar como revisada é a sua confirmação de que o balancete confere com a contabilidade. Só aparecem meses ativos sem conferência com falha; "
                            "os com falha são tratados um a um acima.")
-                marcar = st.multiselect("Meses", pend, default=pend, key="hist_multi",
-                                        format_func=_rot_mes)
+                _pend_id = {i["id"]: i for i in pend}
+                marcar = [_pend_id[n] for n in st.multiselect("Meses", list(_pend_id), default=list(_pend_id), key="hist_multi",
+                                                                format_func=lambda n: _rot_mes(_pend_id[n]))]
                 if st.checkbox("Conferi estes balancetes", key="hist_multi_ok") and marcar and st.button(f"Marcar {len(marcar)} como REVISADA", key="hist_multi_btn"):
                     for i in marcar:
                         db.definir_status(conn, i["id"], "REVISADA", usuario)

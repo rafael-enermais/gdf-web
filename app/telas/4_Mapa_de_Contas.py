@@ -42,8 +42,9 @@ else:
 
 st.subheader("Editar uma linha do mapa")
 st.caption("Use quando surgir conta nova ou mudar o plano de contas. A alteração vale para os próximos cálculos dos demonstrativos desta empresa (os balancetes importados não mudam).")
-escolha = st.selectbox("Linha", mapa, format_func=lambda m: f"{m[0]} — {m[1]}", key="mapa_linha")
-k, rot0, sec0, pref0, nat0 = escolha
+_por_chave = {m[0]: m for m in mapa}                       # seleciona pela CHAVE (a linha editada muda de rotulo/prefixos)
+k = st.selectbox("Linha", list(_por_chave), format_func=lambda c: f"{c} — {_por_chave[c][1]}", key="mapa_linha")
+k, rot0, sec0, pref0, nat0 = _por_chave[k]
 with st.form(f"mapa_form_{emp['id']}_{k}"):
     rot_n = st.text_input("Nome da linha no demonstrativo", value=rot0)
     pref_n = st.text_input("Prefixos das contas (separados por vírgula)", value=", ".join(pref0))

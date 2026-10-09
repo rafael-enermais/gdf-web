@@ -220,7 +220,7 @@ def test_mapa_editar_linha_pela_tela(patch_conn):
     emp_id = _semear_ate(patch_conn, 1)
     at = _app("4_Mapa_de_Contas.py", patch_conn).run()
     assert not at.exception, at.exception
-    at.selectbox(key="mapa_linha").set_value([m for m in db.mapa_vigente(patch_conn, emp_id) if m[0] == "fretes"][0]).run()
+    at.selectbox(key="mapa_linha").set_value("fretes").run()
     at.text_input[0].set_value("(−) Fretes e transportes")
     at.text_input[2].set_value("teste de edição")
     [b for b in at.button if b.label == "Salvar alteração"][0].click().run()
@@ -436,3 +436,47 @@ def test_relatorio_fica_desatualizado_quando_o_mapa_muda(patch_conn):
     at.button(key="pdf_gerar").click().run()                                           # gerar de novo volta a "atuais" na versao nova
     tab = [d.value for d in at.dataframe if "Dados" in d.value.columns][0]
     assert tab.iloc[0]["Dados"] == "atuais" and tab.iloc[1]["Dados"].startswith("desatualizados")
+
+
+def test_historico_mesma_sessao_rotulos_acompanham_o_status(patch_conn):
+    """v0.4.5 (bug visto ao vivo): na MESMA sessao (como no navegador) o botao nao pode ficar um passo atras do status."""
+    emp_id = _semear(patch_conn, meses=(1, 2))
+    at = _app("3_Historico.py", patch_conn).run()
+    assert at.button(key="hist_status").label == "Marcar como revisada"
+    at.button(key="hist_status").click().run()
+    assert at.button(key="hist_status").label == "Marcar como rascunho"                  # acompanha o novo status
+    at.button(key="hist_status").click().run()
+    assert at.button(key="hist_status").label == "Marcar como revisada"
+    assert {i["status"] for i in db.listar_importacoes(patch_conn, emp_id) if i["periodo_fim"].month == 2} == {"RASCUNHO"}
+    # desfazer -> o mesmo seletor passa a oferecer "Reativar" na hora
+    at.button(key="hist_desfazer").click().run()
+    assert at.button(key="hist_reativar") is not None and not [b for b in at.button if b.key == "hist_desfazer"]
+    at.button(key="hist_reativar").click().run()
+    assert [b for b in at.button if b.key == "hist_desfazer"]
+
+
+def test_mapa_mesma_sessao_formulario_mostra_o_valor_novo_apos_salvar(patch_conn):
+    emp_id = _semear_ate(patch_conn, 1)
+    at = _app("4_Mapa_de_Contas.py", patch_conn).run()
+    at.selectbox(key="mapa_linha").set_value("fretes").run()
+    at.text_input[0].set_value("(−) Fretes e transportes")
+    at.text_input[2].set_value("teste de edição")
+    [b for b in at.button if b.label == "Salvar alteração"][0].click().run()
+    assert not at.exception, at.exception
+    assert at.selectbox(key="mapa_linha").value == "fretes"
+    assert at.text_input[0].value == "(−) Fretes e transportes"                           # o formulario ja mostra a linha nova, nao a antiga
+
+
+def test_historico_a_selecao_nao_pula_para_outra_importacao_apos_editar(patch_conn):
+    """v0.4.5: editar a importacao escolhida (nao a primeira da lista) nao pode trocar a selecao para outra linha."""
+    emp_id = _semear(patch_conn, meses=(1, 2, 3))
+    ids = sorted(i["id"] for i in db.listar_importacoes(patch_conn, emp_id))
+    alvo = ids[0]                                                                        # janeiro (ultima linha da tabela)
+    at = _app("3_Historico.py", patch_conn).run()
+    at.selectbox(key="hist_escolha").set_value(alvo).run()
+    at.button(key="hist_status").click().run()
+    assert at.selectbox(key="hist_escolha").value == alvo
+    st_ = {i["id"]: i["status"] for i in db.listar_importacoes(patch_conn, emp_id)}
+    assert st_[alvo] == "REVISADA" and all(st_[n] == "RASCUNHO" for n in ids[1:])      # so' a escolhida mudou
+    at.button(key="hist_desfazer").click().run()
+    assert at.selectbox(key="hist_escolha").value == alvo and [b for b in at.button if b.key == "hist_reativar"]

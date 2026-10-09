@@ -288,13 +288,20 @@ def listar_apelidos(conn, empresa_id: int) -> dict:
         return {n.lower(): a for n, a in cur.fetchall()}
 
 
+def txt(x) -> str:
+    """Texto limpo de uma celula de tabela editavel: vazio/None/NaN (celula apagada) vira ''."""
+    if x is None or not isinstance(x, str):
+        return ""
+    return " ".join(x.split())
+
+
 def salvar_apelidos(conn, empresa_id: int, mudancas: dict, usuario: str) -> int:
     """mudancas: {nome_original: apelido}. Apelido vazio (ou igual ao nome) desativa o apelido. O antigo fica inativo. Retorna quantos mudaram."""
     n = 0
     with transacao(conn):
         with conn.cursor() as cur:
             for nome, ap in mudancas.items():
-                nome, ap = " ".join((nome or "").split()), " ".join((ap or "").split())
+                nome, ap = txt(nome), txt(ap)
                 if not nome:
                     continue
                 cur.execute("SELECT id, apelido FROM apelido WHERE empresa_id=%s AND lower(nome_original)=lower(%s) AND ativo", (empresa_id, nome))

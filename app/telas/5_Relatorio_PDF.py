@@ -82,7 +82,7 @@ st.caption("Quem assina o relatório (até 6). Use a última linha vazia da tabe
 ass0 = [{"Nome": n, "Cargo": c_} for n, c_ in ctx["empresa"]["assinantes"]]
 ed = st.data_editor(pd.DataFrame(ass0 or [{"Nome": "", "Cargo": ""}], columns=["Nome", "Cargo"]), hide_index=True, num_rows="dynamic",
                     width="stretch", key=f"ass_ed_{emp['id']}_{hashlib.md5(str(ass0).encode()).hexdigest()[:6]}")
-assinantes = [{"nome": (r["Nome"] or "").strip(), "cargo": (r["Cargo"] or "").strip()} for _, r in ed.iterrows() if (r["Nome"] or "").strip() or (r["Cargo"] or "").strip()][:6]
+assinantes = [{"nome": db.txt(r["Nome"]), "cargo": db.txt(r["Cargo"])} for _, r in ed.iterrows() if db.txt(r["Nome"]) or db.txt(r["Cargo"])][:6]
 if st.button("Salvar como padrão desta empresa", key="ass_salvar"):
     db.salvar_config_empresa(conn, emp["id"], {"assinantes": assinantes}, usuario)
     flash("ok", "Assinantes salvos como padrão desta empresa.")
@@ -155,7 +155,9 @@ if rels:
         with st.expander("Registrar assinatura (PDF que voltou do Autentique)"):
             st.caption("O GDF não assina. Depois de assinar fora, envie aqui o PDF assinado só para registrar: o sistema guarda o nome e o código (SHA-256) do arquivo, "
                        "não o guarda nem o altera, e a versão passa a ASSINADO (não muda mais).")
-            alvo = st.selectbox("Versão assinada", finais, format_func=lambda r: f"v{r['versao']} (código {(r['pdf_sha256'] or '')[:8]})", key="ass_versao")
+            _fin = {r["id"]: r for r in finais}
+            alvo = _fin[st.selectbox("Versão assinada", list(_fin), key="ass_versao",
+                                     format_func=lambda n: f"v{_fin[n]['versao']} (código {(_fin[n]['pdf_sha256'] or '')[:8]})")]
             arq = st.file_uploader("PDF assinado", type=["pdf"], key="ass_arquivo")
             if arq is not None:
                 raw = arq.getvalue()

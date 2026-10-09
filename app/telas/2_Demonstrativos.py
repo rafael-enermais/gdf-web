@@ -122,7 +122,7 @@ with aba_comp:
         base = pd.DataFrame({"Nome no balancete": list(linhas), "Apelido": list(linhas.values())})
         editado = st.data_editor(base, hide_index=True, width="stretch", disabled=["Nome no balancete"], key=f"apel_{emp['id']}_{mes_ref}", num_rows="fixed")
         if st.button("Salvar apelidos", key="apel_salvar"):
-            mud = {r["Nome no balancete"]: (r["Apelido"] or "") for _, r in editado.iterrows()}
+            mud = {r["Nome no balancete"]: db.txt(r["Apelido"]) for _, r in editado.iterrows()}
             n_mud = db.salvar_apelidos(conn, emp["id"], mud, usuario)
             st.success(f"{n_mud} apelido(s) atualizado(s)." if n_mud else "Nenhuma mudança.")
             if n_mud:
