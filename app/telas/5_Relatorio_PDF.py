@@ -94,6 +94,7 @@ if falhas:
 nomes_ok = any(a["nome"] for a in assinantes) and all(a["nome"] for a in assinantes if a["cargo"])
 final_ok = n_ras == 0 and not falhas and nomes_ok
 ids_usados = db.ids_importacoes_mensais(conn, emp["id"], mes_ref)
+regras = db.ids_regras_ativas(conn, emp["id"])
 periodo_rel = date(int(mes_ref[:4]), int(mes_ref[5:7]), 1)
 
 
@@ -105,7 +106,7 @@ def _gerar(status: str):
         pdf = relatorio_pdf.gerar_pdf(ctx, editados, status, agora, ver)
         sha = hashlib.sha256(pdf).hexdigest()
         rid, ver = db.registrar_relatorio(conn, emp["id"], periodo_rel, sha, editados, assinantes, usuario,
-                                          {"importacoes": ids_usados, "importacoes_revisadas": n_rev, "importacoes_rascunho": n_ras, "conferencias_falhas": len(falhas)},
+                                          {"importacoes": ids_usados, "mapa": regras["mapa"], "apelidos": regras["apelidos"], "importacoes_revisadas": n_rev, "importacoes_rascunho": n_ras, "conferencias_falhas": len(falhas)},
                                           status=status, versao=ver)
         marca = "RASCUNHO" if status == "RASCUNHO" else "FINAL"
         st.session_state["pdf_pronto"] = {"bytes": pdf, "nome": f"GDF_{emp['codigo']}_{mes_ref}_v{ver}_{marca}.pdf", "ver": ver, "sha": sha, "mes": mes_ref,
@@ -139,7 +140,12 @@ if rels:
         usados = (r["meta"] or {}).get("importacoes")
         if usados is None:
             return "–"
-        return "atuais" if usados == ids_usados else "desatualizados (os balancetes mudaram depois)"
+        meta = r["meta"] or {}
+        if usados != ids_usados:
+            return "desatualizados (os balancetes mudaram depois)"
+        if "mapa" in meta and (meta["mapa"] != regras["mapa"] or meta.get("apelidos") != regras["apelidos"]):
+            return "desatualizados (mapa de contas ou apelidos mudaram depois)"
+        return "atuais"
     st.markdown("**Relatórios já gerados deste mês**")
     st.dataframe(pd.DataFrame([{"Versão": f"v{r['versao']}", "Status": r["status"], "Dados": _dados(r), "Gerado por": r["gerado_por"],
                                 "Em": fmt_br(r["gerado_em"]), "Código": (r["pdf_sha256"] or "")[:8]} for r in rels]),

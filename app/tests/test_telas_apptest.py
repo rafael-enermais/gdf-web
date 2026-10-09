@@ -420,3 +420,19 @@ def test_importar_com_confirmacao_entra_revisada_e_sem_confirmacao_rascunho(patc
     st_ = {i["periodo_fim"].month: i["status"] for i in db.listar_importacoes(patch_conn, emp["id"])}
     assert st_ == {1: "REVISADA", 2: "RASCUNHO"}
     assert any("confirmado como REVISADA" in e["mensagem"] for e in db.listar_eventos(patch_conn, emp["id"]))
+
+
+def test_relatorio_fica_desatualizado_quando_o_mapa_muda(patch_conn):
+    """v0.4.5: editar o mapa de contas (ou um apelido) muda o relatorio sem mudar nenhum balancete; a lista precisa avisar."""
+    emp_id = _semear_ate(patch_conn)
+    at = _app("5_Relatorio_PDF.py", patch_conn).run()
+    at.button(key="pdf_gerar").click().run()
+    tab = [d.value for d in at.dataframe if "Dados" in d.value.columns][0]
+    assert tab.iloc[0]["Dados"] == "atuais"
+    db.salvar_mapa_linha(patch_conn, emp_id, "dep_vista", "Depósitos bancários à vista", ["1.1.01.002"], None, "t", "teste de mapa")
+    at = _app("5_Relatorio_PDF.py", patch_conn).run()
+    tab = [d.value for d in at.dataframe if "Dados" in d.value.columns][0]
+    assert tab.iloc[0]["Dados"].startswith("desatualizados") and "mapa" in tab.iloc[0]["Dados"]
+    at.button(key="pdf_gerar").click().run()                                           # gerar de novo volta a "atuais" na versao nova
+    tab = [d.value for d in at.dataframe if "Dados" in d.value.columns][0]
+    assert tab.iloc[0]["Dados"] == "atuais" and tab.iloc[1]["Dados"].startswith("desatualizados")
