@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-GDF V2 - rotina diaria: busca no Sienge (SOMENTE LEITURA) as contas pagas e a receber do mes anterior ate o mes atual (uma janela, 4 chamadas)
+GDF V2 - rotina diaria: busca no Sienge (SOMENTE LEITURA) as contas pagas e a receber dos ultimos 365 dias (uma janela, 4 chamadas)
 e grava no Supabase (schema gdf, role gdf_app). Roda no GitHub Actions (.github/workflows/ingest-sienge-gdf.yml), fora do Streamlit.
 
 Variaveis de ambiente (GitHub -> Settings -> Secrets and variables -> Actions; valor PURO, sem aspas):
   SIENGE_USER, SIENGE_PASSWORD, SIENGE_BASE_URL (opcional), DATABASE_URL (pooler do Supabase, usuario gdf_app.<ref>)
-Opcionais: GDF_MESES="2026-09,2026-10" (forca os meses); GDF_MODO=ano (janeiro ate o mes atual; usado na conferencia semanal);
-sem nenhum dos dois: mes anterior e mes atual (hora de Brasilia).
+Opcional: GDF_MESES="2026-01,2026-10" (forca a janela: do primeiro ao ultimo mes informado);
+sem ele: os ultimos 365 dias (do mesmo mes do ano passado ate o mes atual, hora de Brasilia).
 O Sienge limita as chamadas por minuto (HTTP 429): o cliente espera entre as chamadas e tenta de novo com espera crescente.
 
 O repositorio e' PUBLICO e o log do Actions tambem: este script imprime SO contagens e mensagens ja sem segredo; nunca valores/linhas.
@@ -40,22 +40,20 @@ def hoje_brasilia() -> dt.date:
 
 
 def meses_padrao(hoje: dt.date | None = None) -> list:
-    """Mes anterior e mes atual ('AAAA-MM'), nessa ordem. O mes anterior continua sendo reaberto por lancamentos tardios."""
+    """Os ultimos 365 dias em meses cheios: do mesmo mes do ano passado ate o mes atual ('AAAA-MM', 13 meses). Uma janela so no Sienge
+    (4 chamadas, ~2 min) e o ano fica sempre atualizado, inclusive ajustes retroativos em meses antigos."""
     hoje = hoje or hoje_brasilia()
-    ant = (hoje.replace(day=1) - dt.timedelta(days=1))
-    return [f"{ant.year:04d}-{ant.month:02d}", f"{hoje.year:04d}-{hoje.month:02d}"]
-
-
-def meses_do_ano(hoje: dt.date | None = None) -> list:
-    """De janeiro do ano corrente ate o mes atual (a conferencia semanal pega ajustes retroativos em meses antigos)."""
-    hoje = hoje or hoje_brasilia()
-    return [f"{hoje.year:04d}-{m:02d}" for m in range(1, hoje.month + 1)]
+    meses, a, m = [], hoje.year - 1, hoje.month
+    while (a, m) <= (hoje.year, hoje.month):
+        meses.append(f"{a:04d}-{m:02d}")
+        a, m = (a + 1, 1) if m == 12 else (a, m + 1)
+    return meses
 
 
 def ler_meses(env) -> list:
     bruto = (env.get("GDF_MESES") or "").strip()
     if not bruto:
-        return meses_do_ano() if (env.get("GDF_MODO") or "").strip() == "ano" else meses_padrao()
+        return meses_padrao()
     meses = [m.strip() for m in bruto.split(",") if m.strip()]
     for m in meses:
         if len(m) != 7 or m[4] != "-" or not (m[:4] + m[5:]).isdigit() or not 1 <= int(m[5:]) <= 12:

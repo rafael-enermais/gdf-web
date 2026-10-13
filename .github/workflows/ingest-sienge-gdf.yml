@@ -1,4 +1,4 @@
-# GDF V2 - rotina diaria Sienge -> Supabase (somente leitura no Sienge). Roda todo dia as 04:30 (Brasilia) e pode ser disparada na hora
+# GDF V2 - rotina diaria Sienge -> Supabase (somente leitura no Sienge). Roda todo dia as 04:30 (Brasilia), ultimos 365 dias, e pode ser disparada na hora
 # em Actions > "Ingest Sienge GDF" > Run workflow (opcional: informar meses AAAA-MM separados por virgula).
 # Secrets necessarios (Settings > Secrets and variables > Actions; valor PURO, sem aspas): SIENGE_USER, SIENGE_PASSWORD, SIENGE_BASE_URL, DATABASE_URL.
 # O repositorio e' publico: o script so' imprime contagens.
@@ -6,12 +6,11 @@ name: Ingest Sienge GDF
 
 on:
   schedule:
-    - cron: "30 7 * * *"     # 07:30 UTC = 04:30 em Brasilia: mes anterior e mes atual
-    - cron: "0 8 * * 0"      # domingo 08:00 UTC = 05:00 em Brasilia: conferencia semanal de janeiro ate o mes atual
+    - cron: "30 7 * * *"     # 07:30 UTC = 04:30 em Brasilia: ultimos 365 dias (13 meses, 4 chamadas, ~2 min)
   workflow_dispatch:
     inputs:
       meses:
-        description: "Meses a buscar (AAAA-MM, separados por virgula). Vazio = mes anterior e mes atual."
+        description: "Meses a buscar (AAAA-MM, separados por virgula). Vazio = ultimos 365 dias (13 meses)."
         required: false
         default: ""
       diagnostico:
@@ -46,7 +45,6 @@ jobs:
           SIENGE_BASE_URL: ${{ secrets.SIENGE_BASE_URL }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GDF_MESES: ${{ github.event.inputs.meses }}
-          GDF_MODO: ${{ github.event.schedule == '0 8 * * 0' && 'ano' || '' }}
           PYTHONUNBUFFERED: "1"
         run: python scripts/ingest_sienge_gdf.py
       - name: Diagnostico (somente leitura, nao grava)

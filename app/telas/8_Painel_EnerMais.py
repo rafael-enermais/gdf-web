@@ -2,6 +2,8 @@
 """GDF V2 — Painel EnerMais (EM CONSTRUCAO): sincroniza o Sienge, confere com o CSV e mostra a previa da aba Despesas.
 As demais abas (Resultado, Obras, Administracao, Pessoas) e o PDF entram nas proximas etapas."""
 import pandas as pd
+import datetime as dt
+
 import streamlit as st
 
 import formatacao as F
@@ -29,9 +31,10 @@ aba_sync, aba_desp, aba_regras = st.tabs(["Sincronizar com o Sienge", "Despesas 
 with aba_sync:
     st.markdown("Busca no Sienge as **contas pagas** e **a receber** do período e grava no banco (nada é apagado; cada busca fica registrada). "
                 "O app só **consulta** o Sienge; nunca grava nada lá.")
+    _hoje = dt.date.today()
     c1, c1b, c2 = st.columns([1, 1, 2])
-    mes_sync = c1.text_input("De (AAAA-MM)", value="2026-09", key="pn2_mes_sync")
-    mes_ate = c1b.text_input("Até (AAAA-MM)", value="2026-09", key="pn2_mes_ate", help="Igual ao 'De' = um mês só. Mais de um mês = uma busca só para a janela inteira.")
+    mes_sync = c1.text_input("De (AAAA-MM)", value=f"{_hoje.year - 1}-{_hoje.month:02d}", key="pn2_mes_sync")
+    mes_ate = c1b.text_input("Até (AAAA-MM)", value=f"{_hoje.year}-{_hoje.month:02d}", key="pn2_mes_ate", help="Igual ao 'De' = um mês só. Mais de um mês = uma busca só para a janela inteira.")
     tipos = c2.multiselect("Tipos de data a buscar", ["P", "I", "D"], default=["P", "I"], key="pn2_tipos",
                            help="P = pagamento/recebimento (Despesas e Realizado) · I = emissão (DRE comprometido) · D = vencimento")
     b1, b2 = st.columns(2)
@@ -39,7 +42,7 @@ with aba_sync:
         try:
             user, pwd, base = S.credenciais(st.secrets)
             cli = S.Cliente(user, pwd, base)
-            with st.spinner("Falando com o Sienge… (1 a 2 minutos)"):
+            with st.spinner("Falando com o Sienge… (de 1 a 3 minutos; os últimos 365 dias são buscados de uma vez)"):
                 res = P.sincronizar_mes(conn, cli, mes_sync, usuario, tipos=tuple(tipos), mes_fim=mes_ate if mes_ate >= mes_sync else mes_sync)
             for r in res:
                 lado = "a pagar" if r["lado"] == "P" else "a receber"
