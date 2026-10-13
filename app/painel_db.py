@@ -1,0 +1,225 @@
+# -*- coding: utf-8 -*-
+"""
+GDF V2 - Painel EnerMais: gravacao do que vem do Sienge nas tabelas pnl_* e calculos que dependem das REGRAS (pnl_regra).
+Sem streamlit. Mesma disciplina do db.py: nada e' apagado (a role nao tem DELETE); cada sincronizacao fica registrada em pnl_sync;
+a leitura so' enxerga baixas/rateios da ULTIMA sincronizacao de cada titulo (views pnl_v_baixa / pnl_v_rateio).
+"""
+from __future__ import annotations
+
+import csv
+import io
+
+from psycopg2.extras import execute_values
+
+import db
+
+TABELAS_V2 = ("pnl_sync", "pnl_titulo", "pnl_baixa", "pnl_rateio", "pnl_regra", "pnl_obra", "pnl_centro_custo")
+
+
+def v2_instalado(conn) -> bool:
+    """True se o SQL da V2 (sql/v2_painel_schema.sql) ja foi executado no Supabase."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema='gdf' AND table_name = ANY(%s)", (list(TABELAS_V2),))
+        return cur.fetchone()[0] == len(TABELAS_V2)
+
+
+# ---------------------------------------------------------------- sincronizacao
+def criar_sync(conn, mes: str, lado: str, tipo_data: str, usuario: str | None) -> int:
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO pnl_sync (mes, lado, tipo_data, usuario) VALUES (%s,%s,%s,%s) RETURNING id",
+                    (f"{mes}-01", lado, tipo_data, usuario))
+        return cur.fetchone()[0]
+
+
+def finalizar_sync(conn, sync_id: int, status: str, n_tit=0, n_bx=0, n_rt=0, valor=None, erro: str | None = None) -> None:
+    with conn.cursor() as cur:
+        cur.execute("UPDATE pnl_sync SET status=%s, n_titulos=%s, n_baixas=%s, n_rateios=%s, valor_liquido=%s, erro=%s, finalizado_em=now() WHERE id=%s",
+                    (status, n_tit, n_bx, n_rt, valor, (erro or None) and erro[:500], sync_id))
+
+
+def gravar_normalizado(conn, sync_id: int, norm: dict) -> dict:
+    """Grava titulos, baixas e rateios (upsert) numa unica transacao. Devolve contagens e o liquido total das baixas."""
+    tit, bx, rt = norm["titulos"], norm["baixas"], norm["rateios"]
+    with db.transacao(conn):
+        with conn.cursor() as cur:
+            if tit:
+                execute_values(cur, """
+                    INSERT INTO pnl_titulo (lado,bill_id,installment_id,sync_id,empresa_id,empresa_nome,origem,doc_id,doc_nome,previsao,numero_doc,
+                        contraparte_id,contraparte_nome,data_emissao,data_vencimento,valor_original,tipo_negocio_id,tipo_negocio_nome,
+                        area_id,area_nome,projeto_id,projeto_nome)
+                    VALUES %s
+                    ON CONFLICT (lado,bill_id,installment_id) DO UPDATE SET
+                        sync_id=EXCLUDED.sync_id, empresa_id=EXCLUDED.empresa_id, empresa_nome=EXCLUDED.empresa_nome, origem=EXCLUDED.origem,
+                        doc_id=EXCLUDED.doc_id, doc_nome=EXCLUDED.doc_nome, previsao=EXCLUDED.previsao, numero_doc=EXCLUDED.numero_doc,
+                        contraparte_id=EXCLUDED.contraparte_id, contraparte_nome=EXCLUDED.contraparte_nome, data_emissao=EXCLUDED.data_emissao,
+                        data_vencimento=EXCLUDED.data_vencimento, valor_original=EXCLUDED.valor_original, tipo_negocio_id=EXCLUDED.tipo_negocio_id,
+                        tipo_negocio_nome=EXCLUDED.tipo_negocio_nome, area_id=EXCLUDED.area_id, area_nome=EXCLUDED.area_nome,
+                        projeto_id=EXCLUDED.projeto_id, projeto_nome=EXCLUDED.projeto_nome, atualizado_em=now()""",
+                               [(t["lado"], t["bill_id"], t["installment_id"], sync_id, t["empresa_id"], t["empresa_nome"], t["origem"], t["doc_id"],
+                                 t["doc_nome"], t["previsao"], t["numero_doc"], t["contraparte_id"], t["contraparte_nome"], t["data_emissao"],
+                                 t["data_vencimento"], t["valor_original"], t["tipo_negocio_id"], t["tipo_negocio_nome"], t["area_id"],
+                                 t["area_nome"], t["projeto_id"], t["projeto_nome"]) for t in tit], page_size=500)
+            if bx:
+                execute_values(cur, """
+                    INSERT INTO pnl_baixa (lado,bill_id,installment_id,seq,sync_id,data_pagamento,tipo_oper_id,tipo_oper_nome,bruto,liquido,juros,multa,desconto,imposto,correcao)
+                    VALUES %s
+                    ON CONFLICT (lado,bill_id,installment_id,seq) DO UPDATE SET
+                        sync_id=EXCLUDED.sync_id, data_pagamento=EXCLUDED.data_pagamento, tipo_oper_id=EXCLUDED.tipo_oper_id,
+                        tipo_oper_nome=EXCLUDED.tipo_oper_nome, bruto=EXCLUDED.bruto, liquido=EXCLUDED.liquido, juros=EXCLUDED.juros,
+                        multa=EXCLUDED.multa, desconto=EXCLUDED.desconto, imposto=EXCLUDED.imposto, correcao=EXCLUDED.correcao""",
+                               [(b["lado"], b["bill_id"], b["installment_id"], b["seq"], sync_id, b["data_pagamento"], b["tipo_oper_id"],
+                                 b["tipo_oper_nome"], b["bruto"], b["liquido"], b["juros"], b["multa"], b["desconto"], b["imposto"], b["correcao"])
+                                for b in bx], page_size=500)
+            if rt:
+                execute_values(cur, """
+                    INSERT INTO pnl_rateio (lado,bill_id,installment_id,linha,sync_id,plano_cod,plano_nome,centro_custo_id,centro_custo_nome,percentual)
+                    VALUES %s
+                    ON CONFLICT (lado,bill_id,installment_id,linha) DO UPDATE SET
+                        sync_id=EXCLUDED.sync_id, plano_cod=EXCLUDED.plano_cod, plano_nome=EXCLUDED.plano_nome,
+                        centro_custo_id=EXCLUDED.centro_custo_id, centro_custo_nome=EXCLUDED.centro_custo_nome, percentual=EXCLUDED.percentual""",
+                               [(r["lado"], r["bill_id"], r["installment_id"], r["linha"], sync_id, r["plano_cod"], r["plano_nome"],
+                                 r["centro_custo_id"], r["centro_custo_nome"], r["percentual"]) for r in rt], page_size=500)
+    return {"titulos": len(tit), "baixas": len(bx), "rateios": len(rt), "liquido": round(sum((b["liquido"] or 0) for b in bx), 2)}
+
+
+def gravar_cadastros(conn, cad: dict) -> dict:
+    """Upsert dos cadastros (empresas, centros de custo, plano, tipos de negocio). Nao mexe no de-para centro de custo -> obra."""
+    with db.transacao(conn):
+        with conn.cursor() as cur:
+            if cad["empresas"]:
+                execute_values(cur, "INSERT INTO pnl_empresa_sienge (id,nome,cnpj) VALUES %s ON CONFLICT (id) DO UPDATE SET nome=EXCLUDED.nome, cnpj=EXCLUDED.cnpj, atualizado_em=now()",
+                               [(x["id"], x["nome"], x["cnpj"]) for x in cad["empresas"]])
+            if cad["centros_custo"]:
+                execute_values(cur, "INSERT INTO pnl_centro_custo (id,nome,empresa_id) VALUES %s ON CONFLICT (id) DO UPDATE SET nome=EXCLUDED.nome, empresa_id=EXCLUDED.empresa_id, atualizado_em=now()",
+                               [(x["id"], x["nome"], x["empresa_id"]) for x in cad["centros_custo"]])
+            if cad["plano"]:
+                execute_values(cur, "INSERT INTO pnl_plano_conta (codigo,codigo_sienge,nome,tipo,redutora,ativa) VALUES %s ON CONFLICT (codigo) DO UPDATE SET codigo_sienge=EXCLUDED.codigo_sienge, nome=EXCLUDED.nome, tipo=EXCLUDED.tipo, redutora=EXCLUDED.redutora, ativa=EXCLUDED.ativa, atualizado_em=now()",
+                               [(x["codigo"], x["codigo_sienge"], x["nome"], x["tipo"], x["redutora"], x["ativa"]) for x in cad["plano"]])
+            if cad["tipos_negocio"]:
+                execute_values(cur, "INSERT INTO pnl_tipo_negocio (id,nome) VALUES %s ON CONFLICT (id) DO UPDATE SET nome=EXCLUDED.nome, atualizado_em=now()",
+                               [(x["id"], x["nome"]) for x in cad["tipos_negocio"]])
+    return {k: len(v) for k, v in cad.items()}
+
+
+def sincronizar_mes(conn, cli, mes: str, usuario: str | None, lados=("P", "R"), tipos=("P", "I"), buscar=None, normalizar=None) -> list:
+    """Busca no Sienge e grava o mes ('AAAA-MM'). Cada (lado, tipo de data) vira uma linha em pnl_sync (OK ou ERRO com a mensagem).
+    `buscar`/`normalizar` existem para os testes injetarem dados sem rede."""
+    import sienge_api as S
+    buscar = buscar or S.buscar_bulk
+    normalizar = normalizar or S.normalizar_titulos
+    resultado = []
+    for lado in lados:
+        for tipo in tipos:
+            sid = criar_sync(conn, mes, lado, tipo, usuario)
+            try:
+                norm = normalizar(lado, buscar(cli, lado, mes, tipo))
+                cont = gravar_normalizado(conn, sid, norm)
+                finalizar_sync(conn, sid, "OK", cont["titulos"], cont["baixas"], cont["rateios"], cont["liquido"])
+                resultado.append({"lado": lado, "tipo": tipo, "ok": True, **cont})
+            except Exception as exc:                      # registra e segue para o proximo; nunca derruba a tela
+                finalizar_sync(conn, sid, "ERRO", erro=str(exc))
+                resultado.append({"lado": lado, "tipo": tipo, "ok": False, "erro": str(exc)})
+    return resultado
+
+
+def ultimas_syncs(conn, limite: int = 12) -> list:
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, mes, lado, tipo_data, status, n_titulos, n_baixas, n_rateios, valor_liquido, usuario, erro, iniciado_em, finalizado_em "
+                    "FROM pnl_sync ORDER BY id DESC LIMIT %s", (limite,))
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+# ---------------------------------------------------------------- regras
+def regras_ativas(conn, area: str) -> list:
+    with conn.cursor() as cur:
+        cur.execute("SELECT tipo, valor, descricao, status FROM pnl_regra WHERE area=%s AND ativo ORDER BY id", (area,))
+        return [{"tipo": t, "valor": v, "descricao": d, "status": s} for t, v, d, s in cur.fetchall()]
+
+
+def prefixos_excluidos(regras: list) -> list:
+    return [r["valor"] for r in regras if r["tipo"] == "EXCLUI_PLANO_PREFIXO"]
+
+
+def _excluido(cod: str, prefixos: list) -> bool:
+    return any(cod == p or cod.startswith(p + ".") for p in prefixos)
+
+
+# ---------------------------------------------------------------- Despesas (aba do painel)
+def despesas_do_mes(conn, mes: str, prefixos: list, tipo_oper_fora: list | None = None, doc_fora: list | None = None) -> list:
+    """Despesas pagas no mes ('AAAA-MM') por conta do plano: soma(liquido da baixa x % do rateio), SEM as contas excluidas pelas regras.
+    Devolve [{'plano_cod','plano_nome','valor'}] ordenado do maior para o menor. Datas por pagamento (tipo P)."""
+    ini = f"{mes}-01"
+    filtros, par = [], [ini, ini]
+    if tipo_oper_fora:
+        filtros.append("AND NOT (b.tipo_oper_id = ANY(%s))")
+        par.append(list(tipo_oper_fora))
+    if doc_fora:
+        filtros.append("AND NOT (COALESCE(t.doc_id,'') = ANY(%s))")
+        par.append(list(doc_fora))
+    sql = f"""
+        SELECT r.plano_cod, max(r.plano_nome) AS plano_nome, sum(b.liquido * r.percentual / 100.0) AS valor
+        FROM pnl_v_baixa b
+        JOIN pnl_v_rateio r ON r.lado=b.lado AND r.bill_id=b.bill_id AND r.installment_id=b.installment_id
+        JOIN pnl_titulo t ON t.lado=b.lado AND t.bill_id=b.bill_id AND t.installment_id=b.installment_id
+        WHERE b.lado='P' AND b.data_pagamento >= %s::date AND b.data_pagamento < (%s::date + interval '1 month')
+        {' '.join(filtros)}
+        GROUP BY r.plano_cod"""
+    with conn.cursor() as cur:
+        cur.execute(sql, par)
+        linhas = [{"plano_cod": c, "plano_nome": n, "valor": round(float(v or 0), 2)} for c, n, v in cur.fetchall()]
+    linhas = [l for l in linhas if not _excluido(l["plano_cod"], prefixos)]
+    return sorted(linhas, key=lambda l: -l["valor"])
+
+
+# ---------------------------------------------------------------- conferencia com o CSV de contas pagas do Sienge
+def _num_br(s) -> float:
+    s = (s or "").strip().replace(".", "").replace(",", ".")
+    try:
+        return float(s)
+    except Exception:
+        return 0.0
+
+
+def despesas_do_csv(conteudo: bytes, prefixos: list) -> dict:
+    """Le o ExportacaoContasPagas.csv (as mesmas colunas da exportacao do Sienge) e soma 'Valor aprop fin' por conta, aplicando as mesmas regras.
+    Devolve {'por_conta': {cod: (nome, valor)}, 'total_bruto', 'total_despesas', 'linhas'}."""
+    txt = None
+    for enc in ("utf-8-sig", "cp1252"):
+        try:
+            txt = conteudo.decode(enc)
+            break
+        except Exception:
+            continue
+    if txt is None:
+        raise ValueError("Não consegui ler o arquivo (codificação).")
+    rd = csv.reader(io.StringIO(txt), delimiter=";")
+    cab = [c.strip() for c in next(rd, [])]
+    obrig = ("Código plano fin", "Desc plano fin", "Valor aprop fin")
+    if any(c not in cab for c in obrig):
+        raise ValueError("Este não parece o CSV de contas pagas do Sienge (faltam as colunas do plano financeiro e do valor apropriado).")
+    ix = {c: i for i, c in enumerate(cab)}
+    por, bruto, n = {}, 0.0, 0
+    for r in rd:
+        if len(r) < len(cab) - 3:
+            continue
+        cod, nome, v = r[ix["Código plano fin"]].strip(), r[ix["Desc plano fin"]].strip(), _num_br(r[ix["Valor aprop fin"]])
+        n += 1
+        bruto += v
+        if not _excluido(cod, prefixos):
+            antigo = por.get(cod, (nome, 0.0))
+            por[cod] = (nome, round(antigo[1] + v, 2))
+    return {"por_conta": por, "total_bruto": round(bruto, 2), "total_despesas": round(sum(v for _, v in por.values()), 2), "linhas": n}
+
+
+def comparar_despesas(db_linhas: list, csv_res: dict, tolerancia: float = 0.5) -> dict:
+    """Compara Despesas do banco (API) com as do CSV por conta. Devolve totais e as contas com diferenca > tolerancia."""
+    api = {l["plano_cod"]: (l["plano_nome"], l["valor"]) for l in db_linhas}
+    csvp = csv_res["por_conta"]
+    dif = []
+    for cod in sorted(set(api) | set(csvp)):
+        a, c = api.get(cod, ("", 0.0))[1], csvp.get(cod, ("", 0.0))[1]
+        if abs(a - c) > tolerancia:
+            dif.append({"plano_cod": cod, "plano_nome": (api.get(cod) or csvp.get(cod))[0], "api": a, "csv": c, "dif": round(a - c, 2)})
+    dif.sort(key=lambda d: -abs(d["dif"]))
+    return {"total_api": round(sum(v for _, v in api.values()), 2), "total_csv": csv_res["total_despesas"], "contas_com_diferenca": dif}

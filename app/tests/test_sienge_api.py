@@ -1,0 +1,94 @@
+# -*- coding: utf-8 -*-
+"""Cliente e normalizacao da API do Sienge (sem banco). O cliente e' testado contra um servidor HTTP local de mentira."""
+import datetime as dt
+import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+import pytest
+
+import sienge_api as S
+from dados_sienge import income, outcome
+
+
+def test_cod_plano_com_e_sem_pontos():
+    assert S.cod_plano("2020212") == "2.02.02.12"
+    assert S.cod_plano("205010159") == "2.05.01.01.59"
+    assert S.cod_plano("1.03.02.02") == "1.03.02.02"
+    assert S.cod_plano("101") == "1.01"
+    assert S.cod_plano(None) == ""
+
+
+def test_normalizar_pagar():
+    n = S.normalizar_titulos("P", outcome())
+    assert len(n["titulos"]) == 4 and len(n["baixas"]) == 5 and len(n["rateios"]) == 5
+    t1 = n["titulos"][0]
+    assert (t1["lado"], t1["bill_id"], t1["installment_id"], t1["doc_id"], t1["data_emissao"]) == ("P", 1, 1, "NFS", dt.date(2026, 8, 20))
+    assert t1["contraparte_nome"] == "FORNECEDOR TESTE" and t1["valor_original"] == 1000.0
+    r = [x for x in n["rateios"] if x["bill_id"] == 1]
+    assert [x["plano_cod"] for x in r] == ["2.01.01.04", "2.01.04.04"] and sum(x["percentual"] for x in r) == 100
+    assert {x["tipo_oper_id"] for x in n["baixas"]} == {1, 3}
+
+
+def test_normalizar_receber():
+    n = S.normalizar_titulos("R", income())
+    assert n["titulos"][0]["contraparte_nome"] == "CLIENTE TESTE" and n["baixas"][0]["liquido"] == 1800.0 and n["rateios"][0]["plano_cod"] == "1.01.01.01"
+
+
+def test_normalizar_ignora_registro_sem_numero_e_baixa_sem_sequencial():
+    regs = [{"foo": 1}, {"billId": 9, "installmentId": 1, "payments": [{"paymentDate": "2026-09-01", "netAmount": 1}, {"paymentDate": "2026-09-02", "netAmount": 2}]}]
+    n = S.normalizar_titulos("P", regs)
+    assert len(n["titulos"]) == 1 and len({b["seq"] for b in n["baixas"]}) == 2
+
+
+def test_normalizar_cadastros():
+    c = S.normalizar_cadastros({"empresas": [{"id": 5, "name": "CONSTRUTORA", "cnpj": "x"}], "centros_custo": [{"id": 1049, "name": "CC", "idCompany": 5}],
+                                "plano": [{"id": "2010104", "name": "Material", "tpConta": "R", "flRedutora": "N", "flAtiva": "S"}],
+                                "tipos_negocio": [{"businessTypeId": 10, "description": "CONSTRUTORA - OBRAS"}]})
+    assert c["plano"][0]["codigo"] == "2.01.01.04" and c["plano"][0]["ativa"] is True and c["plano"][0]["redutora"] is False
+    assert c["centros_custo"][0]["empresa_id"] == 5 and c["tipos_negocio"][0]["id"] == 10
+
+
+def test_credenciais_faltando_e_montagem_da_url():
+    with pytest.raises(S.ErroSienge, match="SIENGE_USER"):
+        S.credenciais({}, {})
+    u, p, base = S.credenciais({"SIENGE_USER": "empresa-api", "SIENGE_PASSWORD": "segredo123"}, {})
+    assert base == "https://api.sienge.com.br/empresa/public/api" and (u, p) == ("empresa-api", "segredo123")
+    assert S.credenciais({"SIENGE_USER": "a-b", "SIENGE_PASSWORD": "segredo123", "SIENGE_BASE_URL": "http://x/y/"}, {})[2] == "http://x/y"
+
+
+class _H(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        if "/ok" in self.path:
+            corpo, cod = json.dumps({"results": [{"id": 1}]}), 200
+        else:
+            corpo, cod = json.dumps({"clientMessage": "Permission denied para segredo123"}), 403
+        self.send_response(cod)
+        self.end_headers()
+        self.wfile.write(corpo.encode())
+
+
+@pytest.fixture()
+def servidor():
+    srv = HTTPServer(("127.0.0.1", 0), _H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    yield f"http://127.0.0.1:{srv.server_port}"
+    srv.shutdown()
+
+
+def test_cliente_ok_e_erro_sem_vazar_a_chave(servidor):
+    cli = S.Cliente("usuario-api", "segredo123", servidor)
+    assert S.lista(cli.get("/ok")) == [{"id": 1}]
+    with pytest.raises(S.ErroSienge) as e:
+        cli.get("/negado")
+    msg = str(e.value)
+    assert "403" in msg and "permissão" in msg and "segredo123" not in msg
+
+
+def test_cliente_rede_fora_do_ar():
+    cli = S.Cliente("usuario-api", "segredo123", "http://127.0.0.1:9")
+    with pytest.raises(S.ErroSienge, match="Não consegui falar"):
+        cli.get("/x")

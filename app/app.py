@@ -60,6 +60,7 @@ paginas = [
     st.Page("telas/2_Demonstrativos.py", title="Demonstrativos", icon="📊", url_path="demonstrativos"),
     st.Page("telas/5_Relatorio_PDF.py", title="Relatório PDF", icon="📄", url_path="relatorio"),
     st.Page("telas/6_Painel.py", title="Painel", icon="📈", url_path="painel"),
+    st.Page("telas/8_Painel_EnerMais.py", title="Painel EnerMais (em construção)", icon="🏗️", url_path="painel-enermais"),
     st.Page("telas/3_Historico.py", title="Histórico", icon="🗂️", url_path="historico"),
     st.Page("telas/4_Mapa_de_Contas.py", title="Mapa de contas", icon="🧭", url_path="mapa"),
     st.Page("telas/7_Ajuda.py", title="Ajuda", icon="❓", url_path="ajuda"),
