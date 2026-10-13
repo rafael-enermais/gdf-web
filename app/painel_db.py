@@ -167,12 +167,50 @@ def ultimas_syncs(conn, limite: int = 12) -> list:
 # ---------------------------------------------------------------- regras
 def regras_ativas(conn, area: str) -> list:
     with conn.cursor() as cur:
-        cur.execute("SELECT tipo, valor, descricao, status FROM pnl_regra WHERE area=%s AND ativo ORDER BY id", (area,))
-        return [{"tipo": t, "valor": v, "descricao": d, "status": s} for t, v, d, s in cur.fetchall()]
+        cur.execute("SELECT tipo, valor, descricao, status, id FROM pnl_regra WHERE area=%s AND ativo ORDER BY id", (area,))
+        return [{"tipo": t, "valor": v, "descricao": d, "status": s, "id": i} for t, v, d, s, i in cur.fetchall()]
 
 
 def prefixos_excluidos(regras: list) -> list:
     return [r["valor"] for r in regras if r["tipo"] == "EXCLUI_PLANO_PREFIXO"]
+
+
+def exclui_previsao(regras: list) -> bool:
+    """True se existe a regra ativa EXCLUI_PREVISAO (tirar baixas de documentos com previsao = 'S': PRV, PCT, PPC, FOPA...)."""
+    return any(r["tipo"] == "EXCLUI_PREVISAO" and str(r["valor"]).upper() == "S" for r in regras)
+
+
+# Regras que o app garante que existam (nasce como PROPOSTA; a contabilidade/Rafael confirma na aba Regras)
+REGRAS_PADRAO = [
+    ("DESPESAS", "EXCLUI_PREVISAO", "S", "Baixas de documentos de previsao (previsao = S: PRV, PCT, PPC, FOPA): sao a troca do papel de previsao pelo documento real, nao dinheiro saindo (reapropriacao)",
+     "setembro/2026: o CSV de contas pagas nao tem nenhum documento de previsao"),
+]
+
+
+def garantir_regras_padrao(conn, usuario: str = "sistema") -> int:
+    """Cria as regras de REGRAS_PADRAO que ainda nao existem (nunca mexe nas que ja existem). Devolve quantas criou."""
+    criadas = 0
+    with conn.cursor() as cur:
+        for area, tipo, valor, desc, motivo in REGRAS_PADRAO:
+            cur.execute("""INSERT INTO pnl_regra (area, tipo, valor, descricao, status, alterado_por, motivo)
+                           SELECT %s,%s,%s,%s,'PROPOSTA',%s,%s
+                           WHERE NOT EXISTS (SELECT 1 FROM pnl_regra WHERE area=%s AND tipo=%s AND valor=%s AND ativo)""",
+                        (area, tipo, valor, desc, usuario, motivo, area, tipo, valor))
+            criadas += cur.rowcount
+    conn.commit()
+    return criadas
+
+
+def confirmar_regras(conn, ids: list, usuario: str, motivo: str = "confirmada na tela") -> int:
+    """Marca regras como CONFIRMADA (guarda quem e quando). Devolve quantas mudaram."""
+    if not ids:
+        return 0
+    with conn.cursor() as cur:
+        cur.execute("UPDATE pnl_regra SET status='CONFIRMADA', alterado_por=%s, alterado_em=now(), motivo=%s WHERE id = ANY(%s) AND ativo AND status<>'CONFIRMADA'",
+                    (usuario, motivo, list(ids)))
+        n = cur.rowcount
+    conn.commit()
+    return n
 
 
 def _excluido(cod: str, prefixos: list) -> bool:
@@ -180,8 +218,9 @@ def _excluido(cod: str, prefixos: list) -> bool:
 
 
 # ---------------------------------------------------------------- Despesas (aba do painel)
-def despesas_do_mes(conn, mes: str, prefixos: list, tipo_oper_fora: list | None = None, doc_fora: list | None = None) -> list:
-    """Despesas pagas no mes ('AAAA-MM') por conta do plano: soma(liquido da baixa x % do rateio), SEM as contas excluidas pelas regras.
+def despesas_do_mes(conn, mes: str, prefixos: list, tipo_oper_fora: list | None = None, doc_fora: list | None = None,
+                    sem_previsao: bool = False) -> list:
+    """Despesas pagas no mes ('AAAA-MM') por conta do plano: soma(liquido da baixa x % do rateio), SEM as contas excluidas pelas regras (e, se sem_previsao, sem baixas de documentos de previsao).
     Devolve [{'plano_cod','plano_nome','valor'}] ordenado do maior para o menor. Datas por pagamento (tipo P)."""
     ini = f"{mes}-01"
     filtros, par = [], [ini, ini]
@@ -191,6 +230,8 @@ def despesas_do_mes(conn, mes: str, prefixos: list, tipo_oper_fora: list | None 
     if doc_fora:
         filtros.append("AND NOT (COALESCE(t.doc_id,'') = ANY(%s))")
         par.append(list(doc_fora))
+    if sem_previsao:                                   # regra EXCLUI_PREVISAO: tira documentos com previsao = 'S'
+        filtros.append("AND COALESCE(upper(t.previsao),'') <> 'S'")
     sql = f"""
         SELECT r.plano_cod, max(r.plano_nome) AS plano_nome, sum(b.liquido * r.percentual / 100.0) AS valor
         FROM pnl_v_baixa b
