@@ -1,0 +1,42 @@
+# GDF V2 - rotina diaria Sienge -> Supabase (somente leitura no Sienge). Roda todo dia as 04:30 (Brasilia) e pode ser disparada na hora
+# em Actions > "Ingest Sienge GDF" > Run workflow (opcional: informar meses AAAA-MM separados por virgula).
+# Secrets necessarios (Settings > Secrets and variables > Actions; valor PURO, sem aspas): SIENGE_USER, SIENGE_PASSWORD, SIENGE_BASE_URL, DATABASE_URL.
+# O repositorio e' publico: o script so' imprime contagens.
+name: Ingest Sienge GDF
+
+on:
+  schedule:
+    - cron: "30 7 * * *"     # 07:30 UTC = 04:30 em Brasilia
+  workflow_dispatch:
+    inputs:
+      meses:
+        description: "Meses a buscar (AAAA-MM, separados por virgula). Vazio = mes anterior e mes atual."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ingest-sienge-gdf
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Instalar dependencia
+        run: pip install psycopg2-binary==2.9.13
+      - name: Buscar no Sienge e gravar no Supabase
+        env:
+          SIENGE_USER: ${{ secrets.SIENGE_USER }}
+          SIENGE_PASSWORD: ${{ secrets.SIENGE_PASSWORD }}
+          SIENGE_BASE_URL: ${{ secrets.SIENGE_BASE_URL }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GDF_MESES: ${{ github.event.inputs.meses }}
+        run: python scripts/ingest_sienge_gdf.py
