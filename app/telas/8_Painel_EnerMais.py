@@ -88,6 +88,11 @@ with aba_desp:
         with st.expander("Filtros de conferência (só para esta tela; ainda não viram regra)"):
             op_fora = st.multiselect("Tirar tipos de operação da baixa", [o[0] for o in opers], format_func=lambda i: f"{i} · " + next(n for k, n in opers if k == i), key="pn2_op_fora")
             doc_fora = st.multiselect("Tirar tipos de documento", docs, key="pn2_doc_fora")
+        with st.expander("O que foi pago neste mês, por tipo de documento, origem, previsão e operação (para achar o que sai)"):
+            docs_mes = P.documentos_do_mes(conn, mes)
+            st.dataframe(pd.DataFrame([{"Documento": d["doc_id"], "Nome": d["doc_nome"], "Origem": d["origem"], "Previsão": d["previsao"],
+                                        "Operação": d["tipo_oper"], "Títulos": d["titulos"], "Baixas": d["baixas"], "Líquido": F.moeda_br(d["liquido"])}
+                                       for d in docs_mes]), hide_index=True, width="stretch")
         linhas = P.despesas_do_mes(conn, mes, prefixos, op_fora, doc_fora)
         total = sum(l["valor"] for l in linhas)
         k1, k2, k3 = st.columns(3)
