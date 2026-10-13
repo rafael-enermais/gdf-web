@@ -315,3 +315,21 @@ def test_pdf_periodo_a_partir_de_abril_diz_31_03_e_abril_a_agosto(b):
     with pdfplumber.open(io.BytesIO(RP.gerar_pdf(x, {}, "RASCUNHO", "09/10/2026 10:00"))) as p:
         txt = " ".join((pg.extract_text() or "") for pg in p.pages).replace("\n", " ")
     assert "31/03/2026" in txt and "período de abril a agosto" in txt and "n/d" not in txt
+
+
+def test_csv_e_pdf_do_mesmo_acumulado_dao_os_mesmos_numeros(pasta, csvd):
+    """CSV e PDF são fontes equivalentes: mesmas contas e mesmos valores (só o nome longo pode vir cortado no PDF)."""
+    import importador_pdf as IP
+    pdfs = list(pasta.glob("01 a 08.2026*.pdf"))
+    if not pdfs:
+        pytest.skip("PDF do acumulado 01-08 não está na pasta de dados reais")
+    cab_p, contas_p = IP.ler_pdf(str(pdfs[0]))
+    cab_c, contas_c = csvd
+    assert (cab_p["tipo"], cab_p["periodo"], cab_p["cnpj"]) == (cab_c["tipo"], cab_c["periodo"], cab_c["cnpj"]) and cab_p["n_contas"] == cab_c["n_contas"]
+    dc = {(c["id"], c["cl"]): c for c in contas_c}
+    dp = {(c["id"], c["cl"]): c for c in contas_p}
+    assert set(dc) == set(dp)
+    for k in dc:
+        assert all(dc[k][f] == dp[k][f] for f in ("sint", "ant", "deb", "cred", "sal")), k
+        assert dc[k]["nome"].startswith(dp[k]["nome"][:20]) or dp[k]["nome"].startswith(dc[k]["nome"][:20]), k
+    assert not cab_p["ignoradas"] and not cab_c["ignoradas"]

@@ -7,6 +7,7 @@ import contexto
 import db
 import formatacao as F
 import fontes
+import graficos
 import motor
 import painel as P
 from auth import usuario_atual
@@ -73,20 +74,20 @@ with aba_evo:
     with c1:
         st.markdown("**Caixa × dívida líquida**")
         d_, cores = _serie(["caixa", "divida_liquida"], [AZUL, LARANJA])
-        st.line_chart(d_, color=cores)
+        st.altair_chart(graficos.grafico(d_, "linha", cores), width="stretch")
     with c2:
         st.markdown("**Patrimônio líquido e capital aportado**")
         d_, cores = _serie(["pl", "capital_aportado"], [VERDE, ROXO])
-        st.line_chart(d_, color=cores)
+        st.altair_chart(graficos.grafico(d_, "linha", cores), width="stretch")
     c3, c4 = st.columns(2)
     with c3:
         st.markdown("**Custo de construção no mês**")
         d_, cores = _serie(["custo_constr_mes"], [AZUL])
-        st.bar_chart(d_, color=cores)
+        st.altair_chart(graficos.grafico(d_, "barra", cores), width="stretch")
     with c4:
         st.markdown("**Resultado líquido acumulado no ano**")
         d_, cores = _serie(["resultado_acum"], [LARANJA])
-        st.bar_chart(d_, color=cores)
+        st.altair_chart(graficos.grafico(d_, "barra", cores), width="stretch")
     st.caption("O resultado intermediário reflete só os custos incorridos: a receita de construção e a remuneração do ativo de contrato "
                "entram ao final do exercício e/ou na entrada em operação da obra. Por isso o resultado do ano tende a ser negativo até lá.")
 
@@ -95,15 +96,15 @@ with aba_ind:
     with c1:
         st.markdown("**Liquidez (vezes)**")
         d_, cores = _serie(["liq_corrente", "liq_imediata"], [AZUL, VERDE])
-        st.line_chart(d_, color=cores)
+        st.altair_chart(graficos.grafico(d_, "linha", cores, casas=2, sufixo="x"), width="stretch")
     with c2:
         st.markdown("**Endividamento geral e PL / Ativo**")
         d_ = df[["endiv_geral", "pl_ativo"]].mul(100).rename(columns={"endiv_geral": "Endividamento geral (%)", "pl_ativo": "PL / Ativo (%)"})
         d_.index = pd.CategoricalIndex(d_.index, categories=ordem, ordered=True)
-        st.line_chart(d_, color=[LARANJA, VERDE])
+        st.altair_chart(graficos.grafico(d_, "linha", [LARANJA, VERDE], casas=0, casas_tip=1, sufixo="%"), width="stretch")
     st.markdown("**Variação mensal do caixa e aportes de capital**")
     d_, cores = _serie(["variacao_caixa", "aporte_mes"], [AZUL, ROXO])
-    st.bar_chart(d_, color=cores, stack=False)
+    st.altair_chart(graficos.grafico(d_, "barra", cores, agrupado=True), width="stretch")
     st.caption("Variação do caixa = quanto o caixa e as aplicações subiram ou caíram no mês. Aportes = variação do capital social + AFAC no mês.")
 
 with aba_tab:
