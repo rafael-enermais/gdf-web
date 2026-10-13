@@ -52,9 +52,21 @@ def credenciais(secrets=None, ambiente=None) -> tuple:
     return user, pwd, base.rstrip("/")
 
 
+class _Limite(Exception):
+    """Interno: o Sienge pediu para esperar (HTTP 429)."""
+
+    def __init__(self, espera: float = 0.0):
+        super().__init__("429")
+        self.espera = espera
+
+
 class Cliente:
-    def __init__(self, user: str, pwd: str, base: str, timeout: int = 240):
+    def __init__(self, user: str, pwd: str, base: str, timeout: int = 240, pausa: float = 0, esperas_429: tuple = (), dormir=time.sleep):
+        """pausa = segundos minimos entre duas chamadas; esperas_429 = segundos de espera a cada nova tentativa quando o Sienge
+        responde HTTP 429 (limite de requisicoes). O padrao (sem pausa, sem nova tentativa) serve para o botao do app;
+        a rotina diaria usa pausa e esperas (ver scripts/ingest_sienge_gdf.py)."""
         self.base, self.timeout = base.rstrip("/"), timeout
+        self.pausa, self.esperas_429, self._dormir, self._ultima = pausa, tuple(esperas_429), dormir, 0.0
         self._segredos = [user, pwd]
         tok = base64.b64encode(f"{user}:{pwd}".encode("utf-8")).decode("ascii")
         self._cab = {"Authorization": "Basic " + tok, "Accept": "application/json"}
@@ -67,7 +79,23 @@ class Cliente:
         return txt
 
     def get(self, caminho: str, params: dict | None = None):
-        """GET -> JSON. Erros viram ErroSienge com mensagem simples (401/403/422/rede)."""
+        """GET -> JSON. Erros viram ErroSienge com mensagem simples (401/403/422/429/rede). Com `esperas_429`, o 429 e' tentado de novo."""
+        tentativa = 0
+        while True:
+            try:
+                return self._get_uma_vez(caminho, params)
+            except _Limite as lim:
+                if tentativa >= len(self.esperas_429):
+                    raise ErroSienge(f"Sienge respondeu HTTP 429 (limite de requisições por minuto) em {caminho}; esgotei as novas tentativas.") from None
+                self._dormir(max(self.esperas_429[tentativa], lim.espera))
+                tentativa += 1
+
+    def _get_uma_vez(self, caminho: str, params: dict | None = None):
+        if self.pausa:
+            falta = self.pausa - (time.monotonic() - self._ultima)
+            if falta > 0 and self._ultima:
+                self._dormir(falta)
+        self._ultima = time.monotonic()
         url = self.base + "/" + caminho.lstrip("/")
         if params:
             url += "?" + urllib.parse.urlencode(params)
@@ -76,6 +104,12 @@ class Cliente:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 return json.loads(r.read().decode("utf-8", errors="replace"))
         except urllib.error.HTTPError as e:
+            if e.code == 429 and self.esperas_429:
+                try:
+                    espera = float(e.headers.get("Retry-After") or 0)
+                except Exception:
+                    espera = 0.0
+                raise _Limite(espera) from None
             corpo = e.read().decode("utf-8", errors="replace")
             msg = ""
             try:
@@ -83,7 +117,7 @@ class Cliente:
                 msg = j.get("clientMessage") or j.get("developerMessage") or j.get("message") or ""
             except Exception:
                 pass
-            dica = {401: "usuário/chave recusados", 403: "a chave não tem permissão para este recurso",
+            dica = {401: "usuário/chave recusados", 403: "a chave não tem permissão para este recurso", 429: "limite de requisições por minuto",
                     404: "caminho não existe", 422: "parâmetro inválido"}.get(e.code, "erro do Sienge")
             raise ErroSienge(f"Sienge respondeu HTTP {e.code} ({dica}) em {caminho}. {self._limpar(msg)[:200]}") from None
         except Exception as e:

@@ -6,7 +6,8 @@ name: Ingest Sienge GDF
 
 on:
   schedule:
-    - cron: "30 7 * * *"     # 07:30 UTC = 04:30 em Brasilia
+    - cron: "30 7 * * *"     # 07:30 UTC = 04:30 em Brasilia: mes anterior e mes atual
+    - cron: "0 8 * * 0"      # domingo 08:00 UTC = 05:00 em Brasilia: conferencia semanal de janeiro ate o mes atual
   workflow_dispatch:
     inputs:
       meses:
@@ -45,6 +46,7 @@ jobs:
           SIENGE_BASE_URL: ${{ secrets.SIENGE_BASE_URL }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GDF_MESES: ${{ github.event.inputs.meses }}
+          GDF_MODO: ${{ github.event.schedule == '0 8 * * 0' && 'ano' || '' }}
         run: python scripts/ingest_sienge_gdf.py
       - name: Diagnostico (somente leitura, nao grava)
         if: ${{ github.event.inputs.diagnostico == 'true' }}

@@ -45,19 +45,29 @@ def analisar(regs: list, lado: str) -> dict:
     mesmas_baixas = sum(1 for v in dup.values() if len({json.dumps(x.get(pl) or [], sort_keys=True, default=str) for x in v}) == 1)
     baixas_total = sum(len(r.get(pl) or []) for r in regs)
     seqs, colisao_mesmo_registro = Counter(), 0
+    col_identicas = col_diferentes = 0
+    tipos_col = Counter()
     for r in regs:
-        vistos = Counter()
+        vistos = {}
         for p in r.get(pl) or []:
             s = p.get("sequencialNumber")
-            vistos[s] += 1
+            vistos.setdefault(s, []).append(p)
             seqs[(chave(r), s)] += 1
-        colisao_mesmo_registro += sum(c - 1 for c in vistos.values() if c > 1)
+        for s, ps in vistos.items():
+            if len(ps) > 1:
+                colisao_mesmo_registro += len(ps) - 1
+                if len({json.dumps(x, sort_keys=True, default=str) for x in ps}) == 1:
+                    col_identicas += len(ps) - 1
+                else:
+                    col_diferentes += len(ps) - 1
+                tipos_col["+".join(str(x.get("operationTypeId")) for x in ps)] += 1
     colisao_total = sum(c - 1 for c in seqs.values() if c > 1)
     return {"registros": len(regs), "chaves_unicas": len(por), "chaves_repetidas": len(dup),
             "repetidas_identicas": ident, "repetidas_com_mesmas_baixas": mesmas_baixas,
             "origem_das_repetidas": dict(Counter((v[0].get("originId") or "?").strip() for v in dup.values()).most_common(8)),
             "baixas": baixas_total, "baixas_chave_repetida_no_mesmo_registro": colisao_mesmo_registro,
-            "baixas_chave_repetida_total": colisao_total, "rateios": sum(len(r.get(rl) or []) for r in regs)}
+            "baixas_chave_repetida_total": colisao_total, "colisoes_identicas": col_identicas,
+            "colisoes_diferentes": col_diferentes, "tipos_oper_das_colisoes": dict(tipos_col.most_common(6)), "rateios": sum(len(r.get(rl) or []) for r in regs)}
 
 
 def chamar(cli, lado, ini: dt.date, fim: dt.date, tipo: str):
@@ -75,7 +85,7 @@ def main(env=None, log=print) -> int:
     except S.ErroSienge as exc:
         log(f"ERRO de configuração: {exc}")
         return 1
-    cli = S.Cliente(user, pwd, base)
+    cli = S.Cliente(user, pwd, base, pausa=6, esperas_429=(30, 60, 120, 240))
     hoje = dt.date.today()
     ini = (env.get("GDF_DIAG_INICIO") or f"{hoje.year}-01").strip()
     fim = (env.get("GDF_DIAG_FIM") or f"{hoje.year}-{hoje.month:02d}").strip()
@@ -97,7 +107,9 @@ def main(env=None, log=print) -> int:
                 tot[(lado, tipo, "kb")] += kb
                 log(f"{mes} {lado} {tipo}: {r['registros']} | {r['chaves_unicas']} | {r['chaves_repetidas']} ({r['repetidas_identicas']}/{r['repetidas_com_mesmas_baixas']}) "
                     f"| {r['baixas']} ({r['baixas_chave_repetida_no_mesmo_registro']}/{r['baixas_chave_repetida_total']}) | {r['rateios']} | {kb} | {seg}"
-                    + (f" | origem das repetidas {r['origem_das_repetidas']}" if r["chaves_repetidas"] else ""))
+                    + (f" | origem das repetidas {r['origem_das_repetidas']}" if r["chaves_repetidas"] else "")
+                    + (f" | colisões de baixa: {r['colisoes_identicas']} idênticas, {r['colisoes_diferentes']} diferentes, tipos {r['tipos_oper_das_colisoes']}"
+                       if r["baixas_chave_repetida_no_mesmo_registro"] else ""))
     log("== soma dos meses ==")
     for (lado, tipo, k), v in sorted(tot.items()):
         log(f"{lado} {tipo} {k}: {v}")

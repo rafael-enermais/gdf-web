@@ -21,6 +21,13 @@ def test_meses_padrao():
     assert R.meses_padrao(dt.date(2026, 3, 31)) == ["2026-02", "2026-03"]
 
 
+def test_meses_do_ano_e_modo_ano():
+    assert R.meses_do_ano(dt.date(2026, 3, 9)) == ["2026-01", "2026-02", "2026-03"]
+    assert len(R.meses_do_ano(dt.date(2026, 10, 13))) == 10
+    assert R.ler_meses({"GDF_MODO": "ano"})[0].endswith("-01")
+    assert R.ler_meses({"GDF_MODO": "ano", "GDF_MESES": "2026-05"}) == ["2026-05"]       # meses informados ganham
+
+
 def test_ler_meses():
     assert R.ler_meses({"GDF_MESES": " 2026-08 , 2026-09 "}) == ["2026-08", "2026-09"]
     assert len(R.ler_meses({})) == 2 and len(R.ler_meses({"GDF_MESES": ""})) == 2
@@ -93,6 +100,7 @@ def test_analisar_acha_chaves_repetidas_sem_vazar_valores():
     assert r["registros"] == 6 and r["chaves_unicas"] == 4 and r["chaves_repetidas"] == 2
     assert r["repetidas_identicas"] == 1 and r["repetidas_com_mesmas_baixas"] == 1
     assert r["baixas_chave_repetida_no_mesmo_registro"] == 1 and r["baixas_chave_repetida_total"] == 2
+    assert r["colisoes_identicas"] == 1 and r["colisoes_diferentes"] == 0
     assert "FORNECEDOR" not in str(r)
 
 

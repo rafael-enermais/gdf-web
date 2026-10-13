@@ -92,3 +92,65 @@ def test_cliente_rede_fora_do_ar():
     cli = S.Cliente("usuario-api", "segredo123", "http://127.0.0.1:9")
     with pytest.raises(S.ErroSienge, match="Não consegui falar"):
         cli.get("/x")
+
+
+class _H429(BaseHTTPRequestHandler):
+    vezes = 0
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        _H429.vezes += 1
+        if _H429.vezes <= 2:
+            self.send_response(429)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"message":"API rate limit exceeded"}')
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'[{"id": 7}]')
+
+
+def _servidor_429():
+    _H429.vezes = 0
+    srv = HTTPServer(("127.0.0.1", 0), _H429)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def test_cliente_429_tenta_de_novo_com_espera():
+    srv = _servidor_429()
+    try:
+        dormiu = []
+        cli = S.Cliente("usuario-api", "segredo123", f"http://127.0.0.1:{srv.server_port}", esperas_429=(5, 10, 20), dormir=dormiu.append)
+        assert S.lista(cli.get("/x")) == [{"id": 7}]
+        assert dormiu == [5, 10] and _H429.vezes == 3
+    finally:
+        srv.shutdown()
+
+
+def test_cliente_429_sem_esperas_falha_com_mensagem_simples_e_esgotando_tentativas():
+    srv = _servidor_429()
+    try:
+        with pytest.raises(S.ErroSienge, match="429"):
+            S.Cliente("u-api", "segredo123", f"http://127.0.0.1:{srv.server_port}").get("/x")
+        _H429.vezes = -100                                           # sempre 429
+        with pytest.raises(S.ErroSienge, match="esgotei"):
+            S.Cliente("u-api", "segredo123", f"http://127.0.0.1:{srv.server_port}", esperas_429=(1, 1), dormir=lambda s: None).get("/x")
+    finally:
+        srv.shutdown()
+
+
+def test_cliente_pausa_entre_chamadas():
+    srv = _servidor_429()
+    try:
+        _H429.vezes = 10                                             # so 200
+        dormiu = []
+        cli = S.Cliente("u-api", "segredo123", f"http://127.0.0.1:{srv.server_port}", pausa=5, dormir=dormiu.append)
+        cli.get("/a"); cli.get("/b")
+        assert len(dormiu) == 1 and 0 < dormiu[0] <= 5
+    finally:
+        srv.shutdown()
