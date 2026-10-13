@@ -79,6 +79,30 @@ def test_executar_sem_falhas_da_exit_0(conn):
     assert cod == 0
 
 
+@pytest.mark.pg
+def test_executar_para_quando_o_limite_429_persiste(conn):
+    chamadas = []
+
+    def buscar(cli, lado, mes, tipo):
+        chamadas.append((lado, mes, tipo))
+        raise S.ErroSienge("Sienge respondeu HTTP 429 (limite) em /x; esgotei as novas tentativas.")
+
+    linhas = []
+    cod = R.executar(conn, None, ["2026-08", "2026-09", "2026-10"], buscar=buscar, atualizar_cadastros=False, log=linhas.append)
+    assert cod == 1 and len(chamadas) == 1                 # nao insiste nos outros lados/tipos nem nos outros meses
+    assert any("parei aqui" in l for l in linhas)
+
+
+@pytest.mark.pg
+def test_executar_baixa_repetida_nao_da_erro_e_avisa(conn):
+    regs = outcome()
+    regs[0]["payments"] = regs[0]["payments"] + [dict(regs[0]["payments"][0])]      # copia identica da primeira baixa
+    linhas = []
+    cod = R.executar(conn, None, ["2026-09"], buscar=lambda c, l, m, t: regs if l == "P" else income(),
+                     atualizar_cadastros=False, log=linhas.append)
+    assert cod == 0 and any("baixas_copia_ignorada" in l for l in linhas)
+
+
 # ---------------------------------------------------------------- diagnostico
 _spec2 = importlib.util.spec_from_file_location("diagnostico_sienge_gdf", RAIZ / "scripts" / "diagnostico_sienge_gdf.py")
 D = importlib.util.module_from_spec(_spec2)

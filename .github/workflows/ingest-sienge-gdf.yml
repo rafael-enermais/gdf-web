@@ -47,6 +47,7 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GDF_MESES: ${{ github.event.inputs.meses }}
           GDF_MODO: ${{ github.event.schedule == '0 8 * * 0' && 'ano' || '' }}
+          PYTHONUNBUFFERED: "1"
         run: python scripts/ingest_sienge_gdf.py
       - name: Diagnostico (somente leitura, nao grava)
         if: ${{ github.event.inputs.diagnostico == 'true' }}
@@ -54,4 +55,9 @@ jobs:
           SIENGE_USER: ${{ secrets.SIENGE_USER }}
           SIENGE_PASSWORD: ${{ secrets.SIENGE_PASSWORD }}
           SIENGE_BASE_URL: ${{ secrets.SIENGE_BASE_URL }}
+          PYTHONUNBUFFERED: "1"
+          GDF_DIAG_LADOS: "P"
+          GDF_DIAG_TIPOS: "P"
+          GDF_DIAG_INICIO: "2026-01"
+          GDF_DIAG_FIM: "2026-03"
         run: python scripts/diagnostico_sienge_gdf.py

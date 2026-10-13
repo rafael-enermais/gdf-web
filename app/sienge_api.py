@@ -208,10 +208,17 @@ def normalizar_titulos(lado: str, regs: list) -> dict:
     contra_id, contra_nome = ("creditorId", "creditorName") if lado == "P" else ("clientId", "clientName")
     baixa_lista, rateio_lista = ("payments", "paymentsCategories") if lado == "P" else ("receipts", "receiptsCategories")
     tit, bx, rt = [], [], []
+    avisos = {"baixas_copia_ignorada": 0, "baixas_renumeradas": 0, "titulos_repetidos_ignorados": 0}
+    titulos_vistos = set()
     for b in regs:
         if not isinstance(b, dict) or b.get("billId") is None:
             continue
         chave = {"lado": lado, "bill_id": int(b["billId"]), "installment_id": int(b.get("installmentId") or 0)}
+        k = (chave["bill_id"], chave["installment_id"])
+        if k in titulos_vistos:                             # o Sienge nao deveria repetir o titulo; se repetir, evita o erro de chave dupla
+            avisos["titulos_repetidos_ignorados"] += 1
+            continue
+        titulos_vistos.add(k)
         tit.append({**chave,
                     "empresa_id": _int(b.get("companyId")), "empresa_nome": b.get("companyName"),
                     "origem": (b.get("originId") or "").strip() or None,
@@ -225,9 +232,22 @@ def normalizar_titulos(lado: str, regs: list) -> dict:
                     "tipo_negocio_id": _int(b.get("businessTypeId")), "tipo_negocio_nome": b.get("businessTypeName"),
                     "area_id": _int(b.get("businessAreaId")), "area_nome": b.get("businessAreaName"),
                     "projeto_id": _int(b.get("projectId")), "projeto_nome": b.get("projectName")})
+        vistas = {}                                        # seq -> conteudos ja vistos neste titulo
         for i, p in enumerate(b.get(baixa_lista) or []):
             seq = _int(p.get("sequencialNumber"))
-            bx.append({**chave, "seq": seq if seq is not None else 1000 + i,
+            seq = seq if seq is not None else 1000 + i
+            conteudo = json.dumps(p, sort_keys=True, default=str)
+            ja = vistas.setdefault(seq, [])
+            if conteudo in ja:                              # copia identica (mesma baixa repetida pelo Sienge): ignora
+                avisos["baixas_copia_ignorada"] += 1
+                continue
+            if ja:                                          # mesmo numero, conteudo diferente: sao baixas distintas -> numero novo e fixo
+                avisos["baixas_renumeradas"] += 1
+                seq_gravado = seq + 100000 * len(ja)
+            else:
+                seq_gravado = seq
+            ja.append(conteudo)
+            bx.append({**chave, "seq": seq_gravado,
                        "data_pagamento": _data(p.get("paymentDate") or p.get("creditDate")),
                        "tipo_oper_id": _int(p.get("operationTypeId")), "tipo_oper_nome": p.get("operationTypeName"),
                        "bruto": _num(p.get("grossAmount")), "liquido": _num(p.get("netAmount")),
@@ -239,7 +259,7 @@ def normalizar_titulos(lado: str, regs: list) -> dict:
                        "plano_nome": c.get("financialCategoryName"),
                        "centro_custo_id": _int(c.get("costCenterId")), "centro_custo_nome": c.get("costCenterName"),
                        "percentual": float(c.get("financialCategoryRate") or 0)})
-    return {"titulos": tit, "baixas": bx, "rateios": rt}
+    return {"titulos": tit, "baixas": bx, "rateios": rt, "avisos": avisos}
 
 
 def normalizar_cadastros(c: dict) -> dict:
