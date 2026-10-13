@@ -8,13 +8,21 @@ FLUXO = [
     ("Revisar", "Na própria tela de **Importar**: veja as conferências e, se os números batem com a contabilidade, marque **\"Revisei os números e confirmo\"** — o balancete entra já como **REVISADA**. Quem já entrou como rascunho é confirmado em **Histórico**."),
     ("Conferir os demonstrativos", "Menu **Demonstrativos**: Balanço, DRE, Indicadores, Composição de Saldos (aqui dá para digitar apelidos para os nomes cortados) e Conferências."),
     ("Gerar o relatório", "Menu **Relatório PDF**: gere o rascunho, ajuste os textos de leitura, e quando tudo estiver revisado gere a **versão final**. Se ainda houver pendência (balancete em rascunho, conferência com falha, assinante sem nome), dá para gerar mesmo assim: o app pede uma marcação e deixa o aviso no log. A ordem em que os balancetes são enviados não importa."),
-    ("Se faltar algum mês", "O app **nunca trava** por falta de balancete. O ideal é importar todos os meses (relatório completo). Se faltar algum, ele usa o **balancete acumulado** (01/01 até o mês) para completar o que der e marca **n/d** só no que não dá para calcular, sempre explicando o motivo e o que importar. "
-     "O quadro **Cobertura do ano** (em **Importar**) mostra como sairia o relatório de cada mês; nos **Demonstrativos** e no **Relatório PDF**, o aviso **O que falta e o que acontece se gerar assim** lista cada item n/d. "
-     "Quando falta um mês no meio do ano, **você escolhe como gerar** (botões de opção acima dos números): **ano completo com n/d**; **só o período depois da lacuna** (ex.: abril a agosto, com abertura em 31/03 e a DRE somando só esses meses); ou **até o último mês completo antes da lacuna** (ex.: janeiro a fevereiro). Em qualquer caminho o relatório diz qual período cobre e o que ficou de fora. "
-     "O PDF mostra n/d e ganha a página **Dados incompletos**; nenhum número é estimado. O app só recusa gerar quando não há nenhum balancete do mês escolhido."),
+    ("Se faltar algum mês", "O app **nunca trava** por falta de balancete. O ideal é importar todos os meses (relatório completo). Se faltar algum, ele usa o **balancete acumulado** (01/01 até o mês) para completar o que der e marca **n/d** só no que não dá para calcular, sempre explicando o motivo e o que importar. Nenhum número é estimado."),
     ("Assinar (opcional)", "Assine a versão final no Autentique (fora do GDF). Se quiser deixar o registro no GDF, use **Relatório PDF → Registrar assinatura** e envie o PDF assinado; dá para substituir ou desfazer quando quiser (nada trava)."),
     ("Acompanhar", "Menu **Painel**: KPIs e evolução mês a mês. Na página **Início** fica o quadro de situação do ano."),
 ]
+
+# detalhes (em topicos) de passos do fluxo: mostrados logo abaixo do passo
+FLUXO_DETALHES = {
+    "Se faltar algum mês": [
+        "O quadro **Cobertura do ano** (em **Importar**) mostra como sairia o relatório de cada mês.",
+        "Nos **Demonstrativos** e no **Relatório PDF**, o aviso **O que falta e o que acontece se gerar assim** lista cada item n/d e o que importar para resolver.",
+        "Quando falta um mês no meio do ano, **você escolhe como gerar** (opções acima dos números): **ano completo com n/d**; **só o período depois da lacuna** (ex.: abril a agosto, com abertura em 31/03 e DRE somando só esses meses); ou **até o último mês completo antes da lacuna** (ex.: janeiro a fevereiro). Se só existir um caminho, o app apenas explica qual é.",
+        "Em qualquer caminho o relatório diz qual período cobre e o que ficou de fora; o PDF mostra n/d e ganha a página **Dados incompletos**.",
+        "O app só recusa gerar quando não há nenhum balancete do mês escolhido.",
+    ],
+}
 
 # grupo da conferencia (motor) -> (o que significa, causas provaveis, o que fazer)
 GUIA_CONFERENCIAS = {

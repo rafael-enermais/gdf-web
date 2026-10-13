@@ -85,6 +85,26 @@ def mostrar_lacunas(dados: dict, expandido: bool = True) -> None:
 _AB = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"]
 
 
+def faixas_meses(meses: list) -> str:
+    """['2026-01', ..., '2026-08'] -> '01/2026 a 08/2026'; meses soltos ficam listados (sequencias de 3+ viram faixa)."""
+    pedacos, i = [], 0
+    while i < len(meses):
+        j = i
+        while j + 1 < len(meses) and _prox(meses[j]) == meses[j + 1]:
+            j += 1
+        if j - i >= 2:
+            pedacos.append(f"{F.mes_br(meses[i])} a {F.mes_br(meses[j])}")
+        else:
+            pedacos.extend(F.mes_br(m) for m in meses[i:j + 1])
+        i = j + 1
+    return ", ".join(pedacos)
+
+
+def _prox(m: str) -> str:
+    a, n = int(m[:4]), int(m[5:7])
+    return f"{a + (n == 12)}-{1 if n == 12 else n + 1:02d}"
+
+
 def escolher_periodo(conn, empresa_id: int, mes_ref: str, dados: dict, key: str) -> tuple:
     """Quando faltam balancetes mensais no ano, deixa a usuária escolher COMO gerar (nada trava, e cada caminho diz o que entrega):
     ano completo com n/d · só o período depois da lacuna · até o último mês completo antes da lacuna.
@@ -94,9 +114,9 @@ def escolher_periodo(conn, empresa_id: int, mes_ref: str, dados: dict, key: str)
     if not op:
         return mes_ref, 1, dados
     ano, M = mes_ref[:4], int(mes_ref[5:7])
-    faltam = ", ".join(F.mes_br(m) for m in op["faltam"])
+    faltam = faixas_meses(op["faltam"])
     descr = {"ano": (f"Ano completo (jan–{_AB[M - 1]}/{ano}), com n/d onde faltar",
-                     f"Mostra o ano todo. A DRE acumulada e o que depende dela ficam **n/d** por falta de {faltam}; o Balanço sai completo. Quando importar o que falta, basta gerar de novo.")}
+                     f"Mostra o ano todo. O que o balancete acumulado ou os meses importados cobrem sai calculado; só o que depende de {faltam} fica **n/d** (a lista abaixo diz o que e como resolver). Quando importar o que falta, basta gerar de novo.")}
     if op["apos"]:
         s = int(op["apos"][5:7])
         descr["apos"] = ((f"Só o período depois da lacuna: {_AB[s - 1]}–{_AB[M - 1]}/{ano}" if s < M else f"Só {_AB[M - 1]}/{ano} (o mês depois da lacuna)") + " — completo, sem n/d",
@@ -106,9 +126,14 @@ def escolher_periodo(conn, empresa_id: int, mes_ref: str, dados: dict, key: str)
         e = int(op["ate"][5:7])
         descr["ate"] = (f"Até o último mês completo: jan–{_AB[e - 1]}/{ano} (relatório de {F.mes_br(op['ate'])}) — completo, sem n/d",
                         f"Gera o relatório de {F.mes_br(op['ate'])}, que tem todos os meses de janeiro a {_AB[e - 1]}. O mês {F.mes_br(mes_ref)} não entra.")
-    st.warning(f"**Faltam os balancetes mensais de {faltam}.** Escolha como gerar este relatório (nada trava):")
-    esc = st.radio("Período do relatório", list(descr), format_func=lambda k: descr[k][0], key=f"{key}_per_{empresa_id}_{mes_ref}")
-    st.caption(descr[esc][1])
+    if len(descr) == 1:                                                    # so' um caminho possivel: nada a escolher, so' explica
+        st.warning(f"**Faltam os balancetes mensais de {faltam}.** O relatório sai assim (nada trava):")
+        esc = "ano"
+        st.caption(descr["ano"][1])
+    else:
+        st.warning(f"**Faltam os balancetes mensais de {faltam}.** Escolha como gerar este relatório (nada trava):")
+        esc = st.radio("Período do relatório", list(descr), format_func=lambda k: descr[k][0], key=f"{key}_per_{empresa_id}_{mes_ref}")
+        st.caption(descr[esc][1])
     try:
         if esc == "apos":
             ini = int(op["apos"][5:7])

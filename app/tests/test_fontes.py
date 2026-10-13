@@ -341,3 +341,12 @@ def test_pdf_nao_deixa_marcador_sem_preencher_e_diz_periodo_nos_indicadores():
     _, txt_p = _texto_pdf(_pdf(fontes.calcular(SEM_FEV, {}, None, "2026-04", 3))[1])
     assert "Resultado (acumulado no período)" in txt_p and "acumulado no ano" not in txt_p
     assert "Resultado (acumulado no ano)" in _texto_pdf(_pdf(CHEIO)[1])[1]
+
+
+def test_faixas_de_meses_ficam_curtas_e_corretas():
+    import lacunas
+    assert lacunas.faixas_meses([f"2026-{m:02d}" for m in range(1, 9)]) == "01/2026 a 08/2026"
+    assert lacunas.faixas_meses(["2026-02"]) == "02/2026"
+    assert lacunas.faixas_meses(["2026-01", "2026-02"]) == "01/2026, 02/2026"
+    assert lacunas.faixas_meses(["2026-01", "2026-02", "2026-03", "2026-05", "2026-07", "2026-08", "2026-09"]) == "01/2026 a 03/2026, 05/2026, 07/2026 a 09/2026"
+    assert lacunas.faixas_meses(["2026-11", "2026-12", "2027-01"]) == "11/2026 a 01/2027"

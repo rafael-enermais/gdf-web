@@ -801,3 +801,35 @@ def test_um_balancete_so_usa_concordancia_no_status(patch_conn):
         assert not at.exception, (tela, at.exception)
         assert "todos os 1 " not in _textos(at), tela
         assert "balancete usado" in _textos(at).lower(), tela
+
+
+def test_ajuda_glossario_nao_mostra_marcador_e_passo_de_lacuna_em_topicos(patch_conn):
+    at = _app("7_Ajuda.py", patch_conn).run()
+    assert not at.exception, at.exception
+    tabela = " ".join(str(v) for df in at.dataframe for v in df.value.to_numpy().ravel())
+    assert "{" not in tabela and "(escopo)" not in tabela and "[no_escopo]" not in tabela and "acumulado do ano" in tabela
+    md = [m.value for m in at.markdown]
+    assert any(m.startswith("- ") and "Cobertura do ano" in m for m in md)                       # passo "Se faltar algum mês" em tópicos
+
+
+def test_so_um_caminho_possivel_mostra_explicacao_sem_botao_de_opcao(patch_conn):
+    emp_id = _semear(patch_conn, meses=(3,))                                                     # só março: faltam jan e fev, nada antes nem depois a escolher
+    at = _app("2_Demonstrativos.py", patch_conn).run()
+    assert not at.exception, at.exception
+    import fontes as _f
+    import contexto
+    op = _f.opcoes_periodo(contexto.carregar(patch_conn, emp_id, "2026-03"), "2026-03")
+    chave = f"dem_per_{emp_id}_2026-03"
+    if op and not op["apos"] and not op["ate"]:
+        assert not [r for r in at.radio if r.key == chave]
+        assert any("O relatório sai assim" in w.value for w in at.warning)
+    else:                                                                                        # mais de um caminho: o botão continua
+        assert [r for r in at.radio if r.key == chave]
+
+
+def test_mapa_com_so_acumulado_nao_pede_para_importar(patch_conn):
+    emp_id = db.garantir_empresa(patch_conn, "ANASTACIO", "Anastácio Transmissora de Energia S.A.", CNPJ)
+    db.garantir_mapa(patch_conn, emp_id)
+    at = _app("4_Mapa_de_Contas.py", patch_conn).run()
+    assert not at.exception, at.exception
+    assert any("Importe um balancete" in c.value for c in at.caption)

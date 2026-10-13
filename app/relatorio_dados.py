@@ -209,7 +209,8 @@ def textos_padrao(x: dict) -> dict:
     plm = S["pl"]
     mudou = next((i for i in range(1, len(plm)) if plm[i - 1] >= 0 > plm[i]), None)
     t["evo_3"] = _seguro(lambda: len(plm) >= 2 and (f"O patrimônio líquido passou de {brl(plm[0])} em {S['rotulos'][0].lower()} para {brl(plm[-1])} em {S['rotulos'][-1].lower()}." +
-                  (f" A mudança de sinal ocorre em {S['rotulos'][mudou].lower()} ({brl(plm[mudou])})." if mudou else "")))
+                  (f" A mudança de sinal ocorre em {S['rotulos'][mudou].lower()} ({brl(plm[mudou])})." if mudou and not parcial_serie else
+                   f" O sinal mudou entre {S['rotulos'][mudou - 1].lower()} e {S['rotulos'][mudou].lower()} (sem os balancetes mensais dos meses intermediários, não dá para dizer em qual mês)." if mudou else "")))
     t["res_1"] = _seguro(lambda: (f"O resultado líquido acumulado {x['acum_ate']} foi de {brl(res)}. O custo de construção do ativo de concessão, de {brl(-custo)}, "
                   + (f"equivale a {pct(razao(custo, res))} desse valor; " if res < -0.005 else "") + f"as deduções da receita (PIS e COFINS) somaram {brl(-dedu)}."))
     t["res_2"] = _seguro(lambda: (f"As despesas operacionais somaram {brl(-opex)} e o resultado financeiro líquido foi de {brl(resf)}, formado por rendimentos de aplicações "
