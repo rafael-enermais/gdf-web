@@ -1,0 +1,223 @@
+# -*- coding: utf-8 -*-
+"""
+GDF V2 - cliente SOMENTE-LEITURA da API do Sienge + normalizacao dos dados para as tabelas pnl_*.
+Sem streamlit e sem banco: so' HTTP (urllib, biblioteca padrao) e funcoes puras (testaveis).
+
+Seguranca: usuario e chave vem de st.secrets / variaveis de ambiente (SIENGE_USER, SIENGE_PASSWORD, SIENGE_BASE_URL opcional);
+nunca ficam no repositorio. Este modulo so' faz GET; nao existe nenhuma chamada de escrita no Sienge.
+"""
+from __future__ import annotations
+
+import base64
+import calendar
+import datetime as dt
+import json
+import os
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+# Tipos de data aceitos pela API (descobertos na sondagem de 13/10/2026):
+#   contas pagas   (bulk-data/v1/outcome): I emissao, D vencimento, P pagamento
+#   contas a receber (bulk-data/v1/income): I emissao, D vencimento, P recebimento, B data do titulo, C credito
+ENDPOINT = {"P": "bulk-data/v1/outcome", "R": "bulk-data/v1/income"}
+
+
+class ErroSienge(Exception):
+    """Falha ao falar com o Sienge (mensagem em linguagem simples; nunca contem a chave)."""
+
+
+def credenciais(secrets=None, ambiente=None) -> tuple:
+    """(usuario, senha, base_url). `secrets` = st.secrets (ou dict). Levanta ErroSienge se faltar."""
+    ambiente = os.environ if ambiente is None else ambiente
+
+    def pegar(nome):
+        try:
+            if secrets is not None and nome in secrets:
+                return str(secrets[nome]).strip()
+        except Exception:
+            pass
+        return str(ambiente.get(nome, "")).strip()
+
+    user, pwd, base = pegar("SIENGE_USER"), pegar("SIENGE_PASSWORD"), pegar("SIENGE_BASE_URL")
+    if not user or not pwd:
+        raise ErroSienge("Faltam os secrets SIENGE_USER e SIENGE_PASSWORD (Streamlit Cloud → Settings → Secrets). "
+                         "A chave NUNCA vai para o repositório.")
+    if not base:
+        sub = user.split("-")[0] if "-" in user else ""
+        if not sub:
+            raise ErroSienge("Não consegui montar a URL do Sienge a partir do usuário; cadastre também SIENGE_BASE_URL.")
+        base = f"https://api.sienge.com.br/{sub}/public/api"
+    return user, pwd, base.rstrip("/")
+
+
+class Cliente:
+    def __init__(self, user: str, pwd: str, base: str, timeout: int = 240):
+        self.base, self.timeout = base.rstrip("/"), timeout
+        self._segredos = [user, pwd]
+        tok = base64.b64encode(f"{user}:{pwd}".encode("utf-8")).decode("ascii")
+        self._cab = {"Authorization": "Basic " + tok, "Accept": "application/json"}
+
+    def _limpar(self, txt) -> str:
+        txt = str(txt)
+        for s in self._segredos:
+            if s and len(s) >= 4:
+                txt = txt.replace(s, "***")
+        return txt
+
+    def get(self, caminho: str, params: dict | None = None):
+        """GET -> JSON. Erros viram ErroSienge com mensagem simples (401/403/422/rede)."""
+        url = self.base + "/" + caminho.lstrip("/")
+        if params:
+            url += "?" + urllib.parse.urlencode(params)
+        req = urllib.request.Request(url, headers=self._cab, method="GET")
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                return json.loads(r.read().decode("utf-8", errors="replace"))
+        except urllib.error.HTTPError as e:
+            corpo = e.read().decode("utf-8", errors="replace")
+            msg = ""
+            try:
+                j = json.loads(corpo)
+                msg = j.get("clientMessage") or j.get("developerMessage") or j.get("message") or ""
+            except Exception:
+                pass
+            dica = {401: "usuário/chave recusados", 403: "a chave não tem permissão para este recurso",
+                    404: "caminho não existe", 422: "parâmetro inválido"}.get(e.code, "erro do Sienge")
+            raise ErroSienge(f"Sienge respondeu HTTP {e.code} ({dica}) em {caminho}. {self._limpar(msg)[:200]}") from None
+        except Exception as e:
+            raise ErroSienge(f"Não consegui falar com o Sienge ({self._limpar(e)[:150]}).") from None
+
+
+def lista(resposta) -> list:
+    if isinstance(resposta, list):
+        return resposta
+    if isinstance(resposta, dict):
+        for k in ("results", "data", "items", "content"):
+            if isinstance(resposta.get(k), list):
+                return resposta[k]
+    return []
+
+
+def limites_do_mes(mes: str) -> tuple:
+    """'2026-09' -> (date(2026,9,1), date(2026,9,30))."""
+    ano, m = int(mes[:4]), int(mes[5:7])
+    return dt.date(ano, m, 1), dt.date(ano, m, calendar.monthrange(ano, m)[1])
+
+
+def buscar_bulk(cli: Cliente, lado: str, mes: str, tipo_data: str) -> list:
+    """Titulos do mes (lado 'P' = a pagar, 'R' = a receber) pelo tipo de data escolhido, com baixas e rateios."""
+    ini, fim = limites_do_mes(mes)
+    params = {"startDate": ini.isoformat(), "endDate": fim.isoformat(), "selectionType": tipo_data,
+              "correctionIndexerId": "0", "correctionDate": fim.isoformat(), "withBankMovements": "true"}
+    return lista(cli.get(ENDPOINT[lado], params))
+
+
+def buscar_cadastros(cli: Cliente) -> dict:
+    """Cadastros que o painel usa. Centros de custo vem em paginas de 200; plano e tipos de negocio vem inteiros."""
+    out = {"empresas": lista(cli.get("v1/companies", {"limit": 200})),
+           "plano": lista(cli.get("v1/payment-categories", {"limit": 200})),
+           "tipos_negocio": lista(cli.get("v1/business-types", {"limit": 200}))}
+    ccs, off = [], 0
+    while off < 5000:
+        pag = lista(cli.get("v1/cost-centers", {"limit": 200, "offset": off}))
+        ccs += pag
+        if len(pag) < 200:
+            break
+        off += 200
+        time.sleep(0.3)
+    out["centros_custo"] = ccs
+    return out
+
+
+# ---------------------------------------------------------------- normalizacao (funcoes puras)
+def cod_plano(i) -> str:
+    """O Sienge devolve o plano financeiro as vezes sem pontos (2020212) e os relatorios com pontos (2.02.02.12)."""
+    i = str(i or "").strip()
+    if not i or "." in i:
+        return i
+    return i[0] + "." + ".".join(i[k:k + 2] for k in range(1, len(i), 2))
+
+
+def _num(v):
+    try:
+        return round(float(v), 2)
+    except Exception:
+        return None
+
+
+def _data(v):
+    s = str(v or "")[:10]
+    try:
+        return dt.date.fromisoformat(s)
+    except Exception:
+        return None
+
+
+def _sn(v):
+    """'S'/'N' (ou true/false) do Sienge -> bool; vazio -> None."""
+    if v in (None, ""):
+        return None
+    return str(v).strip().upper() in ("S", "Y", "TRUE", "1")
+
+
+def _int(v):
+    try:
+        return int(v)
+    except Exception:
+        return None
+
+
+def normalizar_titulos(lado: str, regs: list) -> dict:
+    """regs = lista devolvida por buscar_bulk. Devolve {'titulos': [...], 'baixas': [...], 'rateios': [...]} (dicts simples)."""
+    contra_id, contra_nome = ("creditorId", "creditorName") if lado == "P" else ("clientId", "clientName")
+    baixa_lista, rateio_lista = ("payments", "paymentsCategories") if lado == "P" else ("receipts", "receiptsCategories")
+    tit, bx, rt = [], [], []
+    for b in regs:
+        if not isinstance(b, dict) or b.get("billId") is None:
+            continue
+        chave = {"lado": lado, "bill_id": int(b["billId"]), "installment_id": int(b.get("installmentId") or 0)}
+        tit.append({**chave,
+                    "empresa_id": _int(b.get("companyId")), "empresa_nome": b.get("companyName"),
+                    "origem": (b.get("originId") or "").strip() or None,
+                    "doc_id": (b.get("documentIdentificationId") or "").strip() or None,
+                    "doc_nome": (b.get("documentIdentificationName") or "").strip() or None,
+                    "previsao": str((b.get("forecastDocument") if lado == "P" else b.get("documentForecast")) or "") or None,
+                    "numero_doc": str(b.get("documentNumber") or "").strip() or None,
+                    "contraparte_id": _int(b.get(contra_id)), "contraparte_nome": b.get(contra_nome),
+                    "data_emissao": _data(b.get("issueDate")), "data_vencimento": _data(b.get("dueDate")),
+                    "valor_original": _num(b.get("originalAmount")),
+                    "tipo_negocio_id": _int(b.get("businessTypeId")), "tipo_negocio_nome": b.get("businessTypeName"),
+                    "area_id": _int(b.get("businessAreaId")), "area_nome": b.get("businessAreaName"),
+                    "projeto_id": _int(b.get("projectId")), "projeto_nome": b.get("projectName")})
+        for i, p in enumerate(b.get(baixa_lista) or []):
+            seq = _int(p.get("sequencialNumber"))
+            bx.append({**chave, "seq": seq if seq is not None else 1000 + i,
+                       "data_pagamento": _data(p.get("paymentDate") or p.get("creditDate")),
+                       "tipo_oper_id": _int(p.get("operationTypeId")), "tipo_oper_nome": p.get("operationTypeName"),
+                       "bruto": _num(p.get("grossAmount")), "liquido": _num(p.get("netAmount")),
+                       "juros": _num(p.get("interestAmount")), "multa": _num(p.get("fineAmount")),
+                       "desconto": _num(p.get("discountAmount")), "imposto": _num(p.get("taxAmount")),
+                       "correcao": _num(p.get("monetaryCorrectionAmount"))})
+        for i, c in enumerate(b.get(rateio_lista) or []):
+            rt.append({**chave, "linha": i, "plano_cod": cod_plano(c.get("financialCategoryId")),
+                       "plano_nome": c.get("financialCategoryName"),
+                       "centro_custo_id": _int(c.get("costCenterId")), "centro_custo_nome": c.get("costCenterName"),
+                       "percentual": float(c.get("financialCategoryRate") or 0)})
+    return {"titulos": tit, "baixas": bx, "rateios": rt}
+
+
+def normalizar_cadastros(c: dict) -> dict:
+    return {
+        "empresas": [{"id": int(x["id"]), "nome": x.get("name") or x.get("tradeName") or "", "cnpj": x.get("cnpj")}
+                     for x in c.get("empresas", []) if isinstance(x, dict) and x.get("id") is not None],
+        "centros_custo": [{"id": int(x["id"]), "nome": x.get("name") or "", "empresa_id": _int(x.get("idCompany"))}
+                          for x in c.get("centros_custo", []) if isinstance(x, dict) and x.get("id") is not None],
+        "plano": [{"codigo": cod_plano(x["id"]), "codigo_sienge": str(x["id"]), "nome": x.get("name") or "",
+                   "tipo": x.get("tpConta"), "redutora": _sn(x.get("flRedutora")),
+                   "ativa": _sn(x.get("flAtiva"))}
+                  for x in c.get("plano", []) if isinstance(x, dict) and x.get("id") is not None],
+        "tipos_negocio": [{"id": int(x["businessTypeId"]), "nome": x.get("description") or ""}
+                          for x in c.get("tipos_negocio", []) if isinstance(x, dict) and x.get("businessTypeId") is not None],
+    }
