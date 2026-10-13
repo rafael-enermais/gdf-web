@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-GDF V2 - rotina diaria: busca no Sienge (SOMENTE LEITURA) as contas pagas e a receber do mes atual e do mes anterior
+GDF V2 - rotina diaria: busca no Sienge (SOMENTE LEITURA) as contas pagas e a receber do mes anterior ate o mes atual (uma janela, 4 chamadas)
 e grava no Supabase (schema gdf, role gdf_app). Roda no GitHub Actions (.github/workflows/ingest-sienge-gdf.yml), fora do Streamlit.
 
 Variaveis de ambiente (GitHub -> Settings -> Secrets and variables -> Actions; valor PURO, sem aspas):
@@ -26,7 +26,7 @@ import sienge_api as S  # noqa: E402
 
 USUARIO_ROTINA = "rotina-diaria"
 LADOS = ("P", "R")
-PAUSA_ENTRE_CHAMADAS = 6      # segundos (o Sienge devolve 429 se passar de ~uma dezena de chamadas em poucos segundos)
+PAUSA_ENTRE_CHAMADAS = 6      # segundos entre chamadas (o Sienge deu 429 depois de ~12 buscas seguidas; agora sao so 4 por execucao)
 ESPERAS_429 = (30, 60, 120, 240)
 TIPOS = ("P", "I")          # P = pagamento/recebimento (Despesas, Realizado) | I = emissao (DRE comprometido)
 
@@ -73,21 +73,21 @@ def executar(conn, cli, meses: list, buscar=None, normalizar=None, atualizar_cad
         except Exception as exc:                          # cadastro velho nao impede buscar os titulos
             falhas += 1
             log(f"ERRO cadastros: {exc}")
-    for mes in meses:
-        limite = False
-        for r in P.sincronizar_mes(conn, cli, mes, USUARIO_ROTINA, lados=LADOS, tipos=TIPOS, buscar=buscar, normalizar=normalizar):
-            lado = "pagar" if r["lado"] == "P" else "receber"
-            if r["ok"]:
-                av = {k: v for k, v in (r.get("avisos") or {}).items() if v}
-                log(f"{mes} {lado} data {r['tipo']}: {r['titulos']} títulos, {r['baixas']} baixas, {r['rateios']} rateios"
-                    + (f" | avisos: {av}" if av else ""))
-            else:
-                falhas += 1
-                log(f"ERRO {mes} {lado} data {r['tipo']}: {r['erro']}")
-                limite = limite or "HTTP 429" in (r["erro"] or "")
-        if limite:
-            log("Limite de chamadas do Sienge persistiu: parei aqui. Os meses seguintes ficam para a próxima execução.")
-            break
+    ini, fim = min(meses), max(meses)              # uma janela so: poucas chamadas (o Sienge limita) e o mesmo titulo nao vem repetido entre meses
+    log(f"janela {ini} a {fim}")
+    limite = False
+    for r in P.sincronizar_mes(conn, cli, ini, USUARIO_ROTINA, lados=LADOS, tipos=TIPOS, buscar=buscar, normalizar=normalizar, mes_fim=fim):
+        lado = "pagar" if r["lado"] == "P" else "receber"
+        if r["ok"]:
+            av = {k: v for k, v in (r.get("avisos") or {}).items() if v}
+            log(f"{ini}..{fim} {lado} data {r['tipo']}: {r['titulos']} títulos, {r['baixas']} baixas, {r['rateios']} rateios"
+                + (f" | avisos: {av}" if av else ""))
+        else:
+            falhas += 1
+            log(f"ERRO {ini}..{fim} {lado} data {r['tipo']}: {r['erro']}")
+            limite = limite or "HTTP 429" in (r["erro"] or "")
+    if limite:
+        log("Limite de chamadas do Sienge persistiu: parei aqui. O que faltou fica para a próxima execução.")
     return 1 if falhas else 0
 
 

@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import painel_db as P_
 import sienge_api as S
 from dados_sienge import income, outcome
 
@@ -52,29 +53,30 @@ def test_main_sem_configuracao_nao_vaza_nada(capsys):
 def test_executar_grava_e_falha_parcial_da_exit_1(conn):
     chamadas = []
 
-    def buscar(cli, lado, mes, tipo):
-        chamadas.append((lado, mes, tipo))
-        if lado == "R" and mes == "2026-10":
+    def buscar(cli, lado, mes, tipo, mes_fim=None):
+        chamadas.append((lado, mes, tipo, mes_fim))
+        if lado == "R":
             raise S.ErroSienge("Sienge respondeu HTTP 403 (sem permissão)")
         return outcome() if lado == "P" else income()
 
     linhas = []
     cod = R.executar(conn, None, ["2026-09", "2026-10"], buscar=buscar, atualizar_cadastros=False, log=linhas.append)
-    assert cod == 1 and len(chamadas) == 8
+    assert cod == 1 and len(chamadas) == 4                       # uma janela: 2 lados x 2 tipos de data
+    assert all(c[1] == "2026-09" and c[3] == "2026-10" for c in chamadas)
     assert sum(1 for l in linhas if l.startswith("ERRO")) == 2 and any("403" in l for l in linhas)
     with conn.cursor() as cur:
         cur.execute("SELECT usuario, status, count(*) FROM pnl_sync GROUP BY 1,2 ORDER BY 2")
-        assert cur.fetchall() == [("rotina-diaria", "ERRO", 2), ("rotina-diaria", "OK", 6)]
+        assert cur.fetchall() == [("rotina-diaria", "ERRO", 2), ("rotina-diaria", "OK", 2)]
     # repetir no dia seguinte nao duplica os titulos
     R.executar(conn, None, ["2026-09"], buscar=buscar, atualizar_cadastros=False, log=lambda *_: None)
     with conn.cursor() as cur:
         cur.execute("SELECT count(*) FROM pnl_titulo")
-        assert cur.fetchone()[0] == 5
+        assert cur.fetchone()[0] == 4                 # so os 4 titulos a pagar (o receber falhou)
 
 
 @pytest.mark.pg
 def test_executar_sem_falhas_da_exit_0(conn):
-    cod = R.executar(conn, None, ["2026-09"], buscar=lambda c, l, m, t: outcome() if l == "P" else income(),
+    cod = R.executar(conn, None, ["2026-09"], buscar=lambda c, l, m, t, mes_fim=None: outcome() if l == "P" else income(),
                      atualizar_cadastros=False, log=lambda *_: None)
     assert cod == 0
 
@@ -83,14 +85,22 @@ def test_executar_sem_falhas_da_exit_0(conn):
 def test_executar_para_quando_o_limite_429_persiste(conn):
     chamadas = []
 
-    def buscar(cli, lado, mes, tipo):
+    def buscar(cli, lado, mes, tipo, mes_fim=None):
         chamadas.append((lado, mes, tipo))
         raise S.ErroSienge("Sienge respondeu HTTP 429 (limite) em /x; esgotei as novas tentativas.")
 
     linhas = []
     cod = R.executar(conn, None, ["2026-08", "2026-09", "2026-10"], buscar=buscar, atualizar_cadastros=False, log=linhas.append)
-    assert cod == 1 and len(chamadas) == 1                 # nao insiste nos outros lados/tipos nem nos outros meses
+    assert cod == 1 and len(chamadas) == 1                 # nao insiste nos outros lados/tipos
     assert any("parei aqui" in l for l in linhas)
+
+
+@pytest.mark.pg
+def test_meses_com_dados_pela_data_do_pagamento(conn):
+    R.executar(conn, None, ["2026-08", "2026-09"], buscar=lambda c, l, m, t, mes_fim=None: outcome() if l == "P" else income(),
+               atualizar_cadastros=False, log=lambda *_: None)
+    assert "2026-09" in P_.meses_com_dados(conn) or "2026-08" in P_.meses_com_dados(conn)
+    assert P_.meses_com_dados(conn) == sorted(P_.meses_com_dados(conn))
 
 
 @pytest.mark.pg
@@ -98,7 +108,7 @@ def test_executar_baixa_repetida_nao_da_erro_e_avisa(conn):
     regs = outcome()
     regs[0]["payments"] = regs[0]["payments"] + [dict(regs[0]["payments"][0])]      # copia identica da primeira baixa
     linhas = []
-    cod = R.executar(conn, None, ["2026-09"], buscar=lambda c, l, m, t: regs if l == "P" else income(),
+    cod = R.executar(conn, None, ["2026-09"], buscar=lambda c, l, m, t, mes_fim=None: regs if l == "P" else income(),
                      atualizar_cadastros=False, log=linhas.append)
     assert cod == 0 and any("baixas_copia_ignorada" in l for l in linhas)
 

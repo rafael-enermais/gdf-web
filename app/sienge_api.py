@@ -140,9 +140,11 @@ def limites_do_mes(mes: str) -> tuple:
     return dt.date(ano, m, 1), dt.date(ano, m, calendar.monthrange(ano, m)[1])
 
 
-def buscar_bulk(cli: Cliente, lado: str, mes: str, tipo_data: str) -> list:
-    """Titulos do mes (lado 'P' = a pagar, 'R' = a receber) pelo tipo de data escolhido, com baixas e rateios."""
-    ini, fim = limites_do_mes(mes)
+def buscar_bulk(cli: Cliente, lado: str, mes: str, tipo_data: str, mes_fim: str | None = None) -> list:
+    """Titulos do mes (lado 'P' = a pagar, 'R' = a receber) pelo tipo de data escolhido, com baixas e rateios.
+    Com `mes_fim`, busca a janela inteira de `mes` ate `mes_fim` numa chamada so (medido: 3 meses = 5,3 mil titulos, 15 MB, 7 s)."""
+    ini, _ = limites_do_mes(mes)
+    _, fim = limites_do_mes(mes_fim or mes)
     params = {"startDate": ini.isoformat(), "endDate": fim.isoformat(), "selectionType": tipo_data,
               "correctionIndexerId": "0", "correctionDate": fim.isoformat(), "withBankMovements": "true"}
     return lista(cli.get(ENDPOINT[lado], params))

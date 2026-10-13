@@ -27,19 +27,20 @@ aba_sync, aba_desp, aba_regras = st.tabs(["Sincronizar com o Sienge", "Despesas 
 
 # ------------------------------------------------------------------ sincronizar
 with aba_sync:
-    st.markdown("Busca no Sienge as **contas pagas** e **a receber** do mês e grava no banco (nada é apagado; cada busca fica registrada). "
+    st.markdown("Busca no Sienge as **contas pagas** e **a receber** do período e grava no banco (nada é apagado; cada busca fica registrada). "
                 "O app só **consulta** o Sienge; nunca grava nada lá.")
-    c1, c2 = st.columns([1, 2])
-    mes_sync = c1.text_input("Mês (AAAA-MM)", value="2026-09", key="pn2_mes_sync")
+    c1, c1b, c2 = st.columns([1, 1, 2])
+    mes_sync = c1.text_input("De (AAAA-MM)", value="2026-09", key="pn2_mes_sync")
+    mes_ate = c1b.text_input("Até (AAAA-MM)", value="2026-09", key="pn2_mes_ate", help="Igual ao 'De' = um mês só. Mais de um mês = uma busca só para a janela inteira.")
     tipos = c2.multiselect("Tipos de data a buscar", ["P", "I", "D"], default=["P", "I"], key="pn2_tipos",
                            help="P = pagamento/recebimento (Despesas e Realizado) · I = emissão (DRE comprometido) · D = vencimento")
     b1, b2 = st.columns(2)
-    if b1.button("Buscar o mês no Sienge", type="primary", key="pn2_btn_sync"):
+    if b1.button("Buscar no Sienge", type="primary", key="pn2_btn_sync"):
         try:
             user, pwd, base = S.credenciais(st.secrets)
             cli = S.Cliente(user, pwd, base)
             with st.spinner("Falando com o Sienge… (1 a 2 minutos)"):
-                res = P.sincronizar_mes(conn, cli, mes_sync, usuario, tipos=tuple(tipos))
+                res = P.sincronizar_mes(conn, cli, mes_sync, usuario, tipos=tuple(tipos), mes_fim=mes_ate if mes_ate >= mes_sync else mes_sync)
             for r in res:
                 lado = "a pagar" if r["lado"] == "P" else "a receber"
                 if r["ok"]:
@@ -69,7 +70,7 @@ with aba_sync:
 
 # ------------------------------------------------------------------ despesas (previa)
 with aba_desp:
-    meses_ok = sorted({s["mes"].strftime("%Y-%m") for s in P.ultimas_syncs(conn, 200) if s["status"] == "OK" and s["lado"] == "P" and s["tipo_data"] == "P"})
+    meses_ok = P.meses_com_dados(conn)
     if not meses_ok:
         st.info("Sincronize primeiro as contas pagas (data P) de um mês na aba ao lado.")
     else:

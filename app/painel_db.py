@@ -101,8 +101,10 @@ def gravar_cadastros(conn, cad: dict) -> dict:
     return {k: len(v) for k, v in cad.items()}
 
 
-def sincronizar_mes(conn, cli, mes: str, usuario: str | None, lados=("P", "R"), tipos=("P", "I"), buscar=None, normalizar=None) -> list:
-    """Busca no Sienge e grava o mes ('AAAA-MM'). Cada (lado, tipo de data) vira uma linha em pnl_sync (OK ou ERRO com a mensagem).
+def sincronizar_mes(conn, cli, mes: str, usuario: str | None, lados=("P", "R"), tipos=("P", "I"), buscar=None, normalizar=None,
+                    mes_fim: str | None = None) -> list:
+    """Busca no Sienge e grava o mes ('AAAA-MM'), ou a janela de `mes` ate `mes_fim` numa chamada so por (lado, tipo de data).
+    Cada (lado, tipo de data) vira uma linha em pnl_sync (OK ou ERRO com a mensagem; em janela, o `mes` do log e' o primeiro).
     `buscar`/`normalizar` existem para os testes injetarem dados sem rede."""
     import sienge_api as S
     buscar = buscar or S.buscar_bulk
@@ -112,7 +114,8 @@ def sincronizar_mes(conn, cli, mes: str, usuario: str | None, lados=("P", "R"), 
         for tipo in tipos:
             sid = criar_sync(conn, mes, lado, tipo, usuario)
             try:
-                norm = normalizar(lado, buscar(cli, lado, mes, tipo))
+                regs = buscar(cli, lado, mes, tipo) if not mes_fim or mes_fim == mes else buscar(cli, lado, mes, tipo, mes_fim=mes_fim)
+                norm = normalizar(lado, regs)
                 cont = gravar_normalizado(conn, sid, norm)
                 finalizar_sync(conn, sid, "OK", cont["titulos"], cont["baixas"], cont["rateios"], cont["liquido"])
                 resultado.append({"lado": lado, "tipo": tipo, "ok": True, **cont, "avisos": norm.get("avisos") or {}})
@@ -122,6 +125,13 @@ def sincronizar_mes(conn, cli, mes: str, usuario: str | None, lados=("P", "R"), 
                 if "HTTP 429" in str(exc):                # limite do Sienge persistiu: insistir so piora; para e deixa para a proxima execucao
                     return resultado
     return resultado
+
+
+def meses_com_dados(conn) -> list:
+    """Meses ('AAAA-MM') que tem pagamentos a pagar gravados, pela data do pagamento (vale tanto para carga mensal quanto por janela)."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT to_char(data_pagamento, 'YYYY-MM') FROM pnl_v_baixa WHERE lado='P' AND data_pagamento IS NOT NULL ORDER BY 1")
+        return [r[0] for r in cur.fetchall()]
 
 
 def ultimas_syncs(conn, limite: int = 12) -> list:
