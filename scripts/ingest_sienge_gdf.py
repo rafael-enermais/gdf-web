@@ -5,7 +5,9 @@ e grava no Supabase (schema gdf, role gdf_app). Roda no GitHub Actions (.github/
 
 Variaveis de ambiente (GitHub -> Settings -> Secrets and variables -> Actions; valor PURO, sem aspas):
   SIENGE_USER, SIENGE_PASSWORD, SIENGE_BASE_URL (opcional), DATABASE_URL (pooler do Supabase, usuario gdf_app.<ref>)
-Opcionais: GDF_MESES="2026-09,2026-10" (forca os meses; senao: mes atual e anterior, hora de Brasilia).
+Opcionais: GDF_MESES="2026-09,2026-10" (forca os meses); GDF_MODO=ano (janeiro ate o mes atual; usado na conferencia semanal);
+sem nenhum dos dois: mes anterior e mes atual (hora de Brasilia).
+O Sienge limita as chamadas por minuto (HTTP 429): o cliente espera entre as chamadas e tenta de novo com espera crescente.
 
 O repositorio e' PUBLICO e o log do Actions tambem: este script imprime SO contagens e mensagens ja sem segredo; nunca valores/linhas.
 Codigo de saida 1 se alguma busca falhar (o GitHub avisa por e-mail).
@@ -24,6 +26,8 @@ import sienge_api as S  # noqa: E402
 
 USUARIO_ROTINA = "rotina-diaria"
 LADOS = ("P", "R")
+PAUSA_ENTRE_CHAMADAS = 6      # segundos (o Sienge devolve 429 se passar de ~uma dezena de chamadas em poucos segundos)
+ESPERAS_429 = (30, 60, 120, 240)
 TIPOS = ("P", "I")          # P = pagamento/recebimento (Despesas, Realizado) | I = emissao (DRE comprometido)
 
 
@@ -42,10 +46,16 @@ def meses_padrao(hoje: dt.date | None = None) -> list:
     return [f"{ant.year:04d}-{ant.month:02d}", f"{hoje.year:04d}-{hoje.month:02d}"]
 
 
+def meses_do_ano(hoje: dt.date | None = None) -> list:
+    """De janeiro do ano corrente ate o mes atual (a conferencia semanal pega ajustes retroativos em meses antigos)."""
+    hoje = hoje or hoje_brasilia()
+    return [f"{hoje.year:04d}-{m:02d}" for m in range(1, hoje.month + 1)]
+
+
 def ler_meses(env) -> list:
     bruto = (env.get("GDF_MESES") or "").strip()
     if not bruto:
-        return meses_padrao()
+        return meses_do_ano() if (env.get("GDF_MODO") or "").strip() == "ano" else meses_padrao()
     meses = [m.strip() for m in bruto.split(",") if m.strip()]
     for m in meses:
         if len(m) != 7 or m[4] != "-" or not (m[:4] + m[5:]).isdigit() or not 1 <= int(m[5:]) <= 12:
@@ -105,7 +115,7 @@ def main(env=None) -> int:
         return 1
     print(f"meses: {', '.join(meses)}")
     try:
-        return executar(conn, S.Cliente(user, pwd, base), meses)
+        return executar(conn, S.Cliente(user, pwd, base, pausa=PAUSA_ENTRE_CHAMADAS, esperas_429=ESPERAS_429), meses)
     finally:
         conn.close()
 
