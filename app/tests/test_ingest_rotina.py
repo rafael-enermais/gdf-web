@@ -16,22 +16,17 @@ R = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(R)
 
 
-def test_meses_padrao():
-    assert R.meses_padrao(dt.date(2026, 10, 13)) == ["2026-09", "2026-10"]
-    assert R.meses_padrao(dt.date(2027, 1, 1)) == ["2026-12", "2027-01"]
-    assert R.meses_padrao(dt.date(2026, 3, 31)) == ["2026-02", "2026-03"]
-
-
-def test_meses_do_ano_e_modo_ano():
-    assert R.meses_do_ano(dt.date(2026, 3, 9)) == ["2026-01", "2026-02", "2026-03"]
-    assert len(R.meses_do_ano(dt.date(2026, 10, 13))) == 10
-    assert R.ler_meses({"GDF_MODO": "ano"})[0].endswith("-01")
-    assert R.ler_meses({"GDF_MODO": "ano", "GDF_MESES": "2026-05"}) == ["2026-05"]       # meses informados ganham
+def test_meses_padrao_sao_os_ultimos_365_dias():
+    m = R.meses_padrao(dt.date(2026, 10, 13))
+    assert m[0] == "2025-10" and m[-1] == "2026-10" and len(m) == 13
+    m = R.meses_padrao(dt.date(2027, 1, 1))
+    assert m[0] == "2026-01" and m[-1] == "2027-01" and "2026-12" in m
+    assert R.meses_padrao(dt.date(2026, 3, 31))[0] == "2025-03"
 
 
 def test_ler_meses():
     assert R.ler_meses({"GDF_MESES": " 2026-08 , 2026-09 "}) == ["2026-08", "2026-09"]
-    assert len(R.ler_meses({})) == 2 and len(R.ler_meses({"GDF_MESES": ""})) == 2
+    assert len(R.ler_meses({})) == 13 and len(R.ler_meses({"GDF_MESES": ""})) == 13
     for ruim in ("2026-13", "26-09", "2026/09", "abc"):
         with pytest.raises(ValueError):
             R.ler_meses({"GDF_MESES": ruim})
