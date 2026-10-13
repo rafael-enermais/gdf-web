@@ -61,3 +61,17 @@ def test_variacao_e_formatos():
     assert P.fmt_kpi(12_345_678) == "R$ 12,3 mi" and P.fmt_kpi(-3_200_000) == "−R$ 3,2 mi" and P.fmt_kpi(1234.5) == "R$ 1.234,50"
     assert P.delta_txt(-3_200_000, "R$") == "-R$ 3,2 mi" and P.delta_txt(2950, "R$") == "+R$ 2.950,00" and P.delta_txt(None, "R$") is None
     assert P.delta_txt(0.05, "x") == "+0,05x" and P.fmt(0.5163, "%") == "51,6%" and P.fmt(None, "x") == "–"
+
+
+def test_graficos_do_painel_usam_separador_brasileiro():
+    import pandas as pd
+
+    import graficos
+    d = pd.DataFrame({"Caixa": [1e7, -2.5e6], "Dívida": [1e8, None]}, index=pd.CategoricalIndex(["Jan/26", "Fev/26"], categories=["Jan/26", "Fev/26"], ordered=True))
+    for tipo in ("linha", "barra"):
+        spec = graficos.grafico(d, tipo, ["#1F6FEB", "#E9962A"], agrupado=True).to_dict()
+        enc = spec["layer"][0]["encoding"] if "layer" in spec else spec["encoding"]
+        expr = enc["y"]["axis"]["labelExpr"]
+        assert "regexp(',', 'g')" in expr and "regexp('[.]', 'g')" in expr                 # troca , e . (americano -> brasileiro)
+    textos = {r["Valor (texto)"] for r in spec["datasets"][spec["data"]["name"]]}
+    assert "10.000.000,00" in textos and "−2.500.000,00" in textos and "n/d" in textos       # dica (tooltip) tambem em padrao brasileiro

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 FLUXO = [
-    ("Receber o balancete", "O contador envia o balancete de cada mês em CSV ou PDF (pode ser o PDF assinado; o GDF só lê, nunca altera)."),
+    ("Receber o balancete", "O contador envia o balancete de cada mês em CSV ou PDF (pode ser o PDF assinado; o GDF só lê, nunca altera). CSV e PDF dão os **mesmos números**; a única diferença é que no PDF alguns nomes muito longos (fornecedores) saem cortados, então, tendo os dois, prefira o CSV. Não importe os dois do mesmo período: o app avisa e mantém só um ativo."),
     ("Importar balancete", "Menu **Importar balancete**: envie o arquivo do mês. Veja a lista de conferências (✅/❌) antes de confirmar. Se houver ❌, consulte o guia abaixo."),
     ("Revisar", "Na própria tela de **Importar**: veja as conferências e, se os números batem com a contabilidade, marque **\"Revisei os números e confirmo\"** — o balancete entra já como **REVISADA**. Quem já entrou como rascunho é confirmado em **Histórico**."),
     ("Conferir os demonstrativos", "Menu **Demonstrativos**: Balanço, DRE, Indicadores, Composição de Saldos (aqui dá para digitar apelidos para os nomes cortados) e Conferências."),
