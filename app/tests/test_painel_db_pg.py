@@ -145,3 +145,13 @@ def test_tela_sem_secrets_mostra_erro_amigavel(conn, monkeypatch):
         at.button(key="pn2_btn_sync").click().run()
     assert not at.exception, at.exception
     assert any("SIENGE_USER" in e.value for e in at.error)
+
+
+def test_documentos_do_mes_e_meses_com_dados(conn):
+    sid = P.criar_sync(conn, "2026-08", "P", "P", "teste")
+    P.gravar_normalizado(conn, sid, S.normalizar_titulos("P", outcome()))
+    P.finalizar_sync(conn, sid, "OK")
+    docs = P.documentos_do_mes(conn, "2026-08")
+    assert docs and {"doc_id", "doc_nome", "origem", "previsao", "tipo_oper", "titulos", "baixas", "liquido"} <= set(docs[0])
+    assert all(isinstance(d["liquido"], float) for d in docs)
+    assert P.meses_com_dados(conn) == sorted(P.meses_com_dados(conn))

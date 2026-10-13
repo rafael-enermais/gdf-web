@@ -128,10 +128,32 @@ def sincronizar_mes(conn, cli, mes: str, usuario: str | None, lados=("P", "R"), 
 
 
 def meses_com_dados(conn) -> list:
-    """Meses ('AAAA-MM') que tem pagamentos a pagar gravados, pela data do pagamento (vale tanto para carga mensal quanto por janela)."""
+    """Meses ('AAAA-MM') com pagamentos a pagar gravados, pela data do pagamento. So' meses COMPLETOS: do mes inicial da primeira carga OK
+    ate o mes atual (uma carga por janela traz tambem pagamentos antigos/futuros dos titulos da janela, que nao formam um mes inteiro)."""
     with conn.cursor() as cur:
-        cur.execute("SELECT DISTINCT to_char(data_pagamento, 'YYYY-MM') FROM pnl_v_baixa WHERE lado='P' AND data_pagamento IS NOT NULL ORDER BY 1")
+        cur.execute("""SELECT DISTINCT to_char(b.data_pagamento, 'YYYY-MM') FROM pnl_v_baixa b
+                       WHERE b.lado='P' AND b.data_pagamento IS NOT NULL
+                         AND b.data_pagamento >= (SELECT min(mes) FROM pnl_sync WHERE status='OK' AND lado='P' AND tipo_data='P')
+                         AND b.data_pagamento < (date_trunc('month', CURRENT_DATE) + interval '1 month')
+                       ORDER BY 1""")
         return [r[0] for r in cur.fetchall()]
+
+
+def documentos_do_mes(conn, mes: str) -> list:
+    """Conferencia do mes: pagamentos a pagar agrupados por tipo de documento, origem do titulo, previsao e tipo de operacao da baixa.
+    Serve para achar o que marca 'previsao', 'folha de pagamento' e 'reapropriacao'. Nao mostra nomes de credores."""
+    ini = f"{mes}-01"
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT COALESCE(t.doc_id,'') AS doc_id, max(COALESCE(t.doc_nome,'')) AS doc_nome, COALESCE(t.origem,'') AS origem,
+                   COALESCE(t.previsao,'') AS previsao, b.tipo_oper_id, count(DISTINCT (t.bill_id, t.installment_id)) AS titulos,
+                   count(*) AS baixas, sum(b.liquido) AS liquido
+            FROM pnl_v_baixa b
+            JOIN pnl_titulo t ON t.lado=b.lado AND t.bill_id=b.bill_id AND t.installment_id=b.installment_id
+            WHERE b.lado='P' AND b.data_pagamento >= %s::date AND b.data_pagamento < (%s::date + interval '1 month')
+            GROUP BY 1,3,4,5 ORDER BY sum(b.liquido) DESC NULLS LAST""", (ini, ini))
+        return [{"doc_id": d, "doc_nome": n, "origem": o, "previsao": p, "tipo_oper": t, "titulos": ti, "baixas": ba, "liquido": round(float(l or 0), 2)}
+                for d, n, o, p, t, ti, ba, l in cur.fetchall()]
 
 
 def ultimas_syncs(conn, limite: int = 12) -> list:
