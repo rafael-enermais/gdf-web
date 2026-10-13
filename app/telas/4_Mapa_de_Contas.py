@@ -27,7 +27,10 @@ st.dataframe(pd.DataFrame([{"Chave": k, "Linha do demonstrativo": r, "Seção": 
 st.subheader("Contas sem chave no mapa")
 meses = db.listar_meses_ativos(conn, emp["id"])
 if not meses:
-    st.caption("Importe um balancete para conferir.")
+    if db.acumulados_ativos(conn, emp["id"]):
+        st.caption("Há só balancete acumulado importado. A lista de contas sem chave é feita por balancete mensal; no acumulado, a mesma checagem roda na importação (conferência “Mapa de contas”).")
+    else:
+        st.caption("Importe um balancete para conferir.")
 else:
     mes = st.selectbox("Mês", meses, index=len(meses) - 1, format_func=F.mes_br, key="mapa_mes")
     per = db.periodos_mensais_ativos(conn, emp["id"])[mes]

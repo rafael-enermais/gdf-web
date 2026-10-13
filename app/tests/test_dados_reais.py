@@ -333,3 +333,22 @@ def test_csv_e_pdf_do_mesmo_acumulado_dao_os_mesmos_numeros(pasta, csvd):
         assert all(dc[k][f] == dp[k][f] for f in ("sint", "ant", "deb", "cred", "sal")), k
         assert dc[k]["nome"].startswith(dp[k]["nome"][:20]) or dp[k]["nome"].startswith(dc[k]["nome"][:20]), k
     assert not cab_p["ignoradas"] and not cab_c["ignoradas"]
+
+
+def _texto_do_pdf(r):
+    import io
+    import pdfplumber
+    import relatorio_dados as RD
+    import relatorio_pdf as RP
+    emp = {"id": 1, "codigo": "ANASTACIO", "razao_social": "Anastácio Transmissora de Energia S.A.", "cnpj": "54.800.488/0001-60"}
+    x = RD.montar(emp, r["b"], "2026-08", r["bp"], r["d"], r["contas_ref"], None, None, None, None, r)
+    with pdfplumber.open(io.BytesIO(RP.gerar_pdf(x, {}, "RASCUNHO", "13/10/2026 10:00"))) as p:
+        return " ".join((pg.extract_text() or "") for pg in p.pages).replace("\n", " ")
+
+
+def test_texto_da_mudanca_de_sinal_do_pl_so_afirma_o_mes_quando_ha_todos_os_meses(b, csvd):
+    import fontes
+    cheio = _texto_do_pdf(fontes.calcular(b.p, {}, None, "2026-08"))
+    assert "A mudança de sinal ocorre em jul/26" in cheio
+    so_acum = _texto_do_pdf(fontes.calcular({}, {"2026-08": csvd[1]}, None, "2026-08"))
+    assert "A mudança de sinal ocorre" not in so_acum and "O sinal mudou entre dez/25 e ago/26" in so_acum

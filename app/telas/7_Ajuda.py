@@ -19,6 +19,8 @@ aba_fluxo, aba_conf, aba_gloss = st.tabs(["Fluxo do mês", "Quando algo não bat
 with aba_fluxo:
     for n, (titulo, texto) in enumerate(ajuda.FLUXO, 1):
         st.markdown(f"**{n}. {titulo}** — {texto}")
+        for item in ajuda.FLUXO_DETALHES.get(titulo, []):
+            st.markdown(f"- {item}")
     st.info("Nada é apagado no GDF: importações desfeitas ficam guardadas, edições do mapa ficam no histórico e cada relatório gerado vira uma versão nova.")
 with aba_conf:
     st.caption("As conferências rodam sozinhas na importação e nos Demonstrativos. Escolha o grupo que apareceu com ❌.")
@@ -31,8 +33,8 @@ with aba_conf:
     st.markdown(ajuda.QUANDO_PEDIR_AJUDA)
     st.markdown(f"Contato: **{CONTATO}**")
 with aba_gloss:
-    exp = RD.EXPLICACAO
-    linhas = [{"Indicador": rot, "Como é calculado": formula, "Para que serve": exp.get(chave, "")}
+    exp = {k: v.replace("{no_escopo}", "no ano").replace("{escopo}", "do ano") for k, v in RD.EXPLICACAO.items()}      # glossario fala do ano inteiro
+    linhas = [{"Indicador": tabelas.escopo_txt(rot), "Como é calculado": tabelas.escopo_txt(formula), "Para que serve": exp.get(chave, "")}
               for rot, chave, _k, formula in tabelas.INDICADORES_LINHAS if chave]
     st.dataframe(pd.DataFrame(linhas), hide_index=True, width="stretch", height=35 * (len(linhas) + 1) + 3)
     st.caption("Resultados são acumulados no ano. A receita de construção e a remuneração do ativo de contrato só entram ao final do exercício e/ou na entrada em operação da obra.")
