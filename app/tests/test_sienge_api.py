@@ -41,6 +41,24 @@ def test_normalizar_ignora_registro_sem_numero_e_baixa_sem_sequencial():
     assert len(n["titulos"]) == 1 and len({b["seq"] for b in n["baixas"]}) == 2
 
 
+def test_normalizar_baixa_repetida_no_mesmo_titulo():
+    """Mesmo sequencialNumber no mesmo titulo: copia identica e' ignorada; conteudo diferente vira baixa nova com numero fixo."""
+    ig = {"sequencialNumber": 1, "paymentDate": "2026-09-01", "netAmount": 10}
+    regs = [{"billId": 9, "installmentId": 1, "payments": [ig, dict(ig), {"sequencialNumber": 1, "paymentDate": "2026-09-05", "netAmount": 7},
+                                                         {"sequencialNumber": 2, "paymentDate": "2026-09-06", "netAmount": 3}]}]
+    n = S.normalizar_titulos("P", regs)
+    seqs = sorted(b["seq"] for b in n["baixas"])
+    assert len(seqs) == 3 and len(set(seqs)) == 3 and seqs[:2] == [1, 2]
+    assert n["avisos"]["baixas_copia_ignorada"] == 1 and n["avisos"]["baixas_renumeradas"] == 1
+    assert sorted(S.normalizar_titulos("P", regs)["baixas"], key=lambda b: b["seq"]) == sorted(n["baixas"], key=lambda b: b["seq"])  # repetivel
+
+
+def test_normalizar_titulo_repetido_e_ignorado():
+    regs = [{"billId": 5, "installmentId": 1}, {"billId": 5, "installmentId": 1}, {"billId": 5, "installmentId": 2}]
+    n = S.normalizar_titulos("P", regs)
+    assert len(n["titulos"]) == 2 and n["avisos"]["titulos_repetidos_ignorados"] == 1
+
+
 def test_normalizar_cadastros():
     c = S.normalizar_cadastros({"empresas": [{"id": 5, "name": "CONSTRUTORA", "cnpj": "x"}], "centros_custo": [{"id": 1049, "name": "CC", "idCompany": 5}],
                                 "plano": [{"id": "2010104", "name": "Material", "tpConta": "R", "flRedutora": "N", "flAtiva": "S"}],

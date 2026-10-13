@@ -115,10 +115,12 @@ def sincronizar_mes(conn, cli, mes: str, usuario: str | None, lados=("P", "R"), 
                 norm = normalizar(lado, buscar(cli, lado, mes, tipo))
                 cont = gravar_normalizado(conn, sid, norm)
                 finalizar_sync(conn, sid, "OK", cont["titulos"], cont["baixas"], cont["rateios"], cont["liquido"])
-                resultado.append({"lado": lado, "tipo": tipo, "ok": True, **cont})
+                resultado.append({"lado": lado, "tipo": tipo, "ok": True, **cont, "avisos": norm.get("avisos") or {}})
             except Exception as exc:                      # registra e segue para o proximo; nunca derruba a tela
                 finalizar_sync(conn, sid, "ERRO", erro=str(exc))
                 resultado.append({"lado": lado, "tipo": tipo, "ok": False, "erro": str(exc)})
+                if "HTTP 429" in str(exc):                # limite do Sienge persistiu: insistir so piora; para e deixa para a proxima execucao
+                    return resultado
     return resultado
 
 

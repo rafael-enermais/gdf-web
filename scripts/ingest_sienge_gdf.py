@@ -74,13 +74,20 @@ def executar(conn, cli, meses: list, buscar=None, normalizar=None, atualizar_cad
             falhas += 1
             log(f"ERRO cadastros: {exc}")
     for mes in meses:
+        limite = False
         for r in P.sincronizar_mes(conn, cli, mes, USUARIO_ROTINA, lados=LADOS, tipos=TIPOS, buscar=buscar, normalizar=normalizar):
             lado = "pagar" if r["lado"] == "P" else "receber"
             if r["ok"]:
-                log(f"{mes} {lado} data {r['tipo']}: {r['titulos']} títulos, {r['baixas']} baixas, {r['rateios']} rateios")
+                av = {k: v for k, v in (r.get("avisos") or {}).items() if v}
+                log(f"{mes} {lado} data {r['tipo']}: {r['titulos']} títulos, {r['baixas']} baixas, {r['rateios']} rateios"
+                    + (f" | avisos: {av}" if av else ""))
             else:
                 falhas += 1
                 log(f"ERRO {mes} {lado} data {r['tipo']}: {r['erro']}")
+                limite = limite or "HTTP 429" in (r["erro"] or "")
+        if limite:
+            log("Limite de chamadas do Sienge persistiu: parei aqui. Os meses seguintes ficam para a próxima execução.")
+            break
     return 1 if falhas else 0
 
 

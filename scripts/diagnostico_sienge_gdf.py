@@ -89,17 +89,24 @@ def main(env=None, log=print) -> int:
     hoje = dt.date.today()
     ini = (env.get("GDF_DIAG_INICIO") or f"{hoje.year}-01").strip()
     fim = (env.get("GDF_DIAG_FIM") or f"{hoje.year}-{hoje.month:02d}").strip()
+    lados = tuple(x for x in (env.get("GDF_DIAG_LADOS") or "P,R").replace(" ", "").split(",") if x in ("P", "R"))
+    tipos = tuple(x for x in (env.get("GDF_DIAG_TIPOS") or "P,I").replace(" ", "").split(",") if x in ("P", "I"))
     falhas = 0
+    limite = False
+    log(f"lados {lados} | tipos {tipos} | {ini}..{fim}")
     log("== por mês (lado, tipo de data): registros | chaves únicas | repetidas (idênticas / mesmas baixas) | baixas (chave repetida) | rateios | KB | s ==")
     tot = Counter()
     for mes in meses_entre(ini, fim):
         a, b = S.limites_do_mes(mes)
-        for lado in ("P", "R"):
-            for tipo in ("P", "I"):
+        for lado in lados:
+            for tipo in tipos:
+                if limite:
+                    break
                 try:
                     regs, seg, kb = chamar(cli, lado, a, b, tipo)
                 except S.ErroSienge as exc:
                     falhas += 1
+                    limite = limite or "HTTP 429" in str(exc)
                     log(f"{mes} {lado} {tipo}: ERRO {exc}")
                     continue
                 r = analisar(regs, lado)
@@ -113,14 +120,19 @@ def main(env=None, log=print) -> int:
     log("== soma dos meses ==")
     for (lado, tipo, k), v in sorted(tot.items()):
         log(f"{lado} {tipo} {k}: {v}")
+    if limite:
+        log("Limite do Sienge (HTTP 429) persistiu: parei sem testar a janela larga.")
+        return 1
     log(f"== janela larga {ini}..{fim} numa chamada só ==")
     a, _ = S.limites_do_mes(ini)
     _, b = S.limites_do_mes(fim)
-    for lado in ("P", "R"):
-        for tipo in ("P", "I"):
+    for lado in lados:
+        for tipo in tipos:
             try:
                 regs, seg, kb = chamar(cli, lado, a, b, tipo)
-                log(f"{lado} {tipo}: {len(regs)} registros | {kb} KB | {seg} s")
+                r = analisar(regs, lado)
+                log(f"{lado} {tipo}: {r['registros']} registros | chaves únicas {r['chaves_unicas']} | baixas {r['baixas']} | rateios {r['rateios']} | {kb} KB | {seg} s"
+                    f" | colisões de baixa: {r['colisoes_identicas']} idênticas, {r['colisoes_diferentes']} diferentes, tipos {r['tipos_oper_das_colisoes']}")
             except S.ErroSienge as exc:
                 falhas += 1
                 log(f"{lado} {tipo}: ERRO {exc}")
