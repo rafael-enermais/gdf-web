@@ -13,6 +13,11 @@ on:
         description: "Meses a buscar (AAAA-MM, separados por virgula). Vazio = mes anterior e mes atual."
         required: false
         default: ""
+      diagnostico:
+        description: "Só medir volume/tempo e procurar chaves repetidas (não grava nada no banco)?"
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -33,6 +38,7 @@ jobs:
       - name: Instalar dependencia
         run: pip install psycopg2-binary==2.9.13
       - name: Buscar no Sienge e gravar no Supabase
+        if: ${{ github.event.inputs.diagnostico != 'true' }}
         env:
           SIENGE_USER: ${{ secrets.SIENGE_USER }}
           SIENGE_PASSWORD: ${{ secrets.SIENGE_PASSWORD }}
@@ -40,3 +46,10 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GDF_MESES: ${{ github.event.inputs.meses }}
         run: python scripts/ingest_sienge_gdf.py
+      - name: Diagnostico (somente leitura, nao grava)
+        if: ${{ github.event.inputs.diagnostico == 'true' }}
+        env:
+          SIENGE_USER: ${{ secrets.SIENGE_USER }}
+          SIENGE_PASSWORD: ${{ secrets.SIENGE_PASSWORD }}
+          SIENGE_BASE_URL: ${{ secrets.SIENGE_BASE_URL }}
+        run: python scripts/diagnostico_sienge_gdf.py

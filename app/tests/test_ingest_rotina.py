@@ -70,3 +70,32 @@ def test_executar_sem_falhas_da_exit_0(conn):
     cod = R.executar(conn, None, ["2026-09"], buscar=lambda c, l, m, t: outcome() if l == "P" else income(),
                      atualizar_cadastros=False, log=lambda *_: None)
     assert cod == 0
+
+
+# ---------------------------------------------------------------- diagnostico
+_spec2 = importlib.util.spec_from_file_location("diagnostico_sienge_gdf", RAIZ / "scripts" / "diagnostico_sienge_gdf.py")
+D = importlib.util.module_from_spec(_spec2)
+_spec2.loader.exec_module(D)
+
+
+def test_meses_entre():
+    assert D.meses_entre("2026-11", "2027-02") == ["2026-11", "2026-12", "2027-01", "2027-02"]
+    assert D.meses_entre("2026-10", "2026-10") == ["2026-10"]
+
+
+def test_analisar_acha_chaves_repetidas_sem_vazar_valores():
+    regs = outcome()
+    regs.append(dict(regs[0]))                                   # titulo 1 repetido, identico
+    outro = dict(regs[1]); outro["payments"] = [{"sequencialNumber": 9, "netAmount": 1.0}]
+    regs.append(outro)                                            # titulo 2 repetido, baixas diferentes
+    regs[2] = dict(regs[2]); regs[2]["payments"] = regs[2]["payments"] + [dict(regs[2]["payments"][0])]  # baixa com seq repetida
+    r = D.analisar(regs, "P")
+    assert r["registros"] == 6 and r["chaves_unicas"] == 4 and r["chaves_repetidas"] == 2
+    assert r["repetidas_identicas"] == 1 and r["repetidas_com_mesmas_baixas"] == 1
+    assert r["baixas_chave_repetida_no_mesmo_registro"] == 1 and r["baixas_chave_repetida_total"] == 2
+    assert "FORNECEDOR" not in str(r)
+
+
+def test_diagnostico_sem_configuracao(capsys):
+    assert D.main({}, log=print) == 1
+    assert "SIENGE_USER" in capsys.readouterr().out
