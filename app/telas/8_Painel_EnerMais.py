@@ -78,8 +78,10 @@ with aba_desp:
         st.info("Sincronize primeiro as contas pagas (data P) de um mês na aba ao lado.")
     else:
         mes = st.selectbox("Mês", meses_ok, index=len(meses_ok) - 1, key="pn2_mes_desp")
+        P.garantir_regras_padrao(conn)                   # cria a regra EXCLUI_PREVISAO (proposta) se ainda nao existir
         regras = P.regras_ativas(conn, "DESPESAS")
         prefixos = P.prefixos_excluidos(regras)
+        sem_prev = P.exclui_previsao(regras)
         with conn.cursor() as cur:
             cur.execute("SELECT DISTINCT tipo_oper_id, tipo_oper_nome FROM pnl_baixa WHERE tipo_oper_id IS NOT NULL ORDER BY 1")
             opers = cur.fetchall()
@@ -93,8 +95,11 @@ with aba_desp:
             st.dataframe(pd.DataFrame([{"Documento": d["doc_id"], "Nome": d["doc_nome"], "Origem": d["origem"], "Previsão": d["previsao"],
                                         "Operação": d["tipo_oper"], "Títulos": d["titulos"], "Baixas": d["baixas"], "Líquido": F.moeda_br(d["liquido"])}
                                        for d in docs_mes]), hide_index=True, width="stretch")
-        linhas = P.despesas_do_mes(conn, mes, prefixos, op_fora, doc_fora)
+        linhas = P.despesas_do_mes(conn, mes, prefixos, op_fora, doc_fora, sem_previsao=sem_prev)
         total = sum(l["valor"] for l in linhas)
+        if sem_prev:
+            com_prev = sum(l["valor"] for l in P.despesas_do_mes(conn, mes, prefixos, op_fora, doc_fora, sem_previsao=False))
+            st.caption(f"Regra de previsão ligada: já estão fora {F.moeda_br(com_prev - total)} de documentos de previsão (PRV, PCT, PPC, FOPA).")
         k1, k2, k3 = st.columns(3)
         k1.metric("Pago no mês (sem contas de pessoas/encargos/transferências)", F.moeda_br(total), border=True)
         top5 = sum(l["valor"] for l in linhas[:5])
@@ -102,7 +107,7 @@ with aba_desp:
         k3.metric("Contas com movimento", len(linhas), border=True)
         st.dataframe(pd.DataFrame([{"Conta": l["plano_cod"], "Nome": l["plano_nome"], "Valor": F.moeda_br(l["valor"]),
                                     "% do mês": F.pct_br(l["valor"] / total) if total else "–"} for l in linhas[:25]]), hide_index=True, width="stretch")
-        st.caption("Regras aplicadas (aba Regras): " + ("; ".join(f"{r['valor']} ({r['status'].lower()})" for r in regras) or "nenhuma") + ".")
+        st.caption("Regras aplicadas (aba Regras): " + ("; ".join(f"{r['tipo'].replace('EXCLUI_', '').replace('PLANO_PREFIXO', 'plano')} {r['valor']} ({r['status'].lower()})" for r in regras) or "nenhuma") + ".")
         st.markdown("**Conferir com o CSV do Sienge**")
         arq = st.file_uploader("ExportacaoContasPagas.csv do mês", type=["csv"], key="pn2_csv")
         if arq is not None:
@@ -126,7 +131,17 @@ with aba_regras:
     st.markdown("Regras usadas para montar cada aba do painel. As marcadas como **proposta** foram deduzidas dos arquivos de setembro e "
                 "ainda precisam da confirmação da Suellen.")
     with conn.cursor() as cur:
-        cur.execute("SELECT area, tipo, valor, descricao, status, alterado_por, alterado_em FROM pnl_regra WHERE ativo ORDER BY area, id")
+        cur.execute("SELECT id, area, tipo, valor, descricao, status, alterado_por, alterado_em FROM pnl_regra WHERE ativo ORDER BY area, id")
         rg = cur.fetchall()
     st.dataframe(pd.DataFrame([{"Aba": a, "Regra": t, "Valor": v, "Descrição": d, "Status": s.lower(), "Quem": q, "Quando": e.strftime("%d/%m/%Y")}
-                               for a, t, v, d, s, q, e in rg]), hide_index=True, width="stretch")
+                               for _, a, t, v, d, s, q, e in rg]), hide_index=True, width="stretch")
+    pend = [(i, f"{a} · {t} · {v}") for i, a, t, v, d, s, q, e in rg if s != "CONFIRMADA"]
+    if pend:
+        esc = st.multiselect("Confirmar regras (só depois de conferir com o CSV ou com a Suellen)", [i for i, _ in pend],
+                             format_func=lambda i: next(n for k, n in pend if k == i), key="pn2_rg_conf")
+        if st.button("Confirmar as regras escolhidas", disabled=not esc, key="pn2_rg_btn"):
+            n = P.confirmar_regras(conn, esc, usuario or "app")
+            st.success(f"{n} regra(s) confirmada(s).")
+            st.rerun()
+    else:
+        st.success("Todas as regras estão confirmadas.")

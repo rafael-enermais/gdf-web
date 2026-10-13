@@ -34,6 +34,31 @@ def test_v2_instalado_e_regras_iniciais(conn):
     assert set(P.prefixos_excluidos(P.regras_ativas(conn, "DESPESAS"))) == set(PREF)
 
 
+def test_regra_previsao_nasce_proposta_e_confirma(conn):
+    assert P.garantir_regras_padrao(conn) == 1                       # cria EXCLUI_PREVISAO
+    assert P.garantir_regras_padrao(conn) == 0                       # segunda vez nao duplica
+    regras = P.regras_ativas(conn, "DESPESAS")
+    assert P.exclui_previsao(regras)
+    prev = next(r for r in regras if r["tipo"] == "EXCLUI_PREVISAO")
+    assert prev["status"] == "PROPOSTA"
+    assert P.confirmar_regras(conn, [prev["id"]], "teste@x") == 1
+    assert P.confirmar_regras(conn, [prev["id"]], "teste@x") == 0    # ja confirmada
+    assert next(r for r in P.regras_ativas(conn, "DESPESAS") if r["tipo"] == "EXCLUI_PREVISAO")["status"] == "CONFIRMADA"
+    assert P.confirmar_regras(conn, [], "teste@x") == 0
+
+
+def test_despesas_sem_documentos_de_previsao(conn):
+    regs = outcome()
+    regs[0]["forecastDocument"] = "S"                                # o titulo 1 (material + combustivel) vira previsao
+    _ingerir(conn, regs)
+    com = {l["plano_cod"]: l["valor"] for l in P.despesas_do_mes(conn, "2026-09", PREF)}
+    assert com == {"2.01.01.04": 600.0, "2.01.04.04": 400.0}         # sem a regra a previsao entra
+    sem = P.despesas_do_mes(conn, "2026-09", PREF, sem_previsao=True)
+    assert sem == []                                                 # com a regra sai
+    ago = P.despesas_do_mes(conn, "2026-08", PREF, sem_previsao=True)
+    assert [(l["plano_cod"], l["valor"]) for l in ago] == [("2.01.01.04", 700.0)]   # titulo sem marca (nulo) nao e' previsao
+
+
 def test_ingestao_e_idempotencia(conn):
     _, cont = _ingerir(conn)
     assert cont == {"titulos": 4, "baixas": 5, "rateios": 5, "liquido": 2550.0}
