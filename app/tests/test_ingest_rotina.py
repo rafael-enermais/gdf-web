@@ -136,3 +136,26 @@ def test_analisar_acha_chaves_repetidas_sem_vazar_valores():
 def test_diagnostico_sem_configuracao(capsys):
     assert D.main({}, log=print) == 1
     assert "SIENGE_USER" in capsys.readouterr().out
+
+
+# ---- diagnostico do movimento bancario (so contagens, nunca valores)
+_spec3 = importlib.util.spec_from_file_location("diagnostico_banco_sienge_gdf", RAIZ / "scripts" / "diagnostico_banco_sienge_gdf.py")
+B = importlib.util.module_from_spec(_spec3)
+_spec3.loader.exec_module(B)
+
+
+def test_resumo_do_movimento_bancario_so_tem_contagens():
+    regs = [
+        {"bankMovementId": 1, "billId": 10, "bankMovementOriginId": "CP", "bankMovementOperationType": "D", "bankMovementOperationId": 1, "bankMovementOperationName": "Pagamento",
+         "financialCategories": [{"financialCategoryId": "2010104", "financialCategoryRate": 100, "financialCategoryAmount": 999.99}]},
+        {"bankMovementId": 2, "billId": None, "bankMovementOriginId": "BC", "bankMovementOperationType": "D", "bankMovementOperationId": 7, "bankMovementOperationName": "Tarifa",
+         "bankMovementHistoricId": 33, "financialCategories": [{"financialCategoryId": "2030102", "financialCategoryRate": 100}]},
+        {"bankMovementId": 3, "billId": None, "bankMovementOriginId": "BC", "bankMovementOperationType": "D", "bankMovementOperationId": 7, "bankMovementOperationName": "Tarifa",
+         "bankMovementHistoricId": 33, "financialCategories": []},
+    ]
+    r = B.resumir(regs)
+    assert r["registros"] == 3 and r["sem_titulo"] == 2 and r["com_plano"] == 2 and r["sem_titulo_com_plano"] == 1
+    assert r["sem_titulo_por_origem"] == {"BC": 2} and r["sem_titulo_contas_alvo"]["2.03.01.02"] == 1
+    assert "financialCategoryId" in r["campos_plano"]
+    assert "999.99" not in str(r)                                      # nenhum valor em R$ vai para o log publico
+    assert B.resumir([])["registros"] == 0
