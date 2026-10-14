@@ -243,6 +243,77 @@ with aba_res:
         m4.metric("Lucro líquido após investimentos", F.moeda_br(oficial["14"]), border=True)
         st.caption("Resultado das obras (a Administração central vem em outra aba, nas próximas etapas).")
 
+    # ---- confirmar o DRE do mes: por linha, escolher a fonte (API ou PDF)
+    st.markdown("**Confirmar o DRE do mês** — escolha, linha a linha, de qual fonte vem o valor")
+    from dre_mapa import LINHAS as _LIN
+    _folhas = [(k, n) for k, n, t in _LIN if t == "folha"]
+    _api_f = P.dre_do_mes(P.resultado_por_conta(conn, mes_r, sem_previsao=sem_prev_r, so_obras=so_obras))["valores"] if mes_r in meses_em else None
+    _pdf_f = P.dre_do_mes([{"plano_cod": c, "plano_nome": "", "valor": x} for c, x in P.dre_contas_importadas(conn, imp["id"]).items()])["valores"] if imp else None
+    _fontes = {}
+    if _api_f is not None:
+        _fontes["API"] = _api_f
+    if _pdf_f is not None:
+        _fontes["PDF"] = _pdf_f
+    if not _fontes:
+        st.info("Sem fonte para este mês: importe o PDF do DRE ou sincronize as contas emitidas (tipo I).")
+    else:
+        if st.session_state.get("pn2_conf_ok"):
+            st.toast(st.session_state["pn2_conf_ok"])
+            st.success(st.session_state.pop("pn2_conf_ok"))
+        conf = P.confirmacao_ativa(conn, mes_r)
+        _padrao = "PDF" if "PDF" in _fontes else "API"
+        if not P.confirmacao_instalada(conn):
+            st.warning("Falta executar o **SQL-10** (`sql/v2_dre_confirmacao.sql`) no Supabase para gravar a confirmação. Você já pode escolher as fontes e ver o resultado.")
+        if conf:
+            st.success(f"DRE de {mes_r} confirmado por {conf['quem'] or '–'} em {conf['quando']:%d/%m/%Y %H:%M} (confirmação #{conf['id']})"
+                       + (f" — {conf['observacao']}" if conf["observacao"] else "") + ". Se mudar alguma escolha e confirmar de novo, a anterior fica guardada no histórico.")
+        def _todos(fonte, mes_=mes_r):
+            for k_, _ in _folhas:
+                st.session_state[f"pn2_fonte_{mes_}_{k_}"] = fonte
+        b1, b2, _ = st.columns([1, 1, 3])
+        if "PDF" in _fontes:
+            b1.button("Usar PDF em todas", key=f"pn2_todos_pdf_{mes_r}", on_click=_todos, args=("PDF",))
+        if "API" in _fontes:
+            b2.button("Usar API em todas", key=f"pn2_todos_api_{mes_r}", on_click=_todos, args=("API",))
+        cab = st.columns([3, 2, 2, 2, 2])
+        for c_, t_ in zip(cab, ["Linha do DRE", "API", "PDF", "Diferença", "Fonte adotada"]):
+            c_.markdown(f"**{t_}**")
+        escolha = {}
+        for k_, n_ in _folhas:
+            cols = st.columns([3, 2, 2, 2, 2])
+            cols[0].write(f"{k_} · {n_}")
+            va, vp = (_api_f or {}).get(k_), (_pdf_f or {}).get(k_)
+            cols[1].write(F.moeda_br(va) if va is not None else "–")
+            cols[2].write(F.moeda_br(vp) if vp is not None else "–")
+            if va is not None and vp is not None:
+                dif_ = round(va - vp, 2)
+                cols[3].write(F.moeda_br(dif_) if abs(dif_) > 0.5 else "confere")
+            else:
+                cols[3].write("–")
+            salvo = ((conf or {}).get("fontes") or {}).get(k_)
+            ini_ = salvo if salvo in _fontes else _padrao
+            escolha[k_] = cols[4].selectbox("Fonte", list(_fontes), index=list(_fontes).index(ini_), key=f"pn2_fonte_{mes_r}_{k_}", label_visibility="collapsed")
+        adotado = {k_: _fontes[escolha[k_]].get(k_, 0.0) for k_, _ in _folhas}
+        final = P.dre_de_folhas(adotado)
+        fv = final["valores"]
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Receita bruta (adotada)", F.moeda_br(fv["01"]), border=True)
+        m2.metric("Custos diretos (adotado)", F.moeda_br(fv["04"]), border=True)
+        m3.metric("Lucro bruto (adotado)", F.moeda_br(fv["05"]), border=True)
+        m4.metric("Lucro líquido após investimentos (adotado)", F.moeda_br(fv["14"]), border=True)
+        with st.expander("DRE completo com as fontes escolhidas"):
+            st.dataframe(pd.DataFrame([{"Linha": k_, "DRE": n_, "Valor adotado": F.moeda_br(x_)} for k_, n_, x_ in final["linhas"]]), hide_index=True, width="stretch")
+        obs = st.text_input("Observação (opcional): por que escolheu essas fontes", key=f"pn2_conf_obs_{mes_r}")
+        if st.button(f"Confirmar o DRE de {mes_r}", type="primary", disabled=not P.confirmacao_instalada(conn), key=f"pn2_confirmar_{mes_r}"):
+            try:
+                resumo = {"lucro_liquido_adotado": fv["14"], "lucro_liquido_api": (P.dre_de_folhas({k_: _api_f.get(k_, 0.0) for k_, _ in _folhas})["valores"]["14"] if _api_f else None),
+                          "lucro_liquido_pdf": (_pdf_f or {}).get("14")}
+                res_c = P.gravar_confirmacao(conn, mes_r, escolha, adotado, usuario, obs, resumo, imp["id"] if imp else None)
+                st.session_state["pn2_conf_ok"] = f"DRE de {mes_r} confirmado (confirmação #{res_c['id']})." + (f" Substituiu a #{res_c['substituiu']}." if res_c["substituiu"] else "")
+                st.rerun()
+            except Exception as exc:
+                st.error(f"Não consegui confirmar: {exc}")
+
     # ---- conferência pela API
     st.markdown("**Conferência: o mesmo DRE recalculado pela API do Sienge**")
     if mes_r not in meses_em:

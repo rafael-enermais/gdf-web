@@ -412,3 +412,57 @@ def test_tela_resultado_pdf_invalido_mostra_erro_e_registra_log(conn):
     assert not at.exception, at.exception
     assert any("PDF" in e.value for e in at.tabs[2].error)
     assert any(l["acao"] == "DRE_PDF_ERRO" for l in P.ultimos_logs(conn))
+
+
+# ------------------------------------------------------------------ descontos das baixas e confirmacao do DRE (fonte por linha)
+def test_dre_de_folhas_formulas():
+    r = P.dre_de_folhas({"01.01": 1000.0, "02.01": -10.0, "02.02": -90.0, "04.01": -300.0, "04.02": -100.0, "06.04": -50.0, "08.02": 5.0, "10.01": -20.0, "12.01": -10.0})
+    v = r["valores"]
+    assert v["01"] == 1000.0 and v["02"] == -100.0 and v["03"] == 900.0 and v["04"] == -400.0 and v["05"] == 500.0
+    assert v["07"] == 450.0 and v["11"] == 435.0 and v["14"] == 425.0 and dict((k, x) for k, _, x in r["linhas"])["14"] == 425.0
+
+
+def test_descontos_das_baixas_entram_como_conta_1_01_03_01(conn):
+    _ingerir(conn, regs=income(), lado="R", tipo="I")
+    assert "1.01.03.01" not in {c["plano_cod"] for c in P.resultado_por_conta(conn, "2026-09")}          # sem desconto, nada aparece
+    with conn.cursor() as cur:
+        cur.execute("UPDATE pnl_baixa SET desconto = 125.50 WHERE lado='R'")
+    c = {x["plano_cod"]: x["valor"] for x in P.resultado_por_conta(conn, "2026-09")}
+    assert c["1.01.03.01"] == -125.50
+    v = P.dre_do_mes(P.resultado_por_conta(conn, "2026-09"))["valores"]
+    assert v["02.01"] == -125.50 and v["01.01"] == 2000.0 and v["03"] == 1874.50
+
+
+def test_confirmacao_grava_substitui_e_guarda_historico(conn):
+    assert P.confirmacao_instalada(conn) and P.confirmacao_ativa(conn, "2026-09") is None and P.meses_confirmados(conn) == []
+    f1, v1 = {"01.01": "PDF", "04.01": "API"}, {"01.01": 1000.0, "04.01": -300.0}
+    r1 = P.gravar_confirmacao(conn, "2026-09", f1, v1, "teste@x", "primeira", {"lucro_liquido_adotado": 700.0})
+    assert r1["substituiu"] is None
+    a = P.confirmacao_ativa(conn, "2026-09")
+    assert a["fontes"] == f1 and a["valores"]["04.01"] == -300.0 and a["quem"] == "teste@x" and a["observacao"] == "primeira" and a["resumo"]["lucro_liquido_adotado"] == 700.0
+    r2 = P.gravar_confirmacao(conn, "2026-09", {"01.01": "API", "04.01": "API"}, {"01.01": 900.0, "04.01": -300.0}, "outro@x")
+    assert r2["substituiu"] == r1["id"] and P.confirmacao_ativa(conn, "2026-09")["id"] == r2["id"] and P.meses_confirmados(conn) == ["2026-09"]
+    assert _contar(conn, "pnl_dre_confirmacao") == 2                                   # a antiga fica guardada
+    with pytest.raises(ValueError):
+        P.gravar_confirmacao(conn, "2026-09", {"01.01": "API"}, {"04.01": 1.0}, None)
+    assert {l["acao"] for l in P.ultimos_logs(conn)} >= {"DRE_CONFIRMADO"}
+
+
+def test_tela_resultado_confirma_dre_escolhendo_fonte_por_linha(conn):
+    import hashlib
+    _ingerir(conn, lado="P", tipo="I")
+    _ingerir(conn, regs=income(), lado="R", tipo="I")
+    b, dre = _pdf_lido()
+    P.gravar_dre(conn, dre, "dre.pdf", hashlib.sha256(b).hexdigest(), "teste@x")
+    with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", side_effect=_uploader_por_chave({})):
+        at = _tela(conn).run()
+        assert not at.exception, at.exception
+        assert at.selectbox(key="pn2_fonte_2026-09_01.01").value == "PDF"               # com PDF importado, o padrao e' o PDF
+        at.selectbox(key="pn2_fonte_2026-09_01.01").select("API").run()                 # a contabilidade escolhe a API so' para a receita
+        at.text_input(key="pn2_conf_obs_2026-09").input("receita pela API").run()
+        at.button(key="pn2_confirmar_2026-09").click().run()
+        assert not at.exception, at.exception
+    c = P.confirmacao_ativa(conn, "2026-09")
+    assert c["fontes"]["01.01"] == "API" and c["fontes"]["04.01"] == "PDF" and c["observacao"] == "receita pela API"
+    assert c["valores"]["01.01"] == 2000.0 and c["valores"]["04.01"] == -600.0        # receita da API; custo do PDF (soma das 3 obras)
+    assert c["resumo"]["lucro_liquido_pdf"] is not None
