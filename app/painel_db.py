@@ -413,15 +413,29 @@ def _sinal_resultado(lado: str, plano_cod: str) -> int:
     return 1 if lado == "R" else -1
 
 
-def resultado_por_conta(conn, mes: str, sem_previsao: bool = False) -> list:
+def centro_grupo_instalado(conn) -> bool:
+    """True se a tabela do de-para (sql/v2_centro_grupo.sql) existe E ja tem linhas (os dados vem do vault)."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM pnl_centro_grupo")
+            return cur.fetchone()[0] > 0
+    except Exception:
+        return False
+
+
+def resultado_por_conta(conn, mes: str, sem_previsao: bool = False, so_obras: bool = False) -> list:
     """Valor COMPROMETIDO do mes por conta do plano: soma(valor do titulo x % do rateio) dos titulos EMITIDOS no mes, com sinal de DRE
-    (receita +, custo -). Devolve [{'plano_cod','plano_nome','valor'}]. Mesmo criterio do DRE gerencial 'Comprometido, selecao por data de emissao'."""
+    (receita +, custo -). `so_obras` tira os centros de custo do grupo ADM (de-para pnl_centro_grupo); centro sem de-para fica dentro.
+    Devolve [{'plano_cod','plano_nome','valor'}]. Mesmo criterio do DRE gerencial 'Comprometido, selecao por data de emissao'."""
     ini = f"{mes}-01"
     filtro = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
+    juncao = "LEFT JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id" if so_obras else ""
+    filtro_cc = "AND COALESCE(g.grupo,'') <> 'ADM'" if so_obras else ""
     with conn.cursor() as cur:
         cur.execute(f"""SELECT t.lado, r.plano_cod, max(r.plano_nome), sum(t.valor_original * r.percentual / 100.0)
                         FROM pnl_titulo t JOIN pnl_v_rateio r ON r.lado=t.lado AND r.bill_id=t.bill_id AND r.installment_id=t.installment_id
-                        WHERE t.data_emissao >= %s::date AND t.data_emissao < (%s::date + interval '1 month') {filtro}
+                        {juncao}
+                        WHERE t.data_emissao >= %s::date AND t.data_emissao < (%s::date + interval '1 month') {filtro} {filtro_cc}
                         GROUP BY t.lado, r.plano_cod""", (ini, ini))
         linhas = cur.fetchall()
     por = {}
@@ -429,6 +443,28 @@ def resultado_por_conta(conn, mes: str, sem_previsao: bool = False) -> list:
         a = por.setdefault(cod, {"plano_cod": cod, "plano_nome": nome, "valor": 0.0})
         a["valor"] = round(a["valor"] + _sinal_resultado(lado, cod) * float(v or 0), 2)
     return sorted(por.values(), key=lambda d: d["plano_cod"])
+
+
+def resultado_por_centro(conn, mes: str, sem_previsao: bool = False) -> list:
+    """Diagnostico: receita e custo (so contas do DRE de obras: 1.01.01 e 2.01.*) por centro de custo, com o grupo do de-para (ou 'sem de-para')."""
+    ini = f"{mes}-01"
+    filtro = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
+    with conn.cursor() as cur:
+        try:
+            cur.execute(f"""SELECT r.centro_custo_id, max(r.centro_custo_nome), max(g.grupo), max(g.codigo_obra), t.lado, sum(t.valor_original * r.percentual / 100.0)
+                            FROM pnl_titulo t JOIN pnl_v_rateio r ON r.lado=t.lado AND r.bill_id=t.bill_id AND r.installment_id=t.installment_id
+                            LEFT JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id
+                            WHERE t.data_emissao >= %s::date AND t.data_emissao < (%s::date + interval '1 month') {filtro}
+                              AND (r.plano_cod LIKE '1.01.01%%' OR r.plano_cod LIKE '2.01.%%')
+                            GROUP BY r.centro_custo_id, t.lado""", (ini, ini))
+        except Exception:
+            return []
+        linhas = cur.fetchall()
+    por = {}
+    for cid, nome, grupo, cod, lado, v in linhas:
+        a = por.setdefault(cid, {"centro_id": cid, "centro": nome, "grupo": grupo or "sem de-para", "codigo": cod or "", "receita": 0.0, "custo": 0.0})
+        a["receita" if lado == "R" else "custo"] += float(v or 0) * (1 if lado == "R" else -1)       # custo com sinal negativo, como no DRE
+    return sorted(({**a, "receita": round(a["receita"], 2), "custo": round(a["custo"], 2)} for a in por.values()), key=lambda a: -(abs(a["receita"]) + abs(a["custo"])))
 
 
 def dre_do_mes(contas: list) -> dict:

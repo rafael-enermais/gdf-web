@@ -178,11 +178,16 @@ with aba_res:
     else:
         _hj = f"{dt.date.today().year}-{dt.date.today().month:02d}"
         _fech = [m for m in meses_em if m < _hj] or meses_em
-        r1, r2 = st.columns([1, 2])
+        r1, r2, r3 = st.columns([1, 2, 2])
         mes_r = r1.selectbox("Mês", meses_em, index=meses_em.index(_fech[-1]), key="pn2_mes_res")
-        sem_prev_r = r2.checkbox("Tirar documentos de previsão (PRV, PCT, PPC, FOPA)", value=False, key="pn2_res_prev",
-                                 help="No Despesas essa regra é usada (valores pagos). No DRE comprometido do Sienge, ainda a descobrir; deixe desligado e compare.")
-        contas_r = P.resultado_por_conta(conn, mes_r, sem_previsao=sem_prev_r)
+        sem_prev_r = r2.checkbox("Tirar documentos de previsão (PRV, PCT, PPC, FOPA)", value=True, key="pn2_res_prev",
+                                 help="Mesma regra das Despesas (confirmada pela contabilidade). Ligada, o resultado de setembro chega bem perto do DRE do Sienge.")
+        _cg = P.centro_grupo_instalado(conn)
+        so_obras = r3.checkbox("Só centros de custo de obra (sem ADM)", value=_cg, disabled=not _cg, key="pn2_res_obras",
+                               help="O DRE gerencial 'por obra' do Sienge não traz os centros de custo da Administração. Usa o de-para centro de custo → obra validado pela contabilidade.")
+        if not _cg:
+            st.info("O de-para de centros de custo ainda não está no banco; falta executar o SQL do de-para (veja o handoff do projeto). Até lá o filtro de obra fica desligado e as despesas ADM entram na conta.")
+        contas_r = P.resultado_por_conta(conn, mes_r, sem_previsao=sem_prev_r, so_obras=so_obras)
         dre = P.dre_do_mes(contas_r)
         v = dre["valores"]
         m1, m2, m3, m4 = st.columns(4)
@@ -224,6 +229,20 @@ with aba_res:
                     {"arquivo": arq_r.name, "sha256": P.sha256_curto(arq_r.getvalue()), "contas": len(cmp_r["contas"]), "contas_com_diferenca": len(cmp_r["contas_com_diferenca"]),
                      "diferenca_resultado_final": tot_dif, "sem_previsao": bool(sem_prev_r),
                      "resultado": "bate" if not cmp_r["contas_com_diferenca"] else "difere"})
+        with st.expander("De onde vem o valor: por centro de custo (diagnóstico)"):
+            pc = P.resultado_por_centro(conn, mes_r, sem_previsao=sem_prev_r)
+            if pc:
+                grupos = {}
+                for a in pc:
+                    g = grupos.setdefault(a["grupo"], {"receita": 0.0, "custo": 0.0, "n": 0})
+                    g["receita"] += a["receita"]; g["custo"] += a["custo"]; g["n"] += 1
+                st.dataframe(pd.DataFrame([{"Grupo do de-para": k, "Centros": v["n"], "Receita (1.01.01)": F.moeda_br(v["receita"]), "Custo obra (2.01.*)": F.moeda_br(v["custo"])}
+                                           for k, v in sorted(grupos.items())]), hide_index=True, width="stretch")
+                st.caption("Os 30 maiores centros de custo do mês (contas de receita e de custo de obra):")
+                st.dataframe(pd.DataFrame([{"Centro": a["centro_id"], "Nome": a["centro"], "Grupo": a["grupo"], "Obra": a["codigo"], "Receita": F.moeda_br(a["receita"]),
+                                            "Custo": F.moeda_br(a["custo"])} for a in pc[:30]]), hide_index=True, width="stretch")
+            else:
+                st.info("Sem dados.")
         with st.expander("Contas fora do mapa do DRE (têm movimento no mês mas não entram em nenhuma linha)"):
             if dre["fora_do_mapa"]:
                 st.dataframe(pd.DataFrame([{"Conta": c["plano_cod"], "Nome": c["plano_nome"], "Valor": F.moeda_br(c["valor"])} for c in dre["fora_do_mapa"]]), hide_index=True, width="stretch")
