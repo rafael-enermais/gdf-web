@@ -442,6 +442,14 @@ def resultado_por_conta(conn, mes: str, sem_previsao: bool = False, so_obras: bo
     for lado, cod, nome, v in linhas:
         a = por.setdefault(cod, {"plano_cod": cod, "plano_nome": nome, "valor": 0.0})
         a["valor"] = round(a["valor"] + _sinal_resultado(lado, cod) * float(v or 0), 2)
+    # Descontos concedidos (1.01.03.01): a API nao traz essa conta no rateio; vem dos descontos das baixas dos titulos de receita emitidos no mes
+    # (conferido ao centavo com o DRE do Sienge de set/2026: 11.594,08).
+    with conn.cursor() as cur:
+        cur.execute(f"""SELECT COALESCE(sum(b.desconto),0) FROM pnl_baixa b JOIN pnl_titulo t ON t.lado=b.lado AND t.bill_id=b.bill_id AND t.installment_id=b.installment_id
+                        WHERE t.lado='R' AND t.data_emissao >= %s::date AND t.data_emissao < (%s::date + interval '1 month') {filtro}""", (ini, ini))
+        desc = float(cur.fetchone()[0] or 0)
+    if abs(desc) > 0.004 and "1.01.03.01" not in por:
+        por["1.01.03.01"] = {"plano_cod": "1.01.03.01", "plano_nome": "Descontos concedidos (descontos das baixas)", "valor": round(-desc, 2)}
     return sorted(por.values(), key=lambda d: d["plano_cod"])
 
 
@@ -467,20 +475,11 @@ def resultado_por_centro(conn, mes: str, sem_previsao: bool = False) -> list:
     return sorted(({**a, "receita": round(a["receita"], 2), "custo": round(a["custo"], 2)} for a in por.values()), key=lambda a: -(abs(a["receita"]) + abs(a["custo"])))
 
 
-def dre_do_mes(contas: list) -> dict:
-    """Monta o DRE gerencial a partir das contas: devolve {'linhas': [(cod, nome, valor)], 'fora_do_mapa': [contas sem linha no DRE]}."""
-    from dre_mapa import LINHAS, MAPA
-    folha = {}
-    fora = []
-    for c in contas:
-        lin = MAPA.get(c["plano_cod"])
-        if lin is None:
-            if abs(c["valor"]) > 0.005:
-                fora.append(c)
-            continue
-        folha[lin] = round(folha.get(lin, 0.0) + c["valor"], 2)
-    g = lambda k: folha.get(k, 0.0)
-    v = {k: g(k) for k, _, t in LINHAS if t == "folha"}
+def dre_de_folhas(folha: dict) -> dict:
+    """Monta o DRE (linhas de total) a partir do valor de cada linha 'folha' ({'01.01': 1000.0, '04.01': -300.0, ...}). Linha ausente conta 0."""
+    from dre_mapa import LINHAS
+    g = lambda k: float(folha.get(k, 0.0) or 0.0)
+    v = {k: round(g(k), 2) for k, _, t in LINHAS if t == "folha"}
     v["01"] = v["01.01"]
     v["02"] = round(v["02.01"] + v["02.02"], 2)
     v["03"] = round(v["01"] + v["02"], 2)
@@ -493,7 +492,23 @@ def dre_do_mes(contas: list) -> dict:
     v["11"] = round(v["07"] + v["08"] + v["10"], 2)
     v["12"] = v["12.01"]
     v["14"] = round(v["11"] + v["12"], 2)
-    return {"linhas": [(k, n, v[k]) for k, n, _ in LINHAS], "valores": v, "fora_do_mapa": sorted(fora, key=lambda c: -abs(c["valor"]))}
+    return {"linhas": [(k, n, v[k]) for k, n, _ in LINHAS], "valores": v}
+
+
+def dre_do_mes(contas: list) -> dict:
+    """Monta o DRE gerencial a partir das contas: devolve {'linhas': [(cod, nome, valor)], 'valores': {...}, 'folha': {...}, 'fora_do_mapa': [contas sem linha no DRE]}."""
+    from dre_mapa import MAPA
+    folha = {}
+    fora = []
+    for c in contas:
+        lin = MAPA.get(c["plano_cod"])
+        if lin is None:
+            if abs(c["valor"]) > 0.005:
+                fora.append(c)
+            continue
+        folha[lin] = round(folha.get(lin, 0.0) + c["valor"], 2)
+    d = dre_de_folhas(folha)
+    return {**d, "folha": folha, "fora_do_mapa": sorted(fora, key=lambda c: -abs(c["valor"]))}
 
 
 def ler_referencia_dre(conteudo: bytes) -> dict:
@@ -626,3 +641,55 @@ def resultado_por_obra_api(conn, mes: str, sem_previsao: bool = False) -> dict:
         dre = dre_do_mes([{"plano_cod": k, "plano_nome": "", "valor": x} for k, x in contas.items()])
         saida[cod_obra] = dre["valores"]
     return saida
+
+
+# ---------------------------------------------------------------- Confirmacao do DRE do mes (fonte escolhida por linha)
+def confirmacao_instalada(conn) -> bool:
+    """True se o SQL da confirmacao do DRE (sql/v2_dre_confirmacao.sql) ja foi executado."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema='gdf' AND table_name='pnl_dre_confirmacao'")
+            return cur.fetchone()[0] == 1
+    except Exception:
+        return False
+
+
+def confirmacao_ativa(conn, mes: str) -> dict | None:
+    """Confirmacao ativa do DRE do mes ('AAAA-MM'): {'id','fontes','valores','quem','quando','observacao','resumo'} ou None."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT id, fontes, valores, confirmado_por, confirmado_em, observacao, resumo FROM pnl_dre_confirmacao
+                           WHERE mes=%s::date AND ativo ORDER BY id DESC LIMIT 1""", (f"{mes}-01",))
+            r = cur.fetchone()
+    except Exception:
+        return None
+    return {"id": r[0], "fontes": r[1], "valores": r[2], "quem": r[3], "quando": r[4], "observacao": r[5], "resumo": r[6]} if r else None
+
+
+def meses_confirmados(conn) -> list:
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_char(mes,'YYYY-MM') FROM pnl_dre_confirmacao WHERE ativo ORDER BY 1")
+            return [r[0] for r in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def gravar_confirmacao(conn, mes: str, fontes: dict, valores: dict, usuario: str | None, observacao: str | None = None,
+                       resumo: dict | None = None, dre_importacao_id: int | None = None) -> dict:
+    """Grava o DRE confirmado do mes: para cada linha 'folha' guarda a FONTE escolhida (API/PDF) e o valor adotado. A confirmacao anterior do mes
+    fica ativo=false (historico). Devolve {'id', 'mes', 'substituiu': id_anterior|None}."""
+    if set(fontes) != set(valores):
+        raise ValueError("Fontes e valores precisam cobrir as mesmas linhas.")
+    with db.transacao(conn):
+        with conn.cursor() as cur:
+            cur.execute("UPDATE pnl_dre_confirmacao SET ativo=false WHERE mes=%s::date AND ativo RETURNING id", (f"{mes}-01",))
+            ant = cur.fetchone()
+            cur.execute("""INSERT INTO pnl_dre_confirmacao (mes, confirmado_por, observacao, fontes, valores, resumo, dre_importacao_id)
+                           VALUES (%s::date, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                        (f"{mes}-01", usuario, (observacao or None), json.dumps(fontes), json.dumps({k: round(float(v), 2) for k, v in valores.items()}),
+                         json.dumps(resumo or {}), dre_importacao_id))
+            novo = cur.fetchone()[0]
+    registrar_log(conn, "DRE_CONFIRMADO", "INFO", usuario, mes, {"confirmacao_id": novo, "substituiu": ant[0] if ant else None, "fontes": fontes,
+                                                                  "resumo": resumo or {}, "observacao": (observacao or "")[:200]})
+    return {"id": novo, "mes": mes, "substituiu": ant[0] if ant else None}
