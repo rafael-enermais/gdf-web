@@ -291,6 +291,7 @@ def despesas_do_csv(conteudo: bytes, prefixos: list) -> dict:
     if any(c not in cab for c in obrig):
         raise ValueError("Este não parece o CSV de contas pagas do Sienge (faltam as colunas do plano financeiro e do valor apropriado).")
     ix = {c: i for i, c in enumerate(cab)}
+    meses = {}                                           # mes (AAAA-MM) da "Data pagamento" de cada linha: serve para avisar se o CSV e' de outro mes
     por, bruto, n = {}, 0.0, 0
     for r in rd:
         if len(r) < len(cab) - 3:
@@ -298,10 +299,15 @@ def despesas_do_csv(conteudo: bytes, prefixos: list) -> dict:
         cod, nome, v = r[ix["Código plano fin"]].strip(), r[ix["Desc plano fin"]].strip(), _num_br(r[ix["Valor aprop fin"]])
         n += 1
         bruto += v
+        if "Data pagamento" in ix:
+            m = r[ix["Data pagamento"]].strip()[:7]
+            if len(m) == 7 and m[4] == "-":
+                meses[m] = meses.get(m, 0) + 1
         if not _excluido(cod, prefixos):
             antigo = por.get(cod, (nome, 0.0))
             por[cod] = (nome, round(antigo[1] + v, 2))
-    return {"por_conta": por, "total_bruto": round(bruto, 2), "total_despesas": round(sum(v for _, v in por.values()), 2), "linhas": n}
+    return {"por_conta": por, "total_bruto": round(bruto, 2), "total_despesas": round(sum(v for _, v in por.values()), 2), "linhas": n,
+            "meses": meses, "mes_dominante": max(meses, key=meses.get) if meses else None}
 
 
 def comparar_despesas(db_linhas: list, csv_res: dict, tolerancia: float = 0.5) -> dict:
@@ -314,4 +320,21 @@ def comparar_despesas(db_linhas: list, csv_res: dict, tolerancia: float = 0.5) -
         if abs(a - c) > tolerancia:
             dif.append({"plano_cod": cod, "plano_nome": (api.get(cod) or csvp.get(cod))[0], "api": a, "csv": c, "dif": round(a - c, 2)})
     dif.sort(key=lambda d: -abs(d["dif"]))
-    return {"total_api": round(sum(v for _, v in api.values()), 2), "total_csv": csv_res["total_despesas"], "contas_com_diferenca": dif}
+    todas = [{"plano_cod": cod, "plano_nome": (api.get(cod) or csvp.get(cod))[0], "api": api.get(cod, ("", 0.0))[1], "csv": csvp.get(cod, ("", 0.0))[1],
+              "dif": round(api.get(cod, ("", 0.0))[1] - csvp.get(cod, ("", 0.0))[1], 2)} for cod in sorted(set(api) | set(csvp))]
+    return {"total_api": round(sum(v for _, v in api.values()), 2), "total_csv": csv_res["total_despesas"], "contas_com_diferenca": dif, "contas": todas}
+
+
+def _br(v: float) -> str:
+    return f"{v:.2f}".replace(".", ",")
+
+
+def csv_conferencia(cmp: dict, mes: str) -> bytes:
+    """CSV da conferencia (todas as contas: API, CSV, diferenca; linha de total no fim; 'confere' = sim/nao). Separador ';', decimal ',', abre no Excel."""
+    linhas = ["mes;conta;nome;valor_api;valor_csv;diferenca;confere"]
+    for c in cmp["contas"]:
+        nome = str(c["plano_nome"] or "").replace(";", ",").replace("\n", " ")
+        linhas.append(f"{mes};{c['plano_cod']};{nome};{_br(c['api'])};{_br(c['csv'])};{_br(c['dif'])};{'sim' if abs(c['dif']) <= 0.5 else 'nao'}")
+    dif = round(cmp["total_api"] - cmp["total_csv"], 2)
+    linhas.append(f"{mes};TOTAL;;{_br(cmp['total_api'])};{_br(cmp['total_csv'])};{_br(dif)};{'sim' if not cmp['contas_com_diferenca'] else 'nao'}")
+    return ("\n".join(linhas) + "\n").encode("utf-8-sig")

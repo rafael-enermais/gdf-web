@@ -153,6 +153,14 @@ def test_conferencia_com_csv(conn):
     cmp = P.comparar_despesas(linhas, res)
     assert cmp["total_api"] == 1000.0 and cmp["total_csv"] == 950.0
     assert [(d["plano_cod"], d["dif"]) for d in cmp["contas_com_diferenca"]] == [("2.01.04.04", 50.0)]
+    assert res["mes_dominante"] is None                                  # este CSV de teste nao tem Data pagamento
+    assert [(c["plano_cod"], c["api"], c["csv"], c["dif"]) for c in cmp["contas"]] == [("2.01.01.04", 600.0, 600.0, 0.0), ("2.01.04.04", 400.0, 350.0, 50.0)]
+    txt = P.csv_conferencia(cmp, "2026-09").decode("utf-8-sig").splitlines()
+    assert txt[0].startswith("mes;conta;nome") and txt[1].endswith("600,00;600,00;0,00;sim") and txt[2].endswith("400,00;350,00;50,00;nao")
+    assert txt[-1] == "2026-09;TOTAL;;1000,00;950,00;50,00;nao"
+    res2 = P.despesas_do_csv(("Código plano fin;Desc plano fin;Valor aprop fin;Data pagamento\n"
+                              "2.01.01.04;Material;10,00;2026-09-03\n2.01.01.04;Material;5,00;2026-09-20\n2.01.01.04;Material;1,00;2026-10-01\n").encode("utf-8"), PREF)
+    assert res2["meses"] == {"2026-09": 2, "2026-10": 1} and res2["mes_dominante"] == "2026-09"
     with pytest.raises(ValueError):
         P.despesas_do_csv(b"a;b\n1;2\n", PREF)
 

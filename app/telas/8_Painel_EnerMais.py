@@ -86,7 +86,8 @@ with aba_desp:
     if not meses_ok:
         st.info("Sincronize primeiro as contas pagas (data P) de um mês na aba ao lado.")
     else:
-        mes = st.selectbox("Mês", meses_ok, index=len(meses_ok) - 1, key="pn2_mes_desp")
+        _fechados = [m for m in meses_ok if m < f"{dt.date.today().year}-{dt.date.today().month:02d}"] or meses_ok      # padrao: ultimo mes FECHADO
+        mes = st.selectbox("Mês", meses_ok, index=meses_ok.index(_fechados[-1]), key="pn2_mes_desp")
         P.garantir_regras_padrao(conn)                   # cria a regra EXCLUI_PREVISAO (proposta) se ainda nao existir
         regras = P.regras_ativas(conn, "DESPESAS")
         prefixos = P.prefixos_excluidos(regras)
@@ -122,6 +123,9 @@ with aba_desp:
         if arq is not None:
             try:
                 res_csv = P.despesas_do_csv(arq.getvalue(), prefixos)
+                if res_csv.get("mes_dominante") and res_csv["mes_dominante"] != mes:
+                    st.error(f"Atenção: este CSV é de **{res_csv['mes_dominante']}** (pela data de pagamento), mas o mês escolhido acima é **{mes}**. "
+                             "Escolha o mesmo mês nos dois para comparar.")
                 cmp = P.comparar_despesas(linhas, res_csv)
                 a, b = st.columns(2)
                 a.metric("Despesas pela API", F.moeda_br(cmp["total_api"]), border=True)
@@ -132,6 +136,8 @@ with aba_desp:
                                                 "Diferença": F.moeda_br(d["dif"])} for d in cmp["contas_com_diferenca"][:30]]), hide_index=True, width="stretch")
                 else:
                     st.success("API e CSV batem em todas as contas.")
+                st.download_button("Baixar o resultado da conferência (CSV)", P.csv_conferencia(cmp, mes), file_name=f"conferencia_despesas_{mes}.csv",
+                                   mime="text/csv", key="pn2_dl_conf")
             except ValueError as exc:
                 st.error(str(exc))
 
