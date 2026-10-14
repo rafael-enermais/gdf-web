@@ -187,7 +187,7 @@ def test_tela_com_dados_mostra_despesas(conn):
     with patch("conexao.get_conn", return_value=conn):
         at = _tela(conn).run()
         assert not at.exception, at.exception
-        assert len(at.tabs) == 5
+        assert len(at.tabs) == 6
         assert at.selectbox(key="pn2_mes_desp").value == "2026-09"
         valores = [m.value for m in at.metric]
         assert any("1.000,00" in v for v in valores)
@@ -256,7 +256,7 @@ def test_tela_historico_e_mes_do_csv_automatico(conn):
     with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", return_value=falso):
         at = _tela(conn).run()
         assert not at.exception, at.exception
-        assert at.tabs[4].label == "Histórico e logs"
+        assert at.tabs[5].label == "Histórico e logs"
         cmp_sel = [sb for sb in at.selectbox if sb.key and sb.key.startswith("pn2_mes_cmp_")][0]
         assert cmp_sel.value == "2026-09"                                       # mes lido do CSV
         tabelas = [df.value for df in at.tabs[1].dataframe]
@@ -266,7 +266,7 @@ def test_tela_historico_e_mes_do_csv_automatico(conn):
         at.run()                                                                # nova execucao nao duplica o log
         assert len(P.ultimos_logs(conn, acao="CONFERENCIA_DESPESAS")) == 1
         at = _tela(conn).run()
-        assert any("CONFERENCIA_DESPESAS" in set(df.value["Ação"]) for df in at.tabs[4].dataframe)
+        assert any("CONFERENCIA_DESPESAS" in set(df.value["Ação"]) for df in at.tabs[5].dataframe)
 
 
 # ------------------------------------------------------------------ Resultado (DRE comprometido por emissao)
@@ -482,3 +482,34 @@ def test_resultado_tira_nf_desfeita_por_distrato(conn):
     assert P.resultado_por_obra_api(conn, "2026-09")["121"]["01"] == 4000.0
     assert P.resultado_por_obra_api(conn, "2026-09", sem_distrato=False)["121"]["01"] == 6000.0
     assert [a["receita"] for a in P.resultado_por_centro(conn, "2026-09")] == [4000.0]
+
+
+def test_obras_do_dre_calcula_bdi_margem_dem_e_top(conn):
+    import hashlib
+    assert P.obras_do_dre(conn, "2026-09") is None                                   # sem PDF importado
+    b, dre = _pdf_lido()
+    P.gravar_dre(conn, dre, "dre.pdf", hashlib.sha256(b).hexdigest(), "teste@x")
+    with conn.cursor() as cur:                                                       # 100 e 101 tem codigo proprio; 102 vira "demais obras"
+        cur.execute("INSERT INTO pnl_centro_grupo (centro_custo_id, centro_nome, grupo, codigo_obra) VALUES (1,'A','OBRA','100'),(2,'B','OBRA','101'),(3,'C','DEMAIS_MES','DEM')")
+    o = P.obras_do_dre(conn, "2026-09")
+    l = {x["obra"]: x for x in o["linhas"]}
+    assert set(l) == {"100", "101", "DEM"} and o["linhas"][-1]["obra"] == "DEM"
+    assert (l["100"]["receita"], l["100"]["custo"], l["100"]["bdi"], l["100"]["margem"]) == (1000.0, -300.0, 700.0, 0.7)
+    assert (l["DEM"]["receita"], l["DEM"]["custo"], l["DEM"]["bdi"]) == (250.0, -100.0, 150.0) and l["DEM"]["nome"].startswith("Demais obras")
+    assert o["total"]["receita"] == 1750.0 and o["total"]["bdi"] == 1750.0 - 600.0 and [x["obra"] for x in o["top_lucro"]] == ["100", "101"] and o["top_prejuizo"] == []
+    with conn.cursor() as cur:                                                       # sem de-para: todas separadas
+        cur.execute("TRUNCATE pnl_centro_grupo")
+    assert {x["obra"] for x in P.obras_do_dre(conn, "2026-09")["linhas"]} == {"100", "101", "102"}
+
+
+def test_tela_obras_mostra_tabela(conn):
+    import hashlib
+    b, dre = _pdf_lido()
+    P.gravar_dre(conn, dre, "dre.pdf", hashlib.sha256(b).hexdigest(), "teste@x")
+    with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", side_effect=_uploader_por_chave({})):
+        at = _tela(conn).run()
+    assert not at.exception, at.exception
+    assert at.tabs[3].label == "Obras (prévia)"
+    tab = at.tabs[3].dataframe[0].value
+    assert list(tab["Obra"]) == ["100", "101", "102"] and "Margem (BDI/receita)" in tab.columns and "Custo/colab." in tab.columns
+    assert "70,0%" in set(tab["Margem (BDI/receita)"])

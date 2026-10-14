@@ -629,6 +629,44 @@ def dre_por_obra_importado(conn, importacao_id: int) -> dict:
     return out
 
 
+def obras_do_dre(conn, mes: str) -> dict | None:
+    """Tabela da aba Obras a partir do DRE oficial (PDF) do mes: por obra, receita bruta (linha 01), custos diretos (linha 04), BDI real = receita + custos
+    (custos ja vem negativo) e margem = BDI / receita. Obras que nao tem codigo proprio no de-para viram uma linha 'DEM' (demais obras).
+    Devolve None se o mes nao tem DRE importado. Sem de-para no banco, todas as obras do PDF aparecem separadas."""
+    imp = dre_importacao_ativa(conn, mes)
+    if not imp:
+        return None
+    pdf = dre_por_obra_importado(conn, imp["id"])
+    proprios = None
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT codigo_obra FROM pnl_centro_grupo WHERE COALESCE(codigo_obra,'') NOT IN ('', 'DEM', 'ADM')")
+            achados = {r[0] for r in cur.fetchall()}
+        proprios = achados or None
+    except Exception:
+        proprios = None
+    linhas, dem = [], {"receita": 0.0, "custo": 0.0, "n": 0}
+    for cod, o in pdf.items():
+        rec, cus = o["linhas"].get("01", 0.0), o["linhas"].get("04", 0.0)
+        if abs(rec) < 0.005 and abs(cus) < 0.005:
+            continue
+        if proprios is not None and cod not in proprios:
+            dem["receita"] += rec; dem["custo"] += cus; dem["n"] += 1
+            continue
+        linhas.append({"obra": cod, "nome": o["nome"] or "", "receita": rec, "custo": cus})
+    if dem["n"]:
+        linhas.append({"obra": "DEM", "nome": f"Demais obras ({dem['n']})", "receita": round(dem["receita"], 2), "custo": round(dem["custo"], 2)})
+    for l in linhas:
+        l["bdi"] = round(l["receita"] + l["custo"], 2)
+        l["margem"] = round(l["bdi"] / l["receita"], 4) if abs(l["receita"]) > 0.005 else None
+    linhas.sort(key=lambda l: (l["obra"] == "DEM", -l["receita"]))
+    rt, ct = round(sum(l["receita"] for l in linhas), 2), round(sum(l["custo"] for l in linhas), 2)
+    total = {"receita": rt, "custo": ct, "bdi": round(rt + ct, 2), "margem": round((rt + ct) / rt, 4) if abs(rt) > 0.005 else None}
+    proprias = [l for l in linhas if l["obra"] != "DEM"]
+    return {"importacao_id": imp["id"], "arquivo": imp["arquivo"], "linhas": linhas, "total": total,
+            "top_lucro": sorted(proprias, key=lambda l: -l["bdi"])[:5], "top_prejuizo": sorted((l for l in proprias if l["bdi"] < 0), key=lambda l: l["bdi"])[:5]}
+
+
 def resultado_por_obra_api(conn, mes: str, sem_previsao: bool = False, sem_distrato: bool = True) -> dict:
     """Mesmo calculo do resultado_por_conta, agrupado pelo codigo da obra do de-para: {codigo_obra: {linha_dre: valor}} (+ 'sem de-para')."""
     ini = f"{mes}-01"
