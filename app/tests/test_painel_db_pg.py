@@ -311,3 +311,18 @@ def test_tela_resultado_mostra_dre_e_confere(conn):
         assert at.selectbox(key="pn2_mes_res").value == "2026-09"
         assert any("2.000,00" in m.value for m in at.tabs[2].metric)
         assert any(l["acao"] == "CONFERENCIA_RESULTADO" for l in P.ultimos_logs(conn))
+
+
+def test_resultado_so_obras_usa_o_de_para(conn):
+    _ingerir(conn, lado="P", tipo="I")
+    _ingerir(conn, regs=income(), lado="R", tipo="I")
+    assert not P.centro_grupo_instalado(conn)                                   # tabela existe mas ainda sem dados
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO pnl_centro_grupo (centro_custo_id, centro_nome, grupo, codigo_obra) VALUES (1,'SEDE','ADM','ADM'),(1049,'ANASTACIO','OBRA','103')")
+    assert P.centro_grupo_instalado(conn)
+    todas = {c["plano_cod"]: c["valor"] for c in P.resultado_por_conta(conn, "2026-09")}
+    obras = {c["plano_cod"]: c["valor"] for c in P.resultado_por_conta(conn, "2026-09", so_obras=True)}
+    assert todas["2.01.02.01"] == -500.0 and obras == {"1.01.01.01": 2000.0}   # custo no centro ADM sai; receita no centro de obra fica
+    pc = P.resultado_por_centro(conn, "2026-09")
+    assert {(a["centro_id"], a["grupo"]) for a in pc} == {(1049, "OBRA"), (1, "ADM")}
+    assert [a["receita"] for a in pc if a["centro_id"] == 1049] == [2000.0] and [a["custo"] for a in pc if a["centro_id"] == 1] == [-500.0]
