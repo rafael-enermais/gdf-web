@@ -25,7 +25,7 @@ if not P.v2_instalado(conn):
                "no Supabase (SQL Editor). Depois disso esta tela passa a funcionar.")
     st.stop()
 
-aba_sync, aba_desp, aba_regras, aba_log = st.tabs(["Sincronizar com o Sienge", "Despesas (prévia)", "Regras", "Histórico e logs"])
+aba_sync, aba_desp, aba_res, aba_regras, aba_log = st.tabs(["Sincronizar com o Sienge", "Despesas (prévia)", "Resultado (prévia)", "Regras", "Histórico e logs"])
 
 # ------------------------------------------------------------------ sincronizar
 with aba_sync:
@@ -167,6 +167,69 @@ with aba_desp:
                              "diferenca": dif_total, "contas": len(cmp["contas"]), "contas_com_diferenca": len(cmp["contas_com_diferenca"]),
                              "resultado": "bate" if not cmp["contas_com_diferenca"] else "difere", "regra_previsao": bool(sem_prev),
                              "prefixos_excluidos": prefixos, "filtros_tela": {"operacao": list(op_fora), "documento": list(doc_fora)}})
+
+# ------------------------------------------------------------------ resultado (previa)
+with aba_res:
+    st.markdown("DRE gerencial do mês montado direto com o Sienge, no mesmo critério do relatório do Sienge **“Demonstrativo de Resultado – Comprometido, "
+                "seleção por data de emissão”**: entra o que foi **emitido** no mês (contas a receber = receita; contas a pagar = custo), com a conta do plano de cada título.")
+    meses_em = P.meses_com_emissao(conn)
+    if not meses_em:
+        st.info("Sincronize primeiro as contas por data de emissão (tipo I) na primeira aba.")
+    else:
+        _hj = f"{dt.date.today().year}-{dt.date.today().month:02d}"
+        _fech = [m for m in meses_em if m < _hj] or meses_em
+        r1, r2 = st.columns([1, 2])
+        mes_r = r1.selectbox("Mês", meses_em, index=meses_em.index(_fech[-1]), key="pn2_mes_res")
+        sem_prev_r = r2.checkbox("Tirar documentos de previsão (PRV, PCT, PPC, FOPA)", value=False, key="pn2_res_prev",
+                                 help="No Despesas essa regra é usada (valores pagos). No DRE comprometido do Sienge, ainda a descobrir; deixe desligado e compare.")
+        contas_r = P.resultado_por_conta(conn, mes_r, sem_previsao=sem_prev_r)
+        dre = P.dre_do_mes(contas_r)
+        v = dre["valores"]
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Receita bruta", F.moeda_br(v["01"]), border=True)
+        m2.metric("Custos diretos", F.moeda_br(v["04"]), border=True)
+        m3.metric("Lucro bruto", F.moeda_br(v["05"]), border=True)
+        m4.metric("Lucro líquido após investimentos", F.moeda_br(v["14"]), border=True)
+        st.caption("Este DRE é o das **obras** (a Administração central vem em outra aba, nas próximas etapas).")
+        ref = None
+        arq_r = st.file_uploader("Conferir com um CSV de referência (colunas: conta; total) — opcional", type=["csv"], key="pn2_csv_res")
+        if arq_r is not None:
+            try:
+                ref = P.ler_referencia_dre(arq_r.getvalue())
+            except ValueError as exc:
+                st.error(str(exc))
+                P.registrar_log(conn, "CSV_ERRO", "ERRO", usuario, mes_r, {"arquivo": arq_r.name, "erro": str(exc)[:300]})
+        if ref:
+            ref_dre = P.dre_do_mes([{"plano_cod": k, "plano_nome": "", "valor": x} for k, x in ref.items()])["valores"]
+            linhas_t = [{"Linha": k, "DRE": n, "API": F.moeda_br(x), "Referência": F.moeda_br(ref_dre[k]), "Diferença": F.moeda_br(round(x - ref_dre[k], 2)),
+                         "Confere": "sim" if abs(x - ref_dre[k]) <= 0.5 else "NÃO"} for k, n, x in dre["linhas"]]
+        else:
+            linhas_t = [{"Linha": k, "DRE": n, "Valor": F.moeda_br(x)} for k, n, x in dre["linhas"]]
+        st.dataframe(pd.DataFrame(linhas_t), hide_index=True, width="stretch")
+        if ref:
+            cmp_r = P.comparar_resultado(contas_r, ref)
+            tot_dif = round(v["14"] - ref_dre["14"], 2)
+            if cmp_r["contas_com_diferenca"]:
+                st.warning(f"{len(cmp_r['contas_com_diferenca'])} conta(s) com diferença (diferença no resultado final: {F.moeda_br(tot_dif)}).")
+            else:
+                st.success("API e referência batem em todas as contas.")
+            with st.expander("Conta a conta (diferenças primeiro)", expanded=bool(cmp_r["contas_com_diferenca"])):
+                ordem = sorted(cmp_r["contas"], key=lambda d: (-abs(d["dif"]) if abs(d["dif"]) > 0.5 else 0, d["plano_cod"]))
+                st.dataframe(pd.DataFrame([{"Conta": d["plano_cod"], "Nome": d["plano_nome"], "API": F.moeda_br(d["api"]), "Referência": F.moeda_br(d["ref"]),
+                                            "Diferença": F.moeda_br(d["dif"]), "Confere": "sim" if abs(d["dif"]) <= 0.5 else "NÃO"} for d in ordem]), hide_index=True, width="stretch")
+            chave_r = f"pn2_logado_res_{P.sha256_curto(arq_r.getvalue())}_{mes_r}_{int(v['14'] * 100)}_{int(sem_prev_r)}"
+            if not st.session_state.get(chave_r):
+                st.session_state[chave_r] = P.registrar_log(
+                    conn, "CONFERENCIA_RESULTADO", "INFO" if not cmp_r["contas_com_diferenca"] else "AVISO", usuario, mes_r,
+                    {"arquivo": arq_r.name, "sha256": P.sha256_curto(arq_r.getvalue()), "contas": len(cmp_r["contas"]), "contas_com_diferenca": len(cmp_r["contas_com_diferenca"]),
+                     "diferenca_resultado_final": tot_dif, "sem_previsao": bool(sem_prev_r),
+                     "resultado": "bate" if not cmp_r["contas_com_diferenca"] else "difere"})
+        with st.expander("Contas fora do mapa do DRE (têm movimento no mês mas não entram em nenhuma linha)"):
+            if dre["fora_do_mapa"]:
+                st.dataframe(pd.DataFrame([{"Conta": c["plano_cod"], "Nome": c["plano_nome"], "Valor": F.moeda_br(c["valor"])} for c in dre["fora_do_mapa"]]), hide_index=True, width="stretch")
+                st.caption("Normal para pessoal ADM, transferências entre empresas e contas da Administração central; conta nova do plano também cai aqui.")
+            else:
+                st.success("Todas as contas com movimento estão no mapa.")
 
 # ------------------------------------------------------------------ regras
 with aba_regras:

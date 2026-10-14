@@ -328,7 +328,8 @@ def comparar_despesas(db_linhas: list, csv_res: dict, tolerancia: float = 0.5) -
             dif.append({"plano_cod": cod, "plano_nome": (api.get(cod) or csvp.get(cod))[0], "api": a, "csv": c, "dif": round(a - c, 2)})
     dif.sort(key=lambda d: -abs(d["dif"]))
     todas = [{"plano_cod": cod, "plano_nome": (api.get(cod) or csvp.get(cod))[0], "api": api.get(cod, ("", 0.0))[1], "csv": csvp.get(cod, ("", 0.0))[1],
-              "dif": round(api.get(cod, ("", 0.0))[1] - csvp.get(cod, ("", 0.0))[1], 2)} for cod in sorted(set(api) | set(csvp))]
+              "dif": round(api.get(cod, ("", 0.0))[1] - csvp.get(cod, ("", 0.0))[1], 2)} for cod in sorted(set(api) | set(csvp))
+             if cod or abs(api.get(cod, ("", 0.0))[1]) > 0.005 or abs(csvp.get(cod, ("", 0.0))[1]) > 0.005]       # some a linha sem conta e sem valor
     return {"total_api": round(sum(v for _, v in api.values()), 2), "total_csv": csv_res["total_despesas"], "contas_com_diferenca": dif, "contas": todas}
 
 
@@ -395,3 +396,93 @@ def csv_logs(linhas: list) -> bytes:
 
 def sha256_curto(conteudo: bytes) -> str:
     return hashlib.sha256(conteudo).hexdigest()[:16]
+
+
+# ---------------------------------------------------------------- Resultado (DRE gerencial, comprometido por data de emissao)
+def meses_com_emissao(conn) -> list:
+    """Meses ('AAAA-MM') que tem titulos emitidos no banco (base da aba Resultado)."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT DISTINCT to_char(data_emissao,'YYYY-MM') FROM pnl_titulo WHERE data_emissao IS NOT NULL ORDER BY 1")
+        return [r[0] for r in cur.fetchall()]
+
+
+def _sinal_resultado(lado: str, plano_cod: str) -> int:
+    """Receitas (a receber) contam +; custos/despesas (a pagar) contam -; as contas de deducao da receita (1.01.02 e 1.01.03) sempre -."""
+    if plano_cod.startswith(("1.01.02", "1.01.03")):
+        return -1
+    return 1 if lado == "R" else -1
+
+
+def resultado_por_conta(conn, mes: str, sem_previsao: bool = False) -> list:
+    """Valor COMPROMETIDO do mes por conta do plano: soma(valor do titulo x % do rateio) dos titulos EMITIDOS no mes, com sinal de DRE
+    (receita +, custo -). Devolve [{'plano_cod','plano_nome','valor'}]. Mesmo criterio do DRE gerencial 'Comprometido, selecao por data de emissao'."""
+    ini = f"{mes}-01"
+    filtro = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
+    with conn.cursor() as cur:
+        cur.execute(f"""SELECT t.lado, r.plano_cod, max(r.plano_nome), sum(t.valor_original * r.percentual / 100.0)
+                        FROM pnl_titulo t JOIN pnl_v_rateio r ON r.lado=t.lado AND r.bill_id=t.bill_id AND r.installment_id=t.installment_id
+                        WHERE t.data_emissao >= %s::date AND t.data_emissao < (%s::date + interval '1 month') {filtro}
+                        GROUP BY t.lado, r.plano_cod""", (ini, ini))
+        linhas = cur.fetchall()
+    por = {}
+    for lado, cod, nome, v in linhas:
+        a = por.setdefault(cod, {"plano_cod": cod, "plano_nome": nome, "valor": 0.0})
+        a["valor"] = round(a["valor"] + _sinal_resultado(lado, cod) * float(v or 0), 2)
+    return sorted(por.values(), key=lambda d: d["plano_cod"])
+
+
+def dre_do_mes(contas: list) -> dict:
+    """Monta o DRE gerencial a partir das contas: devolve {'linhas': [(cod, nome, valor)], 'fora_do_mapa': [contas sem linha no DRE]}."""
+    from dre_mapa import LINHAS, MAPA
+    folha = {}
+    fora = []
+    for c in contas:
+        lin = MAPA.get(c["plano_cod"])
+        if lin is None:
+            if abs(c["valor"]) > 0.005:
+                fora.append(c)
+            continue
+        folha[lin] = round(folha.get(lin, 0.0) + c["valor"], 2)
+    g = lambda k: folha.get(k, 0.0)
+    v = {k: g(k) for k, _, t in LINHAS if t == "folha"}
+    v["01"] = v["01.01"]
+    v["02"] = round(v["02.01"] + v["02.02"], 2)
+    v["03"] = round(v["01"] + v["02"], 2)
+    v["04"] = round(sum(v[k] for k in ("04.01", "04.02", "04.03", "04.04")), 2)
+    v["05"] = round(v["03"] + v["04"], 2)
+    v["06"] = v["06.04"]
+    v["07"] = round(v["05"] + v["06"], 2)
+    v["08"] = v["08.02"]
+    v["10"] = v["10.01"]
+    v["11"] = round(v["07"] + v["08"] + v["10"], 2)
+    v["12"] = v["12.01"]
+    v["14"] = round(v["11"] + v["12"], 2)
+    return {"linhas": [(k, n, v[k]) for k, n, _ in LINHAS], "valores": v, "fora_do_mapa": sorted(fora, key=lambda c: -abs(c["valor"]))}
+
+
+def ler_referencia_dre(conteudo: bytes) -> dict:
+    """Le o CSV de referencia (colunas 'conta' e uma coluna que comeca com 'total' ou 'valor'; separador ';' e decimal ',') -> {conta: valor}."""
+    txt = conteudo.decode("utf-8-sig", errors="replace")
+    rd = csv.reader(io.StringIO(txt), delimiter=";")
+    cab = [c.strip().lower() for c in next(rd, [])]
+    if "conta" not in cab:
+        raise ValueError("CSV de referência sem a coluna 'conta'.")
+    ic = cab.index("conta")
+    iv = next((i for i, c in enumerate(cab) if c.startswith(("total", "valor"))), None)
+    if iv is None:
+        raise ValueError("CSV de referência sem coluna 'total' ou 'valor'.")
+    out = {}
+    for r in rd:
+        if len(r) > max(ic, iv) and r[ic].strip():
+            out[r[ic].strip()] = _num_br(r[iv])
+    return out
+
+
+def comparar_resultado(contas: list, ref: dict, tolerancia: float = 0.5) -> dict:
+    """Compara por conta o comprometido da API com a referencia. Devolve linhas por conta e totais."""
+    api = {c["plano_cod"]: (c["plano_nome"], c["valor"]) for c in contas}
+    todas = [{"plano_cod": k, "plano_nome": (api.get(k) or ("", 0))[0], "api": api.get(k, ("", 0.0))[1], "ref": ref.get(k, 0.0),
+              "dif": round(api.get(k, ("", 0.0))[1] - ref.get(k, 0.0), 2)} for k in sorted(set(api) | set(ref))]
+    todas = [t for t in todas if abs(t["api"]) > 0.005 or abs(t["ref"]) > 0.005]
+    dif = [t for t in todas if abs(t["dif"]) > tolerancia]
+    return {"contas": todas, "contas_com_diferenca": sorted(dif, key=lambda d: -abs(d["dif"]))}
