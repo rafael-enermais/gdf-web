@@ -9,7 +9,7 @@ from streamlit.testing.v1 import AppTest
 
 import painel_db as P
 import sienge_api as S
-from dados_sienge import income, outcome
+from dados_sienge import income, movimentos_banco, outcome
 
 pytestmark = pytest.mark.pg
 APP = Path(__file__).resolve().parent.parent
@@ -57,6 +57,29 @@ def test_despesas_sem_documentos_de_previsao(conn):
     assert sem == []                                                 # com a regra sai
     ago = P.despesas_do_mes(conn, "2026-08", PREF, sem_previsao=True)
     assert [(l["plano_cod"], l["valor"]) for l in ago] == [("2.01.01.04", 700.0)]   # titulo sem marca (nulo) nao e' previsao
+
+
+def test_movimento_bancario_entra_nas_despesas(conn):
+    _ingerir(conn)
+    antes = {l["plano_cod"]: l["valor"] for l in P.despesas_do_mes(conn, "2026-09", PREF)}
+    r = P.sincronizar_banco(conn, None, "2026-09", "teste@x", buscar=lambda c, m, mes_fim=None: movimentos_banco())
+    assert r["ok"] and (r["titulos"], r["baixas"], r["rateios"], r["liquido"]) == (2, 2, 3, 1100.0)
+    depois = {l["plano_cod"]: l["valor"] for l in P.despesas_do_mes(conn, "2026-09", PREF)}
+    assert depois["2.03.01.02"] == 100.0 and depois["2.03.01.04"] == 600.0 and depois["2.03.04.09"] == 400.0
+    assert {k: v for k, v in depois.items() if k in antes} == antes                  # o que ja existia nao mudou
+    assert any(d["doc_id"] == "AV" and d["origem"] == "BC" for d in P.documentos_do_mes(conn, "2026-09"))
+    P.sincronizar_banco(conn, None, "2026-09", "teste@x", buscar=lambda c, m, mes_fim=None: movimentos_banco())   # de novo: nao duplica
+    assert {l["plano_cod"]: l["valor"] for l in P.despesas_do_mes(conn, "2026-09", PREF)} == depois
+    com_prev = P.despesas_do_mes(conn, "2026-09", PREF, sem_previsao=True)           # AV tem previsao N: a regra de previsao nao tira
+    assert {l["plano_cod"]: l["valor"] for l in com_prev}["2.03.01.02"] == 100.0
+
+
+def test_movimento_bancario_com_erro_registra_e_nao_derruba(conn):
+    def falha(c, m, mes_fim=None):
+        raise RuntimeError("Sienge respondeu HTTP 500")
+    r = P.sincronizar_banco(conn, None, "2026-09", "teste@x", buscar=falha)
+    assert r == {"ok": False, "erro": "Sienge respondeu HTTP 500"}
+    assert P.ultimas_syncs(conn, 1)[0]["tipo_data"] == "M" and P.ultimas_syncs(conn, 1)[0]["status"] == "ERRO"
 
 
 def test_ingestao_e_idempotencia(conn):

@@ -127,6 +127,23 @@ def sincronizar_mes(conn, cli, mes: str, usuario: str | None, lados=("P", "R"), 
     return resultado
 
 
+def sincronizar_banco(conn, cli, mes: str, usuario: str | None, mes_fim: str | None = None, buscar=None, normalizar=None) -> dict:
+    """Busca o movimento bancario do Sienge (juros, tarifas e outros avisos de lancamento sem titulo) e grava junto com os titulos a pagar
+    (lado P, data 'M' no log). Devolve {'ok','titulos','baixas','rateios','liquido'} ou {'ok': False,'erro'}."""
+    import sienge_api as S
+    buscar = buscar or S.buscar_movimento_banco
+    normalizar = normalizar or S.normalizar_movimentos
+    sid = criar_sync(conn, mes, "P", "M", usuario)
+    try:
+        regs = buscar(cli, mes) if not mes_fim or mes_fim == mes else buscar(cli, mes, mes_fim=mes_fim)
+        cont = gravar_normalizado(conn, sid, normalizar(regs))
+        finalizar_sync(conn, sid, "OK", cont["titulos"], cont["baixas"], cont["rateios"], cont["liquido"])
+        return {"ok": True, **cont}
+    except Exception as exc:
+        finalizar_sync(conn, sid, "ERRO", erro=str(exc))
+        return {"ok": False, "erro": str(exc)}
+
+
 def meses_com_dados(conn) -> list:
     """Meses ('AAAA-MM') com pagamentos a pagar gravados, pela data do pagamento. So' meses COMPLETOS: do mes inicial da primeira carga OK
     ate o mes atual (uma carga por janela traz tambem pagamentos antigos/futuros dos titulos da janela, que nao formam um mes inteiro)."""

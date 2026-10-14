@@ -37,6 +37,8 @@ with aba_sync:
     mes_ate = c1b.text_input("Até (AAAA-MM)", value=f"{_hoje.year}-{_hoje.month:02d}", key="pn2_mes_ate", help="Igual ao 'De' = um mês só. Mais de um mês = uma busca só para a janela inteira.")
     tipos = c2.multiselect("Tipos de data a buscar", ["P", "I", "D"], default=["P", "I"], key="pn2_tipos",
                            help="P = pagamento/recebimento (Despesas e Realizado) · I = emissão (DRE comprometido) · D = vencimento")
+    com_banco = st.checkbox("Incluir o movimento bancário (juros, tarifas e outros avisos de lançamento)", value=True, key="pn2_banco",
+                            help="Esses lançamentos não vêm nas contas pagas; entram como documento AV (aviso de lançamento) e contam nas Despesas.")
     b1, b2 = st.columns(2)
     if b1.button("Buscar no Sienge", type="primary", key="pn2_btn_sync"):
         try:
@@ -50,6 +52,13 @@ with aba_sync:
                     st.success(f"{lado} · data {r['tipo']}: {r['titulos']} títulos, {r['baixas']} baixas, {r['rateios']} rateios (líquido das baixas {F.moeda_br(r['liquido'])}).")
                 else:
                     st.error(f"{lado} · data {r['tipo']}: {r['erro']}")
+            if com_banco:
+                with st.spinner("Buscando o movimento bancário…"):
+                    rb = P.sincronizar_banco(conn, cli, mes_sync, usuario, mes_fim=mes_ate if mes_ate >= mes_sync else mes_sync)
+                if rb["ok"]:
+                    st.success(f"movimento bancário: {rb['titulos']} lançamentos sem título, {rb['rateios']} rateios (líquido {F.moeda_br(rb['liquido'])}).")
+                else:
+                    st.error(f"movimento bancário: {rb['erro']}")
         except S.ErroSienge as exc:
             st.error(str(exc))
     if b2.button("Atualizar cadastros (empresas, centros de custo, plano)", key="pn2_btn_cad"):
@@ -65,7 +74,7 @@ with aba_sync:
     syncs = P.ultimas_syncs(conn)
     if syncs:
         st.dataframe(pd.DataFrame([{"#": s["id"], "Mês": s["mes"].strftime("%m/%Y"), "Lado": "pagar" if s["lado"] == "P" else "receber",
-                                    "Data": s["tipo_data"], "Status": s["status"], "Títulos": s["n_titulos"], "Baixas": s["n_baixas"],
+                                    "Data": {"M": "M (banco)"}.get(s["tipo_data"], s["tipo_data"]), "Status": s["status"], "Títulos": s["n_titulos"], "Baixas": s["n_baixas"],
                                     "Rateios": s["n_rateios"], "Líquido": F.moeda_br(s["valor_liquido"]) if s["valor_liquido"] is not None else "–",
                                     "Quem": s["usuario"], "Erro": s["erro"] or ""} for s in syncs]), hide_index=True, width="stretch")
     else:
