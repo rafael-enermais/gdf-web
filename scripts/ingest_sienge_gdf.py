@@ -72,6 +72,7 @@ def executar(conn, cli, meses: list, buscar=None, normalizar=None, atualizar_cad
         except Exception as exc:                          # cadastro velho nao impede buscar os titulos
             falhas += 1
             log(f"ERRO cadastros: {exc}")
+            P.registrar_log(conn, "ROTINA_CADASTROS_ERRO", "ERRO", USUARIO_ROTINA, None, {"erro": str(exc)[:300]})
     ini, fim = min(meses), max(meses)              # uma janela so: poucas chamadas (o Sienge limita) e o mesmo titulo nao vem repetido entre meses
     log(f"janela {ini} a {fim}")
     limite = False
@@ -97,6 +98,7 @@ def executar(conn, cli, meses: list, buscar=None, normalizar=None, atualizar_cad
             limite = limite or "HTTP 429" in (r["erro"] or "")
     if limite:
         log("Limite de chamadas do Sienge persistiu: parei aqui. O que faltou fica para a próxima execução.")
+    P.registrar_log(conn, "ROTINA_FIM", "ERRO" if falhas else "INFO", USUARIO_ROTINA, ini, {"janela": f"{ini}..{fim}", "falhas": falhas, "limite_429": bool(limite)})
     return 1 if falhas else 0
 
 

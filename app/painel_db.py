@@ -7,7 +7,9 @@ a leitura so' enxerga baixas/rateios da ULTIMA sincronizacao de cada titulo (vie
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
+import json
 
 from psycopg2.extras import execute_values
 
@@ -119,9 +121,11 @@ def sincronizar_mes(conn, cli, mes: str, usuario: str | None, lados=("P", "R"), 
                 cont = gravar_normalizado(conn, sid, norm)
                 finalizar_sync(conn, sid, "OK", cont["titulos"], cont["baixas"], cont["rateios"], cont["liquido"])
                 resultado.append({"lado": lado, "tipo": tipo, "ok": True, **cont, "avisos": norm.get("avisos") or {}})
+                registrar_log(conn, "SYNC_OK", usuario=usuario, mes=mes, detalhe={"lado": lado, "tipo": tipo, "titulos": cont["titulos"], "baixas": cont["baixas"], "rateios": cont["rateios"], "sync_id": sid})
             except Exception as exc:                      # registra e segue para o proximo; nunca derruba a tela
                 finalizar_sync(conn, sid, "ERRO", erro=str(exc))
                 resultado.append({"lado": lado, "tipo": tipo, "ok": False, "erro": str(exc)})
+                registrar_log(conn, "SYNC_ERRO", "ERRO", usuario, mes, {"lado": lado, "tipo": tipo, "erro": str(exc)[:300], "sync_id": sid})
                 if "HTTP 429" in str(exc):                # limite do Sienge persistiu: insistir so piora; para e deixa para a proxima execucao
                     return resultado
     return resultado
@@ -138,9 +142,11 @@ def sincronizar_banco(conn, cli, mes: str, usuario: str | None, mes_fim: str | N
         regs = buscar(cli, mes) if not mes_fim or mes_fim == mes else buscar(cli, mes, mes_fim=mes_fim)
         cont = gravar_normalizado(conn, sid, normalizar(regs))
         finalizar_sync(conn, sid, "OK", cont["titulos"], cont["baixas"], cont["rateios"], cont["liquido"])
+        registrar_log(conn, "SYNC_BANCO_OK", usuario=usuario, mes=mes, detalhe={"lancamentos": cont["titulos"], "rateios": cont["rateios"], "sync_id": sid})
         return {"ok": True, **cont}
     except Exception as exc:
         finalizar_sync(conn, sid, "ERRO", erro=str(exc))
+        registrar_log(conn, "SYNC_BANCO_ERRO", "ERRO", usuario, mes, {"erro": str(exc)[:300], "sync_id": sid})
         return {"ok": False, "erro": str(exc)}
 
 
@@ -227,6 +233,7 @@ def confirmar_regras(conn, ids: list, usuario: str, motivo: str = "confirmada na
                     (usuario, motivo, list(ids)))
         n = cur.rowcount
     conn.commit()
+    registrar_log(conn, "REGRA_CONFIRMADA", usuario=usuario, detalhe={"ids": [int(i) for i in ids], "mudaram": n, "motivo": motivo})
     return n
 
 
@@ -338,3 +345,53 @@ def csv_conferencia(cmp: dict, mes: str) -> bytes:
     dif = round(cmp["total_api"] - cmp["total_csv"], 2)
     linhas.append(f"{mes};TOTAL;;{_br(cmp['total_api'])};{_br(cmp['total_csv'])};{_br(dif)};{'sim' if not cmp['contas_com_diferenca'] else 'nao'}")
     return ("\n".join(linhas) + "\n").encode("utf-8-sig")
+
+
+# ---------------------------------------------------------------- logs (historico de conferencias, erros, acoes)
+def log_instalado(conn) -> bool:
+    """True se a tabela de logs (sql/v2_log.sql) ja foi criada. O app funciona sem ela (so nao registra)."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema='gdf' AND table_name='pnl_log'")
+            return cur.fetchone()[0] == 1
+    except Exception:
+        return False
+
+
+def registrar_log(conn, acao: str, nivel: str = "INFO", usuario: str | None = None, mes: str | None = None, detalhe: dict | None = None) -> bool:
+    """Grava uma linha no historico. NUNCA derruba a tela: se a tabela nao existe ou der erro, devolve False e segue.
+    `detalhe` guarda so contagens, totais, nomes de arquivo e hashes (o repositorio e' publico: nada de linha de dado de pessoa)."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO pnl_log (usuario, nivel, acao, mes, detalhe) VALUES (%s,%s,%s,%s,%s)",
+                        (usuario, nivel if nivel in ("INFO", "ERRO", "AVISO") else "INFO", acao[:80],
+                         f"{mes}-01" if mes and len(mes) == 7 else None, json.dumps(detalhe or {}, ensure_ascii=False, default=str)))
+        return True
+    except Exception:
+        return False
+
+
+def ultimos_logs(conn, nivel: str | None = None, acao: str | None = None, limite: int = 300) -> list:
+    """Linhas mais recentes do historico (filtro opcional por nivel e por acao). Lista vazia se a tabela ainda nao existe."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT id, quando, usuario, nivel, acao, mes, detalhe FROM pnl_log
+                           WHERE (%s::text IS NULL OR nivel=%s) AND (%s::text IS NULL OR acao=%s) ORDER BY id DESC LIMIT %s""",
+                        (nivel, nivel, acao, acao, limite))
+            return [{"id": i, "quando": q, "usuario": u, "nivel": n, "acao": a, "mes": m, "detalhe": d if isinstance(d, dict) else json.loads(d or "{}")}
+                    for i, q, u, n, a, m, d in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def csv_logs(linhas: list) -> bytes:
+    """Historico em CSV (';', abre no Excel): quando;usuario;nivel;acao;mes;detalhe."""
+    out = ["quando;usuario;nivel;acao;mes;detalhe"]
+    for l in linhas:
+        det = json.dumps(l["detalhe"], ensure_ascii=False).replace(";", ",").replace("\n", " ")
+        out.append(f"{l['quando']:%Y-%m-%d %H:%M:%S};{l['usuario'] or ''};{l['nivel']};{l['acao']};{l['mes'].strftime('%Y-%m') if l['mes'] else ''};{det}")
+    return ("\n".join(out) + "\n").encode("utf-8-sig")
+
+
+def sha256_curto(conteudo: bytes) -> str:
+    return hashlib.sha256(conteudo).hexdigest()[:16]
