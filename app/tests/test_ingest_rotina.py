@@ -85,6 +85,9 @@ def test_executar_sem_falhas_da_exit_0(conn):
     cod = R.executar(conn, None, ["2026-09"], buscar=lambda c, l, m, t, mes_fim=None: outcome() if l == "P" else income(),
                      atualizar_cadastros=False, log=lambda *_: None)
     assert cod == 0
+    import painel_db as P
+    fim = [l for l in P.ultimos_logs(conn) if l["acao"] == "ROTINA_FIM"]
+    assert len(fim) == 1 and fim[0]["usuario"] == "rotina-diaria" and fim[0]["nivel"] == "INFO" and fim[0]["detalhe"]["falhas"] == 0
 
 
 @pytest.mark.pg

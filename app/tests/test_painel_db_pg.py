@@ -187,7 +187,7 @@ def test_tela_com_dados_mostra_despesas(conn):
     with patch("conexao.get_conn", return_value=conn):
         at = _tela(conn).run()
         assert not at.exception, at.exception
-        assert len(at.tabs) == 3
+        assert len(at.tabs) == 4
         assert at.selectbox(key="pn2_mes_desp").value == "2026-09"
         valores = [m.value for m in at.metric]
         assert any("1.000,00" in v for v in valores)
@@ -211,3 +211,59 @@ def test_documentos_do_mes_e_meses_com_dados(conn):
     assert docs and {"doc_id", "doc_nome", "origem", "previsao", "tipo_oper", "titulos", "baixas", "liquido"} <= set(docs[0])
     assert all(isinstance(d["liquido"], float) for d in docs)
     assert P.meses_com_dados(conn) == sorted(P.meses_com_dados(conn))
+
+
+# ------------------------------------------------------------------ logs
+def test_log_registra_lista_e_exporta(conn):
+    assert P.log_instalado(conn)
+    assert P.registrar_log(conn, "CONFERENCIA_DESPESAS", "AVISO", "teste@x", "2026-09", {"total_api": 10.5, "arquivo": "a;b.csv"})
+    assert P.registrar_log(conn, "SYNC_ERRO", "ERRO", None, None, {"erro": "HTTP 429"})
+    todos = P.ultimos_logs(conn)
+    assert [l["acao"] for l in todos] == ["SYNC_ERRO", "CONFERENCIA_DESPESAS"]          # mais recente primeiro
+    assert todos[1]["detalhe"]["total_api"] == 10.5 and todos[1]["mes"].strftime("%Y-%m") == "2026-09"
+    assert [l["acao"] for l in P.ultimos_logs(conn, nivel="ERRO")] == ["SYNC_ERRO"]
+    assert [l["acao"] for l in P.ultimos_logs(conn, acao="CONFERENCIA_DESPESAS")] == ["CONFERENCIA_DESPESAS"]
+    txt = P.csv_logs(todos).decode("utf-8-sig").splitlines()
+    assert txt[0] == "quando;usuario;nivel;acao;mes;detalhe" and len(txt) == 3 and txt[2].count(";") == 5
+
+
+def test_log_nunca_derruba_a_tela():
+    class Quebrada:
+        def cursor(self):
+            raise RuntimeError("sem tabela")
+    assert P.registrar_log(Quebrada(), "X") is False
+    assert P.ultimos_logs(Quebrada()) == [] and P.log_instalado(Quebrada()) is False
+
+
+def test_regra_confirmada_e_sync_gravam_log(conn):
+    P.garantir_regras_padrao(conn)
+    ids = [r["id"] for r in P.regras_ativas(conn, "DESPESAS")]
+    P.confirmar_regras(conn, ids, "suellen@x")
+    assert any(l["acao"] == "REGRA_CONFIRMADA" and l["usuario"] == "suellen@x" for l in P.ultimos_logs(conn))
+    def falha(c, l, m, t):
+        raise RuntimeError("boom")
+    P.sincronizar_mes(conn, None, "2026-09", "u@x", lados=("P",), tipos=("P",), buscar=falha)
+    P.sincronizar_mes(conn, None, "2026-09", "u@x", lados=("P",), tipos=("I",), buscar=lambda c, l, m, t: outcome())
+    acoes = [l["acao"] for l in P.ultimos_logs(conn)]
+    assert "SYNC_ERRO" in acoes and "SYNC_OK" in acoes
+
+
+def test_tela_historico_e_mes_do_csv_automatico(conn):
+    _ingerir(conn)                                      # API: 2026-09 com 1000,00 nas 2 contas de teste
+    csv_set = ("Código plano fin;Desc plano fin;Valor aprop fin;Data pagamento\n"
+               "2.01.01.04;Material;600,00;2026-09-03\n2.01.04.04;Outros;350,00;2026-09-20\n").encode("utf-8")
+    falso = SimpleNamespace(name="ExportacaoContasPagas.csv", getvalue=lambda: csv_set)
+    with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", return_value=falso):
+        at = _tela(conn).run()
+        assert not at.exception, at.exception
+        assert at.tabs[3].label == "Histórico e logs"
+        cmp_sel = [sb for sb in at.selectbox if sb.key and sb.key.startswith("pn2_mes_cmp_")][0]
+        assert cmp_sel.value == "2026-09"                                       # mes lido do CSV
+        tabelas = [df.value for df in at.tabs[1].dataframe]
+        assert any("Confere" in df.columns and len(df) == 2 for df in tabelas)  # tabela por conta aparece mesmo
+        logs = P.ultimos_logs(conn, acao="CONFERENCIA_DESPESAS")
+        assert len(logs) == 1 and logs[0]["detalhe"]["resultado"] == "difere" and logs[0]["detalhe"]["mes_lido_do_csv"] == "2026-09"
+        at.run()                                                                # nova execucao nao duplica o log
+        assert len(P.ultimos_logs(conn, acao="CONFERENCIA_DESPESAS")) == 1
+        at = _tela(conn).run()
+        assert any("CONFERENCIA_DESPESAS" in set(df.value["Ação"]) for df in at.tabs[3].dataframe)

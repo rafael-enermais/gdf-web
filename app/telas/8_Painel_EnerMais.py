@@ -25,7 +25,7 @@ if not P.v2_instalado(conn):
                "no Supabase (SQL Editor). Depois disso esta tela passa a funcionar.")
     st.stop()
 
-aba_sync, aba_desp, aba_regras = st.tabs(["Sincronizar com o Sienge", "Despesas (prévia)", "Regras"])
+aba_sync, aba_desp, aba_regras, aba_log = st.tabs(["Sincronizar com o Sienge", "Despesas (prévia)", "Regras", "Histórico e logs"])
 
 # ------------------------------------------------------------------ sincronizar
 with aba_sync:
@@ -121,25 +121,52 @@ with aba_desp:
         st.markdown("**Conferir com o CSV do Sienge**")
         arq = st.file_uploader("ExportacaoContasPagas.csv do mês", type=["csv"], key="pn2_csv")
         if arq is not None:
+            conteudo = arq.getvalue()
+            sha = P.sha256_curto(conteudo)
             try:
-                res_csv = P.despesas_do_csv(arq.getvalue(), prefixos)
-                if res_csv.get("mes_dominante") and res_csv["mes_dominante"] != mes:
-                    st.error(f"Atenção: este CSV é de **{res_csv['mes_dominante']}** (pela data de pagamento), mas o mês escolhido acima é **{mes}**. "
-                             "Escolha o mesmo mês nos dois para comparar.")
-                cmp = P.comparar_despesas(linhas, res_csv)
-                a, b = st.columns(2)
-                a.metric("Despesas pela API", F.moeda_br(cmp["total_api"]), border=True)
-                b.metric("Despesas pelo CSV", F.moeda_br(cmp["total_csv"]), delta=F.moeda_br(cmp["total_api"] - cmp["total_csv"]), delta_color="off", border=True)
-                if cmp["contas_com_diferenca"]:
-                    st.warning(f"{len(cmp['contas_com_diferenca'])} conta(s) com diferença. As maiores:")
-                    st.dataframe(pd.DataFrame([{"Conta": d["plano_cod"], "Nome": d["plano_nome"], "API": F.moeda_br(d["api"]), "CSV": F.moeda_br(d["csv"]),
-                                                "Diferença": F.moeda_br(d["dif"])} for d in cmp["contas_com_diferenca"][:30]]), hide_index=True, width="stretch")
-                else:
-                    st.success("API e CSV batem em todas as contas.")
-                st.download_button("Baixar o resultado da conferência (CSV)", P.csv_conferencia(cmp, mes), file_name=f"conferencia_despesas_{mes}.csv",
-                                   mime="text/csv", key="pn2_dl_conf")
+                res_csv = P.despesas_do_csv(conteudo, prefixos)
             except ValueError as exc:
                 st.error(str(exc))
+                P.registrar_log(conn, "CSV_ERRO", "ERRO", usuario, mes, {"arquivo": arq.name, "sha256": sha, "erro": str(exc)[:300]})
+                res_csv = None
+            if res_csv is not None:
+                lido = res_csv.get("mes_dominante")
+                opcoes = sorted(set(meses_ok) | ({lido} if lido else set()))
+                padrao = lido or mes
+                mes_cmp = st.selectbox("Mês da comparação (lido do CSV pela data de pagamento; pode trocar)", opcoes, index=opcoes.index(padrao),
+                                       key=f"pn2_mes_cmp_{sha}", help="O app lê o mês no próprio arquivo e já compara com esse mês do Sienge. Se leu errado, escolha o mês certo aqui.")
+                if len(res_csv.get("meses", {})) > 1:
+                    st.info("Este CSV tem pagamentos de mais de um mês: " + "; ".join(f"{m}: {n} linhas" for m, n in sorted(res_csv["meses"].items())) +
+                            f". O mês com mais linhas ({lido}) foi escolhido; confira se é o que você quer.")
+                if lido and lido != mes_cmp:
+                    st.warning(f"Você escolheu {mes_cmp}, mas o CSV é majoritariamente de {lido}. Se os valores não baterem, é provavelmente por isso.")
+                if mes_cmp not in meses_ok:
+                    st.error(f"Ainda não há dados do Sienge para {mes_cmp} no banco. Sincronize esse mês na primeira aba.")
+                else:
+                    linhas_cmp = linhas if mes_cmp == mes else P.despesas_do_mes(conn, mes_cmp, prefixos, op_fora, doc_fora, sem_previsao=sem_prev)
+                    cmp = P.comparar_despesas(linhas_cmp, res_csv)
+                    dif_total = round(cmp["total_api"] - cmp["total_csv"], 2)
+                    a_, b_ = st.columns(2)
+                    a_.metric(f"Despesas pela API ({mes_cmp})", F.moeda_br(cmp["total_api"]), border=True)
+                    b_.metric("Despesas pelo CSV", F.moeda_br(cmp["total_csv"]), delta=F.moeda_br(dif_total), delta_color="off", border=True)
+                    if cmp["contas_com_diferenca"]:
+                        st.warning(f"{len(cmp['contas_com_diferenca'])} conta(s) com diferença (aparecem primeiro na tabela).")
+                    else:
+                        st.success("API e CSV batem em todas as contas.")
+                    ordem = sorted(cmp["contas"], key=lambda d: (-abs(d["dif"]) if abs(d["dif"]) > 0.5 else 0, d["plano_cod"]))
+                    st.dataframe(pd.DataFrame([{"Conta": d["plano_cod"], "Nome": d["plano_nome"], "API": F.moeda_br(d["api"]), "CSV": F.moeda_br(d["csv"]),
+                                                "Diferença": F.moeda_br(d["dif"]), "Confere": "sim" if abs(d["dif"]) <= 0.5 else "NÃO"} for d in ordem]),
+                                 hide_index=True, width="stretch")
+                    st.download_button("Baixar o resultado da conferência (CSV)", P.csv_conferencia(cmp, mes_cmp), file_name=f"conferencia_despesas_{mes_cmp}.csv",
+                                       mime="text/csv", key="pn2_dl_conf")
+                    chave_log = f"pn2_logado_{sha}_{mes_cmp}_{int(cmp['total_api'] * 100)}"
+                    if not st.session_state.get(chave_log):         # uma linha por arquivo/mes/resultado (nao repete a cada clique na tela)
+                        st.session_state[chave_log] = P.registrar_log(
+                            conn, "CONFERENCIA_DESPESAS", "INFO" if not cmp["contas_com_diferenca"] else "AVISO", usuario, mes_cmp,
+                            {"arquivo": arq.name, "sha256": sha, "mes_lido_do_csv": lido, "mes_comparado": mes_cmp, "total_api": cmp["total_api"], "total_csv": cmp["total_csv"],
+                             "diferenca": dif_total, "contas": len(cmp["contas"]), "contas_com_diferenca": len(cmp["contas_com_diferenca"]),
+                             "resultado": "bate" if not cmp["contas_com_diferenca"] else "difere", "regra_previsao": bool(sem_prev),
+                             "prefixos_excluidos": prefixos, "filtros_tela": {"operacao": list(op_fora), "documento": list(doc_fora)}})
 
 # ------------------------------------------------------------------ regras
 with aba_regras:
@@ -160,3 +187,24 @@ with aba_regras:
             st.rerun()
     else:
         st.success("Todas as regras estão confirmadas.")
+
+# ------------------------------------------------------------------ historico e logs
+with aba_log:
+    st.markdown("Tudo o que o painel faz fica registrado aqui: conferências com o CSV, sincronizações, regras confirmadas e erros. "
+                "Só entram contagens, totais, nomes de arquivo e um código de verificação do arquivo (nada de dado de pessoa).")
+    if not P.log_instalado(conn):
+        st.warning("O histórico ainda não foi ativado no banco. Falta executar o arquivo `sql/v2_log.sql` no Supabase (SQL Editor). "
+                   "Até lá o painel funciona normalmente, só não registra.")
+    else:
+        f1, f2 = st.columns(2)
+        nivel = f1.selectbox("Nível", ["Todos", "ERRO", "AVISO", "INFO"], key="pn2_log_nivel")
+        acoes = ["Todas"] + sorted({l["acao"] for l in P.ultimos_logs(conn, limite=1000)})
+        acao = f2.selectbox("Ação", acoes, key="pn2_log_acao")
+        logs = P.ultimos_logs(conn, None if nivel == "Todos" else nivel, None if acao == "Todas" else acao)
+        if logs:
+            st.dataframe(pd.DataFrame([{"Quando": l["quando"].strftime("%d/%m/%Y %H:%M"), "Quem": l["usuario"] or "", "Nível": l["nivel"], "Ação": l["acao"],
+                                        "Mês": l["mes"].strftime("%m/%Y") if l["mes"] else "", "Detalhe": "; ".join(f"{k}={v}" for k, v in l["detalhe"].items())}
+                                       for l in logs]), hide_index=True, width="stretch")
+            st.download_button("Baixar o histórico (CSV)", P.csv_logs(logs), file_name="historico_painel.csv", mime="text/csv", key="pn2_dl_log")
+        else:
+            st.info("Nada registrado ainda.")
