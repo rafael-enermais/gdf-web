@@ -70,6 +70,17 @@ def test_executar_grava_e_falha_parcial_da_exit_1(conn):
 
 
 @pytest.mark.pg
+def test_executar_inclui_movimento_bancario(conn):
+    from dados_sienge import movimentos_banco
+    linhas = []
+    cod = R.executar(conn, None, ["2026-09"], buscar=lambda c, l, m, t, mes_fim=None: outcome() if l == "P" else income(),
+                     buscar_banco=lambda c, m, mes_fim=None: movimentos_banco(), atualizar_cadastros=False, log=linhas.append)
+    assert cod == 0 and any("movimento bancário" in x and "2 lançamentos" in x for x in linhas)
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM pnl_titulo WHERE bill_id < 0")
+        assert cur.fetchone()[0] == 2
+
+
 def test_executar_sem_falhas_da_exit_0(conn):
     cod = R.executar(conn, None, ["2026-09"], buscar=lambda c, l, m, t, mes_fim=None: outcome() if l == "P" else income(),
                      atualizar_cadastros=False, log=lambda *_: None)

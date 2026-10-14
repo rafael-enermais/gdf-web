@@ -172,3 +172,16 @@ def test_cliente_pausa_entre_chamadas():
         assert len(dormiu) == 1 and 0 < dormiu[0] <= 5
     finally:
         srv.shutdown()
+
+
+def test_normalizar_movimentos_so_avisos_de_saida_sem_titulo():
+    from dados_sienge import movimentos_banco
+    n = S.normalizar_movimentos(movimentos_banco())
+    assert {t["bill_id"] for t in n["titulos"]} == {-9001, -9002}
+    assert len(n["titulos"]) == 2 and len(n["baixas"]) == 2 and len(n["rateios"]) == 3        # entrada, com titulo e sem plano ficam de fora; repetido ignorado
+    t = next(x for x in n["titulos"] if x["bill_id"] == -9001)
+    assert (t["lado"], t["origem"], t["doc_id"], t["previsao"]) == ("P", "BC", "AV", "N")
+    b = next(x for x in n["baixas"] if x["bill_id"] == -9002)
+    assert b["liquido"] == 1000.0 and b["tipo_oper_id"] == 1002 and str(b["data_pagamento"]) == "2026-09-15"
+    assert sorted(r["plano_cod"] for r in n["rateios"] if r["bill_id"] == -9002) == ["2.03.01.04", "2.03.04.09"]
+    assert S.normalizar_movimentos([]) == {"titulos": [], "baixas": [], "rateios": [], "avisos": {}}

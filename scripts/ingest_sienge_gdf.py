@@ -61,7 +61,8 @@ def ler_meses(env) -> list:
     return meses
 
 
-def executar(conn, cli, meses: list, buscar=None, normalizar=None, atualizar_cadastros: bool = True, log=print) -> int:
+def executar(conn, cli, meses: list, buscar=None, normalizar=None, atualizar_cadastros: bool = True, log=print,
+             com_banco: bool | None = None, buscar_banco=None) -> int:
     """Roda a rotina numa conexao ja aberta. Devolve 0 (tudo ok) ou 1 (alguma busca falhou)."""
     falhas = 0
     if atualizar_cadastros:
@@ -83,6 +84,16 @@ def executar(conn, cli, meses: list, buscar=None, normalizar=None, atualizar_cad
         else:
             falhas += 1
             log(f"ERRO {ini}..{fim} {lado} data {r['tipo']}: {r['erro']}")
+            limite = limite or "HTTP 429" in (r["erro"] or "")
+    if com_banco is None:                              # nos testes (busca injetada) o banco so entra se tambem injetarem a busca dele
+        com_banco = buscar is None or buscar_banco is not None
+    if com_banco and not limite:
+        r = P.sincronizar_banco(conn, cli, ini, USUARIO_ROTINA, mes_fim=fim, buscar=buscar_banco)
+        if r["ok"]:
+            log(f"{ini}..{fim} movimento bancário (avisos sem título): {r['titulos']} lançamentos, {r['rateios']} rateios")
+        else:
+            falhas += 1
+            log(f"ERRO {ini}..{fim} movimento bancário: {r['erro']}")
             limite = limite or "HTTP 429" in (r["erro"] or "")
     if limite:
         log("Limite de chamadas do Sienge persistiu: parei aqui. O que faltou fica para a próxima execução.")

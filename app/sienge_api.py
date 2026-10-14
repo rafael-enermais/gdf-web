@@ -150,6 +150,18 @@ def buscar_bulk(cli: Cliente, lado: str, mes: str, tipo_data: str, mes_fim: str 
     return lista(cli.get(ENDPOINT[lado], params))
 
 
+ENDPOINT_BANCO = "bulk-data/v1/bank-movement"
+DOC_AVISO = ("AV", "AVISO DE LANÇAMENTO")
+
+
+def buscar_movimento_banco(cli: Cliente, mes: str, mes_fim: str | None = None) -> list:
+    """Movimentos bancarios (por data do movimento) do mes, ou da janela de `mes` ate `mes_fim` numa chamada so.
+    Traz tambem os 'avisos de lancamento' (juros, tarifas, transferencias) que a busca de contas pagas nao devolve."""
+    ini, _ = limites_do_mes(mes)
+    _, fim = limites_do_mes(mes_fim or mes)
+    return lista(cli.get(ENDPOINT_BANCO, {"startDate": ini.isoformat(), "endDate": fim.isoformat(), "selectionType": "M"}))
+
+
 def buscar_cadastros(cli: Cliente) -> dict:
     """Cadastros que o painel usa. Centros de custo vem em paginas de 200; plano e tipos de negocio vem inteiros."""
     out = {"empresas": lista(cli.get("v1/companies", {"limit": 200})),
@@ -262,6 +274,45 @@ def normalizar_titulos(lado: str, regs: list) -> dict:
                        "centro_custo_id": _int(c.get("costCenterId")), "centro_custo_nome": c.get("costCenterName"),
                        "percentual": float(c.get("financialCategoryRate") or 0)})
     return {"titulos": tit, "baixas": bx, "rateios": rt, "avisos": avisos}
+
+
+def normalizar_movimentos(regs: list) -> dict:
+    """Movimentos bancarios -> o mesmo formato de normalizar_titulos('P', ...), para entrar nas mesmas tabelas e telas.
+    Fica SO o que a busca de contas pagas nao traz: saida (tipo 'S'), SEM titulo (billId vazio) e COM plano financeiro
+    (juros, tarifas, transferencias entre empresas...). Cada movimento vira um 'titulo' de numero negativo (-id do movimento: nunca
+    colide com um titulo real) com uma baixa e os rateios dele. Documento AV = aviso de lancamento, previsao N."""
+    tit, bx, rt, vistos = [], [], [], set()
+    for m in regs:
+        if not isinstance(m, dict) or m.get("bankMovementId") in (None, ""):
+            continue
+        if m.get("billId") not in (None, 0, "") or str(m.get("bankMovementOperationType") or "").upper() != "S":
+            continue
+        cats = [c for c in (m.get("financialCategories") or []) if isinstance(c, dict)]
+        if not cats:
+            continue
+        mid = int(m["bankMovementId"])
+        if mid in vistos:
+            continue
+        vistos.add(mid)
+        chave = {"lado": "P", "bill_id": -mid, "installment_id": 1}
+        valor = _num(m.get("bankMovementAmount"))
+        data = _data(m.get("bankMovementDate"))
+        tit.append({**chave, "empresa_id": _int(m.get("companyId")), "empresa_nome": m.get("companyName"),
+                    "origem": (str(m.get("bankMovementOriginId") or "").strip() or "BC"),
+                    "doc_id": (str(m.get("documentIdentificationId") or "").strip() or DOC_AVISO[0]),
+                    "doc_nome": (str(m.get("documentIdentificationName") or "").strip() or DOC_AVISO[1]),
+                    "previsao": "N", "numero_doc": str(m.get("documentIdentificationNumber") or "").strip() or None,
+                    "contraparte_id": None, "contraparte_nome": None, "data_emissao": data, "data_vencimento": data, "valor_original": valor,
+                    "tipo_negocio_id": None, "tipo_negocio_nome": None, "area_id": None, "area_nome": None,
+                    "projeto_id": _int(m.get("companyId")), "projeto_nome": m.get("companyName")})
+        bx.append({**chave, "seq": 1, "data_pagamento": data, "tipo_oper_id": 1000 + (_int(m.get("bankMovementOperationId")) or 0),
+                   "tipo_oper_nome": "Mov. bancário: " + str(m.get("bankMovementOperationName") or ""),
+                   "bruto": valor, "liquido": valor, "juros": None, "multa": None, "desconto": None, "imposto": None, "correcao": None})
+        for i, c in enumerate(cats):
+            rt.append({**chave, "linha": i, "plano_cod": cod_plano(c.get("financialCategoryId")), "plano_nome": c.get("financialCategoryName"),
+                       "centro_custo_id": _int(c.get("costCenterId")), "centro_custo_nome": c.get("costCenterName"),
+                       "percentual": float(c.get("financialCategoryRate") or 0)})
+    return {"titulos": tit, "baixas": bx, "rateios": rt, "avisos": {}}
 
 
 def normalizar_cadastros(c: dict) -> dict:

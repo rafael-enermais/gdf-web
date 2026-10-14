@@ -39,3 +39,24 @@ def income():
                            "operationTypeId": 1, "operationTypeName": "Recebimento"}],
              "receiptsCategories": [{"financialCategoryId": "1010101", "financialCategoryName": "Receitas de Serviços", "financialCategoryRate": 100,
                                      "costCenterId": 1049, "costCenterName": "CON - ANASTACIO - LOTE 11", "projectId": 5, "projectName": "CONSTRUTORA"}]}]
+
+
+def movimentos_banco():
+    """Movimentos bancarios sinteticos: 2 avisos de saida sem titulo (um com 2 rateios), 1 entrada, 1 saida com titulo, 1 saida sem plano."""
+    cat = lambda cod, nome, taxa: {"financialCategoryId": cod, "financialCategoryName": nome, "financialCategoryRate": taxa, "costCenterId": 1, "costCenterName": "SEDE"}  # noqa: E731
+    return [
+        {"bankMovementId": 9001, "billId": None, "companyId": 1, "companyName": "ENERGIA", "bankMovementOriginId": "BC", "bankMovementOperationType": "S",
+         "bankMovementOperationId": 2, "bankMovementOperationName": "Pagamento", "bankMovementDate": "2026-09-01", "bankMovementAmount": 100.0,
+         "documentIdentificationId": "AV  ", "documentIdentificationName": "AVISO DE LANÇAMENTO", "financialCategories": [cat("2030102", "Tarifas Diversas | ADM", 100)]},
+        {"bankMovementId": 9002, "billId": 0, "companyId": 1, "companyName": "ENERGIA", "bankMovementOriginId": "BC", "bankMovementOperationType": "S",
+         "bankMovementOperationId": 2, "bankMovementOperationName": "Pagamento", "bankMovementDate": "2026-09-15", "bankMovementAmount": 1000.0,
+         "financialCategories": [cat("2030104", "Juros sobre Empréstimos | ADM", 60), cat("2030409", "Cresol | Juros", 40)]},
+        {"bankMovementId": 9003, "billId": None, "bankMovementOriginId": "BC", "bankMovementOperationType": "E", "bankMovementOperationId": 1,
+         "bankMovementDate": "2026-09-02", "bankMovementAmount": 55.0, "financialCategories": [cat("1030402", "Valores indevidos", 100)]},
+        {"bankMovementId": 9004, "billId": 10, "bankMovementOriginId": "CP", "bankMovementOperationType": "S", "bankMovementOperationId": 2,
+         "bankMovementDate": "2026-09-10", "bankMovementAmount": 1000.0, "financialCategories": [cat("2010104", "Material", 100)]},
+        {"bankMovementId": 9005, "billId": None, "bankMovementOriginId": "CX", "bankMovementOperationType": "S", "bankMovementOperationId": 14,
+         "bankMovementDate": "2026-09-03", "bankMovementAmount": 30.0, "financialCategories": []},
+        {"bankMovementId": 9001, "billId": None, "bankMovementOriginId": "BC", "bankMovementOperationType": "S", "bankMovementOperationId": 2,
+         "bankMovementDate": "2026-09-01", "bankMovementAmount": 100.0, "financialCategories": [cat("2030102", "Tarifas Diversas | ADM", 100)]},   # repetido: ignora
+    ]
