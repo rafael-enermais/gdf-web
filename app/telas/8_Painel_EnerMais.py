@@ -26,7 +26,7 @@ if not P.v2_instalado(conn):
                "no Supabase (SQL Editor). Depois disso esta tela passa a funcionar.")
     st.stop()
 
-aba_sync, aba_desp, aba_res, aba_regras, aba_log = st.tabs(["Sincronizar com o Sienge", "Despesas (prévia)", "Resultado (prévia)", "Regras", "Histórico e logs"])
+aba_sync, aba_desp, aba_res, aba_obras, aba_regras, aba_log = st.tabs(["Sincronizar com o Sienge", "Despesas (prévia)", "Resultado (prévia)", "Obras (prévia)", "Regras", "Histórico e logs"])
 
 # ------------------------------------------------------------------ sincronizar
 with aba_sync:
@@ -419,6 +419,36 @@ with aba_res:
                 st.success("Todas as contas com movimento estão no mapa.")
 
 # ------------------------------------------------------------------ regras
+with aba_obras:
+    st.markdown("Resultado **por obra** a partir do **DRE oficial** (PDF do Sienge importado na aba Resultado). "
+                "**BDI real** = receita bruta − custos diretos; **margem de contribuição** = BDI ÷ receita. Obras sem código próprio no de-para entram juntas em *Demais obras*.")
+    meses_o = P.meses_com_dre(conn)
+    if not meses_o:
+        st.info("Ainda não há DRE oficial importado. Importe o PDF do Sienge na aba Resultado e volte aqui.")
+    else:
+        mes_o = st.selectbox("Mês", meses_o, index=len(meses_o) - 1, key="pn2_mes_obras")
+        ob = P.obras_do_dre(conn, mes_o)
+        t = ob["total"]
+        o1, o2, o3, o4 = st.columns(4)
+        o1.metric("Receita bruta", F.moeda_br(t["receita"]), border=True)
+        o2.metric("Custos diretos", F.moeda_br(t["custo"]), border=True)
+        o3.metric("BDI real", F.moeda_br(t["bdi"]), border=True)
+        o4.metric("Margem de contribuição", f"{t['margem'] * 100:,.1f}%".replace(",", "X").replace(".", ",").replace("X", ".") if t["margem"] is not None else "–", border=True)
+        pct = lambda m: (f"{m * 100:,.1f}%".replace(",", "X").replace(".", ",").replace("X", ".") if m is not None else "–")
+        st.dataframe(pd.DataFrame([{"Obra": l["obra"], "Nome": l["nome"], "Receita": F.moeda_br(l["receita"]), "Custos": F.moeda_br(l["custo"]), "BDI real": F.moeda_br(l["bdi"]),
+                                    "Margem (BDI/receita)": pct(l["margem"]), "Colab.": "–", "Fat./colab.": "–", "Custo/colab.": "–"} for l in ob["linhas"]]),
+                     hide_index=True, width="stretch")
+        st.caption("Colab., Fat./colab. e Custo/colab. dependem da folha de pagamento do mês (CLT) e dos PJ pagos nas obras; entram na próxima etapa, quando a folha for importada.")
+        c_l, c_p = st.columns(2)
+        c_l.markdown("**5 obras com maior BDI**")
+        c_l.dataframe(pd.DataFrame([{"Obra": l["obra"], "Nome": l["nome"], "BDI real": F.moeda_br(l["bdi"]), "Margem": pct(l["margem"])} for l in ob["top_lucro"]]), hide_index=True, width="stretch")
+        c_p.markdown("**5 obras com maior prejuízo**")
+        if ob["top_prejuizo"]:
+            c_p.dataframe(pd.DataFrame([{"Obra": l["obra"], "Nome": l["nome"], "BDI real": F.moeda_br(l["bdi"]), "Margem": pct(l["margem"])} for l in ob["top_prejuizo"]]), hide_index=True, width="stretch")
+        else:
+            c_p.success("Nenhuma obra com BDI negativo neste mês.")
+        st.caption(f"Fonte: DRE oficial importado do arquivo “{ob['arquivo']}” (importação #{ob['importacao_id']}).")
+
 with aba_regras:
     st.markdown("Regras usadas para montar cada aba do painel. As marcadas como **proposta** foram deduzidas dos arquivos de setembro e "
                 "ainda precisam da confirmação da contabilidade.")
