@@ -466,3 +466,19 @@ def test_tela_resultado_confirma_dre_escolhendo_fonte_por_linha(conn):
     assert c["fontes"]["01.01"] == "API" and c["fontes"]["04.01"] == "PDF" and c["observacao"] == "receita pela API"
     assert c["valores"]["01.01"] == 2000.0 and c["valores"]["04.01"] == -600.0        # receita da API; custo do PDF (soma das 3 obras)
     assert c["resumo"]["lucro_liquido_pdf"] is not None
+
+
+def test_resultado_tira_nf_desfeita_por_distrato(conn):
+    dois = income() + [{**income()[0], "billId": 51, "receipts": [{"sequencialNumber": 1, "paymentDate": "2026-09-25", "netAmount": 2000.0, "grossAmount": 2000.0,
+                                                                  "operationTypeId": 7, "operationTypeName": "Distrato"}]},
+                       {**income()[0], "billId": 52, "receipts": [{"sequencialNumber": 1, "paymentDate": "2026-09-25", "netAmount": 500.0, "grossAmount": 500.0,
+                                                                  "operationTypeId": 7, "operationTypeName": "Distrato"}]}]   # 52: distrato so' parcial -> continua
+    _ingerir(conn, regs=dois, lado="R", tipo="I")
+    com = {c["plano_cod"]: c["valor"] for c in P.resultado_por_conta(conn, "2026-09", sem_distrato=False)}
+    sem = {c["plano_cod"]: c["valor"] for c in P.resultado_por_conta(conn, "2026-09")}
+    assert com["1.01.01.01"] == 6000.0 and sem["1.01.01.01"] == 4000.0             # sai so' a NF 51 (distrato total)
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO pnl_centro_grupo (centro_custo_id, centro_nome, grupo, codigo_obra) VALUES (1049,'A','OBRA','121')")
+    assert P.resultado_por_obra_api(conn, "2026-09")["121"]["01"] == 4000.0
+    assert P.resultado_por_obra_api(conn, "2026-09", sem_distrato=False)["121"]["01"] == 6000.0
+    assert [a["receita"] for a in P.resultado_por_centro(conn, "2026-09")] == [4000.0]
