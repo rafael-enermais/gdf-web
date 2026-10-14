@@ -7,6 +7,7 @@ import datetime as dt
 import streamlit as st
 
 import formatacao as F
+import importador_dre
 import painel_db as P
 import sienge_api as S
 from auth import usuario_atual
@@ -170,46 +171,111 @@ with aba_desp:
 
 # ------------------------------------------------------------------ resultado (previa)
 with aba_res:
-    st.markdown("DRE gerencial do mês montado direto com o Sienge, no mesmo critério do relatório do Sienge **“Demonstrativo de Resultado – Comprometido, "
-                "seleção por data de emissão”**: entra o que foi **emitido** no mês (contas a receber = receita; contas a pagar = custo), com a conta do plano de cada título.")
+    st.markdown("**DRE oficial** = o PDF do Sienge *Demonstrativo de Resultado – Agrupado por Obra – DRE GERENCIAL* (versão com a composição das contas), lido pelo app. "
+                "**Conferência** = o app recalcula o mesmo DRE direto da API do Sienge (títulos **emitidos** no mês) e mostra onde difere, por conta e por obra.")
     meses_em = P.meses_com_emissao(conn)
-    if not meses_em:
-        st.info("Sincronize primeiro as contas por data de emissão (tipo I) na primeira aba.")
+    meses_dre = P.meses_com_dre(conn)
+    meses_r_opts = sorted(set(meses_em) | set(meses_dre))
+    if not meses_r_opts:
+        st.info("Importe o PDF do DRE gerencial do Sienge (abaixo) ou sincronize as contas por data de emissão (tipo I) na primeira aba.")
+    _hj = f"{dt.date.today().year}-{dt.date.today().month:02d}"
+    _fech = [m for m in meses_r_opts if m < _hj] or meses_r_opts
+    r1, r2, r3 = st.columns([1, 2, 2])
+    mes_r = r1.selectbox("Mês", meses_r_opts or [_hj], index=(meses_r_opts.index(_fech[-1]) if meses_r_opts else 0), key="pn2_mes_res")
+    sem_prev_r = r2.checkbox("Tirar documentos de previsão (PRV, PCT, PPC, FOPA)", value=True, key="pn2_res_prev",
+                             help="Mesma regra das Despesas (confirmada pela contabilidade). Vale para a conferência pela API.")
+    _cg = P.centro_grupo_instalado(conn)
+    so_obras = r3.checkbox("Só centros de custo de obra (sem ADM)", value=_cg, disabled=not _cg, key="pn2_res_obras",
+                           help="O DRE gerencial 'por obra' do Sienge não traz os centros de custo da Administração. Usa o de-para centro de custo → obra validado pela contabilidade.")
+    if not _cg:
+        st.info("O de-para de centros de custo ainda não está no banco; falta executar o SQL do de-para (veja o handoff do projeto). Até lá o filtro de obra fica desligado.")
+
+    # ---- importar o PDF
+    with st.expander("Importar o PDF do DRE gerencial do Sienge", expanded=not P.dre_importacao_ativa(conn, mes_r)):
+        if not P.dre_instalado(conn):
+            st.warning("Falta executar o arquivo `sql/v2_dre_pdf.sql` no Supabase (SQL Editor) para o app guardar o DRE lido do PDF. Você já pode ler o PDF e ver o resultado; só não dá para salvar.")
+        pdf_arq = st.file_uploader("PDF 'DRE GERENCIAL – composição das contas' (Sienge)", type=["pdf"], key="pn2_pdf_dre")
+        if pdf_arq is not None:
+            pdf_bytes = pdf_arq.getvalue()
+            pdf_sha = P.sha256_curto(pdf_bytes)
+            chave_pdf = f"pn2_dre_lido_{pdf_sha}"
+            if chave_pdf not in st.session_state:
+                try:
+                    with st.spinner("Lendo o PDF… (cerca de 10 a 30 segundos)"):
+                        st.session_state[chave_pdf] = importador_dre.ler_dre_pdf(pdf_bytes)
+                except importador_dre.ErroDRE as exc:
+                    st.session_state[chave_pdf] = str(exc)
+                    P.registrar_log(conn, "DRE_PDF_ERRO", "ERRO", usuario, None, {"arquivo": pdf_arq.name, "sha256": pdf_sha, "erro": str(exc)[:300]})
+            lido_pdf = st.session_state[chave_pdf]
+            if isinstance(lido_pdf, str):
+                st.error(lido_pdf)
+            else:
+                per = lido_pdf["periodo"]
+                mes_pdf = (per.get("inicio") or "")[:7]
+                st.success(f"PDF lido: período {per.get('inicio')} a {per.get('fim')} · {per.get('analise')} · seleção por {per.get('selecao')} · "
+                           f"{len(lido_pdf['obras'])} obras · {len(lido_pdf['valores'])} valores.")
+                for av in lido_pdf["avisos"]:
+                    st.warning(av)
+                if not lido_pdf["avisos"]:
+                    st.caption("Conferido: a soma das contas fecha com cada linha do DRE e a soma das obras fecha com a coluna Total do PDF.")
+                if mes_pdf and mes_pdf != mes_r:
+                    st.info(f"Este PDF é de {mes_pdf}; ao salvar, ele vira o DRE oficial de {mes_pdf} (o mês escolhido acima é {mes_r}).")
+                if st.button(f"Salvar como DRE oficial de {mes_pdf}", type="primary", disabled=not (P.dre_instalado(conn) and mes_pdf), key="pn2_pdf_salvar"):
+                    try:
+                        res_g = P.gravar_dre(conn, lido_pdf, pdf_arq.name, __import__("hashlib").sha256(pdf_bytes).hexdigest(), usuario)
+                        if res_g["repetido"]:
+                            st.info(f"Este mesmo arquivo já foi importado antes (importação #{res_g['id']}, mês {res_g['mes']}).")
+                        else:
+                            st.success(f"DRE de {res_g['mes']} salvo (importação #{res_g['id']}).")
+                            st.rerun()
+                    except Exception as exc:
+                        st.error(f"Não consegui salvar: {exc}")
+
+    imp = P.dre_importacao_ativa(conn, mes_r)
+    if imp:
+        st.caption(f"DRE oficial de {mes_r}: PDF “{imp['arquivo']}”, importado por {imp['quem'] or '–'} em {imp['quando']:%d/%m/%Y %H:%M} (importação #{imp['id']}).")
+        oficial = P.dre_do_mes([{"plano_cod": c, "plano_nome": "", "valor": x} for c, x in P.dre_contas_importadas(conn, imp["id"]).items()])["valores"]
+        st.markdown("**DRE oficial (PDF do Sienge)**")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Receita bruta", F.moeda_br(oficial["01"]), border=True)
+        m2.metric("Custos diretos", F.moeda_br(oficial["04"]), border=True)
+        m3.metric("Lucro bruto", F.moeda_br(oficial["05"]), border=True)
+        m4.metric("Lucro líquido após investimentos", F.moeda_br(oficial["14"]), border=True)
+        st.caption("Resultado das obras (a Administração central vem em outra aba, nas próximas etapas).")
+
+    # ---- conferência pela API
+    st.markdown("**Conferência: o mesmo DRE recalculado pela API do Sienge**")
+    if mes_r not in meses_em:
+        st.info(f"Ainda não há contas emitidas em {mes_r} no banco. Sincronize esse mês (tipo I) na primeira aba para conferir.")
     else:
-        _hj = f"{dt.date.today().year}-{dt.date.today().month:02d}"
-        _fech = [m for m in meses_em if m < _hj] or meses_em
-        r1, r2, r3 = st.columns([1, 2, 2])
-        mes_r = r1.selectbox("Mês", meses_em, index=meses_em.index(_fech[-1]), key="pn2_mes_res")
-        sem_prev_r = r2.checkbox("Tirar documentos de previsão (PRV, PCT, PPC, FOPA)", value=True, key="pn2_res_prev",
-                                 help="Mesma regra das Despesas (confirmada pela contabilidade). Ligada, o resultado de setembro chega bem perto do DRE do Sienge.")
-        _cg = P.centro_grupo_instalado(conn)
-        so_obras = r3.checkbox("Só centros de custo de obra (sem ADM)", value=_cg, disabled=not _cg, key="pn2_res_obras",
-                               help="O DRE gerencial 'por obra' do Sienge não traz os centros de custo da Administração. Usa o de-para centro de custo → obra validado pela contabilidade.")
-        if not _cg:
-            st.info("O de-para de centros de custo ainda não está no banco; falta executar o SQL do de-para (veja o handoff do projeto). Até lá o filtro de obra fica desligado e as despesas ADM entram na conta.")
         contas_r = P.resultado_por_conta(conn, mes_r, sem_previsao=sem_prev_r, so_obras=so_obras)
         dre = P.dre_do_mes(contas_r)
         v = dre["valores"]
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Receita bruta", F.moeda_br(v["01"]), border=True)
-        m2.metric("Custos diretos", F.moeda_br(v["04"]), border=True)
-        m3.metric("Lucro bruto", F.moeda_br(v["05"]), border=True)
-        m4.metric("Lucro líquido após investimentos", F.moeda_br(v["14"]), border=True)
-        st.caption("Este DRE é o das **obras** (a Administração central vem em outra aba, nas próximas etapas).")
-        ref = None
-        arq_r = st.file_uploader("Conferir com um CSV de referência (colunas: conta; total) — opcional", type=["csv"], key="pn2_csv_res")
-        if arq_r is not None:
-            try:
-                ref = P.ler_referencia_dre(arq_r.getvalue())
-            except ValueError as exc:
-                st.error(str(exc))
-                P.registrar_log(conn, "CSV_ERRO", "ERRO", usuario, mes_r, {"arquivo": arq_r.name, "erro": str(exc)[:300]})
+        if not imp:
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Receita bruta (API)", F.moeda_br(v["01"]), border=True)
+            m2.metric("Custos diretos (API)", F.moeda_br(v["04"]), border=True)
+            m3.metric("Lucro bruto (API)", F.moeda_br(v["05"]), border=True)
+            m4.metric("Lucro líquido após investimentos (API)", F.moeda_br(v["14"]), border=True)
+        ref, nome_ref, arq_r = None, "", None
+        if imp:
+            ref = P.dre_contas_importadas(conn, imp["id"])
+            nome_ref = "PDF"
+        else:
+            arq_r = st.file_uploader("Sem PDF importado: conferir com um CSV de referência (colunas: conta; total) — opcional", type=["csv"], key="pn2_csv_res")
+            if arq_r is not None:
+                try:
+                    ref = P.ler_referencia_dre(arq_r.getvalue())
+                    nome_ref = "CSV"
+                except ValueError as exc:
+                    st.error(str(exc))
+                    P.registrar_log(conn, "CSV_ERRO", "ERRO", usuario, mes_r, {"arquivo": arq_r.name, "erro": str(exc)[:300]})
         if ref:
             ref_dre = P.dre_do_mes([{"plano_cod": k, "plano_nome": "", "valor": x} for k, x in ref.items()])["valores"]
-            linhas_t = [{"Linha": k, "DRE": n, "API": F.moeda_br(x), "Referência": F.moeda_br(ref_dre[k]), "Diferença": F.moeda_br(round(x - ref_dre[k], 2)),
+            linhas_t = [{"Linha": k, "DRE": n, "API": F.moeda_br(x), nome_ref: F.moeda_br(ref_dre[k]), "Diferença": F.moeda_br(round(x - ref_dre[k], 2)),
                          "Confere": "sim" if abs(x - ref_dre[k]) <= 0.5 else "NÃO"} for k, n, x in dre["linhas"]]
         else:
-            linhas_t = [{"Linha": k, "DRE": n, "Valor": F.moeda_br(x)} for k, n, x in dre["linhas"]]
+            linhas_t = [{"Linha": k, "DRE": n, "Valor (API)": F.moeda_br(x)} for k, n, x in dre["linhas"]]
         st.dataframe(pd.DataFrame(linhas_t), hide_index=True, width="stretch")
         if ref:
             cmp_r = P.comparar_resultado(contas_r, ref)
@@ -217,18 +283,47 @@ with aba_res:
             if cmp_r["contas_com_diferenca"]:
                 st.warning(f"{len(cmp_r['contas_com_diferenca'])} conta(s) com diferença (diferença no resultado final: {F.moeda_br(tot_dif)}).")
             else:
-                st.success("API e referência batem em todas as contas.")
+                st.success("API e DRE oficial batem em todas as contas.")
             with st.expander("Conta a conta (diferenças primeiro)", expanded=bool(cmp_r["contas_com_diferenca"])):
                 ordem = sorted(cmp_r["contas"], key=lambda d: (-abs(d["dif"]) if abs(d["dif"]) > 0.5 else 0, d["plano_cod"]))
-                st.dataframe(pd.DataFrame([{"Conta": d["plano_cod"], "Nome": d["plano_nome"], "API": F.moeda_br(d["api"]), "Referência": F.moeda_br(d["ref"]),
+                st.dataframe(pd.DataFrame([{"Conta": d["plano_cod"], "Nome": d["plano_nome"], "API": F.moeda_br(d["api"]), nome_ref: F.moeda_br(d["ref"]),
                                             "Diferença": F.moeda_br(d["dif"]), "Confere": "sim" if abs(d["dif"]) <= 0.5 else "NÃO"} for d in ordem]), hide_index=True, width="stretch")
-            chave_r = f"pn2_logado_res_{P.sha256_curto(arq_r.getvalue())}_{mes_r}_{int(v['14'] * 100)}_{int(sem_prev_r)}"
+            if imp:
+                with st.expander("Conferência por obra (PDF × API, usando o de-para de centros de custo)"):
+                    pdf_obras = P.dre_por_obra_importado(conn, imp["id"])
+                    api_obras = P.resultado_por_obra_api(conn, mes_r, sem_previsao=sem_prev_r)
+                    if not api_obras:
+                        st.info("Sem o de-para de centros de custo no banco não dá para agrupar a API por obra.")
+                    else:
+                        codigos_api = set(api_obras) - {"DEM", "sem de-para"}
+                        linhas_o = []
+                        for cod in sorted(set(pdf_obras) | codigos_api, key=lambda c: (len(c), c)):
+                            p_ = pdf_obras.get(cod, {}).get("linhas", {})
+                            a_ = api_obras.get(cod, {})
+                            linhas_o.append({"Obra": cod, "Nome (PDF)": pdf_obras.get(cod, {}).get("nome", ""), "Receita PDF": p_.get("01", 0.0), "Receita API": a_.get("01", 0.0),
+                                             "Custo PDF": p_.get("04", 0.0), "Custo API": a_.get("04", 0.0)})
+                        resto = {c: o for c, o in pdf_obras.items() if c not in codigos_api}
+                        dem_api = api_obras.get("DEM", {})
+                        if dem_api or resto:
+                            linhas_o = [x for x in linhas_o if x["Obra"] in codigos_api]
+                            linhas_o.append({"Obra": "DEM", "Nome (PDF)": f"{len(resto)} obras do PDF sem código próprio no de-para", "Receita PDF": round(sum(o['linhas'].get('01', 0.0) for o in resto.values()), 2),
+                                             "Receita API": dem_api.get("01", 0.0), "Custo PDF": round(sum(o['linhas'].get('04', 0.0) for o in resto.values()), 2), "Custo API": dem_api.get("04", 0.0)})
+                        tab_o = pd.DataFrame(linhas_o)
+                        tab_o["Dif. receita"] = tab_o["Receita API"] - tab_o["Receita PDF"]
+                        tab_o["Dif. custo"] = tab_o["Custo API"] - tab_o["Custo PDF"]
+                        tab_o["_o"] = tab_o[["Dif. receita", "Dif. custo"]].abs().max(axis=1)
+                        tab_o = tab_o.sort_values("_o", ascending=False).drop(columns="_o")
+                        for c in ("Receita PDF", "Receita API", "Custo PDF", "Custo API", "Dif. receita", "Dif. custo"):
+                            tab_o[c] = tab_o[c].map(F.moeda_br)
+                        st.dataframe(tab_o, hide_index=True, width="stretch")
+                        st.caption("Obras com diferença primeiro. 'sem de-para' = centros de custo que ainda não estão no de-para.")
+            chave_r = f"pn2_logado_res_{nome_ref}_{mes_r}_{int(v['14'] * 100)}_{int(ref_dre['14'] * 100)}_{int(sem_prev_r)}_{int(so_obras)}"
             if not st.session_state.get(chave_r):
                 st.session_state[chave_r] = P.registrar_log(
                     conn, "CONFERENCIA_RESULTADO", "INFO" if not cmp_r["contas_com_diferenca"] else "AVISO", usuario, mes_r,
-                    {"arquivo": arq_r.name, "sha256": P.sha256_curto(arq_r.getvalue()), "contas": len(cmp_r["contas"]), "contas_com_diferenca": len(cmp_r["contas_com_diferenca"]),
-                     "diferenca_resultado_final": tot_dif, "sem_previsao": bool(sem_prev_r),
-                     "resultado": "bate" if not cmp_r["contas_com_diferenca"] else "difere"})
+                    {"referencia": nome_ref, "importacao_id": imp["id"] if imp else None, "arquivo": (imp["arquivo"] if imp else (arq_r.name if arq_r is not None else None)),
+                     "contas": len(cmp_r["contas"]), "contas_com_diferenca": len(cmp_r["contas_com_diferenca"]), "diferenca_resultado_final": tot_dif,
+                     "sem_previsao": bool(sem_prev_r), "so_obras": bool(so_obras), "resultado": "bate" if not cmp_r["contas_com_diferenca"] else "difere"})
         with st.expander("De onde vem o valor: por centro de custo (diagnóstico)"):
             pc = P.resultado_por_centro(conn, mes_r, sem_previsao=sem_prev_r)
             if pc:
@@ -236,8 +331,8 @@ with aba_res:
                 for a in pc:
                     g = grupos.setdefault(a["grupo"], {"receita": 0.0, "custo": 0.0, "n": 0})
                     g["receita"] += a["receita"]; g["custo"] += a["custo"]; g["n"] += 1
-                st.dataframe(pd.DataFrame([{"Grupo do de-para": k, "Centros": v["n"], "Receita (1.01.01)": F.moeda_br(v["receita"]), "Custo obra (2.01.*)": F.moeda_br(v["custo"])}
-                                           for k, v in sorted(grupos.items())]), hide_index=True, width="stretch")
+                st.dataframe(pd.DataFrame([{"Grupo do de-para": k, "Centros": v_["n"], "Receita (1.01.01)": F.moeda_br(v_["receita"]), "Custo obra (2.01.*)": F.moeda_br(v_["custo"])}
+                                           for k, v_ in sorted(grupos.items())]), hide_index=True, width="stretch")
                 st.caption("Os 30 maiores centros de custo do mês (contas de receita e de custo de obra):")
                 st.dataframe(pd.DataFrame([{"Centro": a["centro_id"], "Nome": a["centro"], "Grupo": a["grupo"], "Obra": a["codigo"], "Receita": F.moeda_br(a["receita"]),
                                             "Custo": F.moeda_br(a["custo"])} for a in pc[:30]]), hide_index=True, width="stretch")

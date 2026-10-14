@@ -326,3 +326,89 @@ def test_resultado_so_obras_usa_o_de_para(conn):
     pc = P.resultado_por_centro(conn, "2026-09")
     assert {(a["centro_id"], a["grupo"]) for a in pc} == {(1049, "OBRA"), (1, "ADM")}
     assert [a["receita"] for a in pc if a["centro_id"] == 1049] == [2000.0] and [a["custo"] for a in pc if a["centro_id"] == 1] == [-500.0]
+
+
+# ------------------------------------------------------------------ DRE oficial lido do PDF (PDF sintetico)
+def _pdf_lido(com_total_errado=False):
+    from dre_pdf_sintetico import pdf_sintetico
+    import importador_dre
+    b = pdf_sintetico(com_total_errado)
+    return b, importador_dre.ler_dre_pdf(b)
+
+
+def test_gravar_dre_ativa_repetido_e_consultas(conn):
+    import hashlib
+    assert P.dre_instalado(conn) and P.meses_com_dre(conn) == []
+    b, dre = _pdf_lido()
+    sha = hashlib.sha256(b).hexdigest()
+    r = P.gravar_dre(conn, dre, "dre_set.pdf", sha, "teste@x")
+    assert r["repetido"] is False and r["mes"] == "2026-09" and P.meses_com_dre(conn) == ["2026-09"]
+    assert _contar(conn, "pnl_dre_valor") == len(dre["valores"])
+    imp = P.dre_importacao_ativa(conn, "2026-09")
+    assert imp["arquivo"] == "dre_set.pdf" and imp["quem"] == "teste@x" and imp["id"] == r["id"]
+    contas = P.dre_contas_importadas(conn, imp["id"])
+    assert contas["1.01.01.01"] == 1750.0 and contas["2.01.02.01"] == -250.0 and contas["2.01.02.02"] == -350.0
+    obras = P.dre_por_obra_importado(conn, imp["id"])
+    assert obras["101"]["linhas"]["01"] == 500.0 and obras["101"]["linhas"]["04"] == -200.0 and obras["100"]["nome"] == "OBRA UM"
+    # mesmo arquivo de novo: nao duplica
+    r2 = P.gravar_dre(conn, dre, "dre_set.pdf", sha, "teste@x")
+    assert r2["repetido"] is True and _contar(conn, "pnl_dre_valor") == len(dre["valores"])
+    # arquivo diferente do mesmo mes: o novo vira o ativo, o antigo fica guardado como inativo
+    r3 = P.gravar_dre(conn, dre, "dre_set_v2.pdf", "f" * 64, "teste@x")
+    assert r3["repetido"] is False and P.dre_importacao_ativa(conn, "2026-09")["id"] == r3["id"]
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FROM pnl_importacao WHERE tipo='DRE' AND NOT ativo")
+        assert cur.fetchone()[0] == 1
+    assert {l["acao"] for l in P.ultimos_logs(conn)} >= {"DRE_PDF_IMPORTADO"}
+
+
+def test_gravar_dre_sem_periodo_nao_grava(conn):
+    _, dre = _pdf_lido()
+    dre["periodo"] = {}
+    with pytest.raises(ValueError, match="período"):
+        P.gravar_dre(conn, dre, "x.pdf", "a" * 64, None)
+    assert _contar(conn, "pnl_dre_valor") == 0
+
+
+def test_resultado_por_obra_api_usa_o_de_para(conn):
+    _ingerir(conn, lado="P", tipo="I")
+    _ingerir(conn, regs=income(), lado="R", tipo="I")
+    assert P.resultado_por_obra_api(conn, "2026-09") == {} or isinstance(P.resultado_por_obra_api(conn, "2026-09"), dict)
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO pnl_centro_grupo (centro_custo_id, centro_nome, grupo, codigo_obra) VALUES (1,'SEDE','ADM','ADM'),(1049,'ANASTACIO','OBRA','103')")
+    r = P.resultado_por_obra_api(conn, "2026-09")
+    assert r["103"]["01"] == 2000.0
+
+
+def _uploader_por_chave(arquivos):
+    """Substitui st.file_uploader: devolve o arquivo falso conforme a chave (key) do campo; sem arquivo -> None."""
+    def _f(*a, **kw):
+        return arquivos.get(kw.get("key"))
+    return _f
+
+
+def test_tela_resultado_importa_pdf_e_confere_com_a_api(conn):
+    _ingerir(conn, lado="P", tipo="I")
+    _ingerir(conn, regs=income(), lado="R", tipo="I")
+    b, _ = _pdf_lido()
+    falso = SimpleNamespace(name="dre.pdf", getvalue=lambda: b)
+    with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", side_effect=_uploader_por_chave({"pn2_pdf_dre": falso})):
+        at = _tela(conn).run()
+        assert not at.exception, at.exception
+        assert any("PDF lido" in s.value for s in at.tabs[2].success)
+        at.button(key="pn2_pdf_salvar").click().run()
+        assert not at.exception, at.exception
+        assert P.meses_com_dre(conn) == ["2026-09"]
+        at.run()
+        assert not at.exception, at.exception
+        assert any("DRE oficial de 2026-09" in c.value for c in at.tabs[2].caption)
+        assert any(l["acao"] == "CONFERENCIA_RESULTADO" and l["detalhe"].get("referencia") == "PDF" for l in P.ultimos_logs(conn))
+
+
+def test_tela_resultado_pdf_invalido_mostra_erro_e_registra_log(conn):
+    falso = SimpleNamespace(name="x.pdf", getvalue=lambda: b"nao e pdf")
+    with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", side_effect=_uploader_por_chave({"pn2_pdf_dre": falso})):
+        at = _tela(conn).run()
+    assert not at.exception, at.exception
+    assert any("PDF" in e.value for e in at.tabs[2].error)
+    assert any(l["acao"] == "DRE_PDF_ERRO" for l in P.ultimos_logs(conn))

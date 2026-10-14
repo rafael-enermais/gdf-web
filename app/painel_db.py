@@ -522,3 +522,107 @@ def comparar_resultado(contas: list, ref: dict, tolerancia: float = 0.5) -> dict
     todas = [t for t in todas if abs(t["api"]) > 0.005 or abs(t["ref"]) > 0.005]
     dif = [t for t in todas if abs(t["dif"]) > tolerancia]
     return {"contas": todas, "contas_com_diferenca": sorted(dif, key=lambda d: -abs(d["dif"]))}
+
+
+# ---------------------------------------------------------------- DRE oficial do Sienge (PDF importado)
+def dre_instalado(conn) -> bool:
+    """True se o SQL do DRE em PDF (sql/v2_dre_pdf.sql) ja foi executado."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema='gdf' AND table_name='pnl_dre_valor'")
+            return cur.fetchone()[0] == 1
+    except Exception:
+        return False
+
+
+def gravar_dre(conn, dre: dict, arquivo: str, sha256: str, usuario: str | None) -> dict:
+    """Grava o DRE lido do PDF como importacao ativa do mes (a anterior do mesmo mes fica ativo=false). Se o mesmo arquivo (sha256) ja foi
+    importado, nao grava de novo e devolve {'repetido': True, ...}. Tudo numa transacao so."""
+    periodo = dre.get("periodo") or {}
+    if not periodo.get("inicio"):
+        raise ValueError("O PDF não informa o período; não sei a que mês pertence.")
+    mes = periodo["inicio"][:7] + "-01"
+    nomes = {o["cod"]: o["nome"] for o in dre["obras"]}
+    with db.transacao(conn):
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, ativo, mes FROM pnl_importacao WHERE tipo='DRE' AND arquivo_sha256=%s", (sha256,))
+            ja = cur.fetchone()
+            if ja:
+                return {"repetido": True, "id": ja[0], "ativo": ja[1], "mes": ja[2].strftime("%Y-%m")}
+            cur.execute("UPDATE pnl_importacao SET ativo=false WHERE tipo='DRE' AND mes=%s AND escopo='' AND ativo", (mes,))
+            cur.execute("""INSERT INTO pnl_importacao (tipo, mes, escopo, arquivo_nome, arquivo_sha256, importado_por, n_linhas, detalhe)
+                           VALUES ('DRE', %s, '', %s, %s, %s, %s, %s) RETURNING id""",
+                        (mes, arquivo, sha256, usuario, len(dre["valores"]),
+                         json.dumps({"periodo": periodo, "obras": len(dre["obras"]), "avisos": dre["avisos"]}, ensure_ascii=False)))
+            iid = cur.fetchone()[0]
+            execute_values(cur, "INSERT INTO pnl_dre_valor (importacao_id, obra_cod, obra_nome, linha, conta, conta_nome, valor) VALUES %s",
+                           [(iid, v["obra"], nomes.get(v["obra"]), v["linha"] or "", v["conta"], v["nome"] if v["conta"] else None, v["valor"]) for v in dre["valores"]])
+    registrar_log(conn, "DRE_PDF_IMPORTADO", "AVISO" if dre["avisos"] else "INFO", usuario, mes[:7],
+                  {"arquivo": arquivo, "sha256": sha256[:16], "importacao_id": iid, "linhas": len(dre["valores"]), "obras": len(dre["obras"]), "avisos": dre["avisos"]})
+    return {"repetido": False, "id": iid, "mes": mes[:7]}
+
+
+def meses_com_dre(conn) -> list:
+    """Meses ('AAAA-MM') que ja tem um DRE oficial (PDF) importado e ativo."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_char(mes,'YYYY-MM') FROM pnl_importacao WHERE tipo='DRE' AND ativo ORDER BY 1")
+            return [r[0] for r in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def dre_importacao_ativa(conn, mes: str) -> dict | None:
+    """Importacao ativa do DRE em PDF para o mes ('AAAA-MM'), ou None (tambem None se o SQL ainda nao foi rodado)."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT id, arquivo_nome, importado_por, importado_em, n_linhas, status FROM pnl_importacao
+                           WHERE tipo='DRE' AND mes=%s::date AND escopo='' AND ativo ORDER BY id DESC LIMIT 1""", (f"{mes}-01",))
+            r = cur.fetchone()
+    except Exception:
+        return None
+    return {"id": r[0], "arquivo": r[1], "quem": r[2], "quando": r[3], "linhas": r[4], "status": r[5]} if r else None
+
+
+def dre_contas_importadas(conn, importacao_id: int) -> dict:
+    """Soma das obras por conta do plano no DRE importado: {conta: valor}."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT conta, sum(valor) FROM pnl_dre_valor WHERE importacao_id=%s AND conta IS NOT NULL GROUP BY conta", (importacao_id,))
+        return {c: round(float(v), 2) for c, v in cur.fetchall()}
+
+
+def dre_por_obra_importado(conn, importacao_id: int) -> dict:
+    """{obra_cod: {'nome': ..., 'linhas': {linha_dre: valor}}} das linhas de total do DRE (01, 03, 04, 05, 14...) do PDF."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT obra_cod, max(obra_nome), linha, sum(valor) FROM pnl_dre_valor WHERE importacao_id=%s AND conta IS NULL GROUP BY obra_cod, linha", (importacao_id,))
+        out = {}
+        for cod, nome, linha, v in cur.fetchall():
+            o = out.setdefault(cod, {"nome": nome, "linhas": {}})
+            o["linhas"][linha] = round(float(v), 2)
+    return out
+
+
+def resultado_por_obra_api(conn, mes: str, sem_previsao: bool = False) -> dict:
+    """Mesmo calculo do resultado_por_conta, agrupado pelo codigo da obra do de-para: {codigo_obra: {linha_dre: valor}} (+ 'sem de-para')."""
+    ini = f"{mes}-01"
+    filtro = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
+    with conn.cursor() as cur:
+        try:
+            cur.execute(f"""SELECT COALESCE(g.codigo_obra,'sem de-para'), t.lado, r.plano_cod, sum(t.valor_original * r.percentual / 100.0)
+                            FROM pnl_titulo t JOIN pnl_v_rateio r ON r.lado=t.lado AND r.bill_id=t.bill_id AND r.installment_id=t.installment_id
+                            LEFT JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id
+                            WHERE t.data_emissao >= %s::date AND t.data_emissao < (%s::date + interval '1 month') {filtro}
+                              AND COALESCE(g.grupo,'') <> 'ADM'
+                            GROUP BY 1, t.lado, r.plano_cod""", (ini, ini))
+        except Exception:
+            return {}
+        linhas = cur.fetchall()
+    por_obra = {}
+    for cod_obra, lado, plano, v in linhas:
+        c = por_obra.setdefault(cod_obra, {})
+        c[plano] = round(c.get(plano, 0.0) + _sinal_resultado(lado, plano) * float(v or 0), 2)
+    saida = {}
+    for cod_obra, contas in por_obra.items():
+        dre = dre_do_mes([{"plano_cod": k, "plano_nome": "", "valor": x} for k, x in contas.items()])
+        saida[cod_obra] = dre["valores"]
+    return saida
