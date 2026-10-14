@@ -187,7 +187,7 @@ def test_tela_com_dados_mostra_despesas(conn):
     with patch("conexao.get_conn", return_value=conn):
         at = _tela(conn).run()
         assert not at.exception, at.exception
-        assert len(at.tabs) == 4
+        assert len(at.tabs) == 5
         assert at.selectbox(key="pn2_mes_desp").value == "2026-09"
         valores = [m.value for m in at.metric]
         assert any("1.000,00" in v for v in valores)
@@ -256,7 +256,7 @@ def test_tela_historico_e_mes_do_csv_automatico(conn):
     with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", return_value=falso):
         at = _tela(conn).run()
         assert not at.exception, at.exception
-        assert at.tabs[3].label == "Histórico e logs"
+        assert at.tabs[4].label == "Histórico e logs"
         cmp_sel = [sb for sb in at.selectbox if sb.key and sb.key.startswith("pn2_mes_cmp_")][0]
         assert cmp_sel.value == "2026-09"                                       # mes lido do CSV
         tabelas = [df.value for df in at.tabs[1].dataframe]
@@ -266,4 +266,48 @@ def test_tela_historico_e_mes_do_csv_automatico(conn):
         at.run()                                                                # nova execucao nao duplica o log
         assert len(P.ultimos_logs(conn, acao="CONFERENCIA_DESPESAS")) == 1
         at = _tela(conn).run()
-        assert any("CONFERENCIA_DESPESAS" in set(df.value["Ação"]) for df in at.tabs[3].dataframe)
+        assert any("CONFERENCIA_DESPESAS" in set(df.value["Ação"]) for df in at.tabs[4].dataframe)
+
+
+# ------------------------------------------------------------------ Resultado (DRE comprometido por emissao)
+def test_resultado_por_emissao_e_dre(conn):
+    regs = outcome()
+    regs[3]["forecastDocument"] = "S"                      # o titulo de agosto vira documento de previsao
+    _ingerir(conn, regs=regs, lado="P", tipo="I")
+    _ingerir(conn, regs=income(), lado="R", tipo="I")
+    assert P.meses_com_emissao(conn) == ["2026-08", "2026-09"]
+    contas = {c["plano_cod"]: c["valor"] for c in P.resultado_por_conta(conn, "2026-09")}
+    assert contas == {"1.01.01.01": 2000.0, "2.01.02.01": -500.0, "1.03.02.02": -300.0}       # agosto fora; custo negativo; receita positiva
+    assert {c["plano_cod"]: c["valor"] for c in P.resultado_por_conta(conn, "2026-08")} == {"2.01.01.04": -1000.0 * 0.6 - 700.0, "2.01.04.04": -400.0}
+    dre = P.dre_do_mes(P.resultado_por_conta(conn, "2026-09"))
+    v = dre["valores"]
+    assert v["01"] == 2000.0 and v["04.01"] == -500.0 and v["04"] == -500.0 and v["05"] == 1500.0 and v["14"] == 1500.0
+    assert [c["plano_cod"] for c in dre["fora_do_mapa"]] == ["1.03.02.02"]
+    # previsao fora (documento PCT emitido em agosto)
+    ago = {c["plano_cod"]: c["valor"] for c in P.resultado_por_conta(conn, "2026-08", sem_previsao=True)}
+    assert ago == {"2.01.01.04": -600.0, "2.01.04.04": -400.0}
+
+
+def test_resultado_referencia_e_comparacao(conn):
+    _ingerir(conn, lado="P", tipo="I")
+    _ingerir(conn, regs=income(), lado="R", tipo="I")
+    contas = P.resultado_por_conta(conn, "2026-09")
+    ref = P.ler_referencia_dre("conta;nome;linha_dre;total_set_2026\n1.01.01.01;Receitas;01.01;2000,00\n2.01.02.01;Sal;04.01;-450,00\n".encode("utf-8-sig"))
+    assert ref == {"1.01.01.01": 2000.0, "2.01.02.01": -450.0}
+    cmp = P.comparar_resultado(contas, ref)
+    assert [(d["plano_cod"], d["dif"]) for d in cmp["contas_com_diferenca"]][:2] == [("1.03.02.02", -300.0), ("2.01.02.01", -50.0)]
+    with pytest.raises(ValueError):
+        P.ler_referencia_dre(b"a;b\n1;2\n")
+
+
+def test_tela_resultado_mostra_dre_e_confere(conn):
+    _ingerir(conn, lado="P", tipo="I")
+    _ingerir(conn, regs=income(), lado="R", tipo="I")
+    csv_ref = "conta;nome;linha_dre;total_set_2026\n1.01.01.01;Receitas;01.01;2000,00\n2.01.02.01;Sal;04.01;-500,00\n1.03.02.02;Transf;;-300,00\n".encode("utf-8-sig")
+    falso = SimpleNamespace(name="ref.csv", getvalue=lambda: csv_ref)
+    with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", return_value=falso):
+        at = _tela(conn).run()
+        assert not at.exception, at.exception
+        assert at.selectbox(key="pn2_mes_res").value == "2026-09"
+        assert any("2.000,00" in m.value for m in at.tabs[2].metric)
+        assert any(l["acao"] == "CONFERENCIA_RESULTADO" for l in P.ultimos_logs(conn))
