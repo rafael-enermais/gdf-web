@@ -180,10 +180,12 @@ with aba_res:
         st.info("Importe o PDF do DRE gerencial do Sienge (abaixo) ou sincronize as contas por data de emissão (tipo I) na primeira aba.")
     _hj = f"{dt.date.today().year}-{dt.date.today().month:02d}"
     _fech = [m for m in meses_r_opts if m < _hj] or meses_r_opts
-    r1, r2, r3 = st.columns([1, 2, 2])
+    r1, r2, r3, r4 = st.columns([1, 2, 2, 2])
     mes_r = r1.selectbox("Mês", meses_r_opts or [_hj], index=(meses_r_opts.index(_fech[-1]) if meses_r_opts else 0), key="pn2_mes_res")
     sem_prev_r = r2.checkbox("Tirar documentos de previsão (PRV, PCT, PPC, FOPA)", value=True, key="pn2_res_prev",
                              help="Mesma regra das Despesas (confirmada pela Suellen). Vale para a conferência pela API.")
+    sem_dist_r = r4.checkbox("Tirar NFs desfeitas (distrato)", value=True, key="pn2_res_distrato",
+                             help="Título a receber cujas baixas do tipo Distrato somam o valor todo: o Sienge ainda o lista na API, mas o DRE dele não conta. Conferido em set/2026.")
     _cg = P.centro_grupo_instalado(conn)
     so_obras = r3.checkbox("Só centros de custo de obra (sem ADM)", value=_cg, disabled=not _cg, key="pn2_res_obras",
                            help="O DRE gerencial 'por obra' do Sienge não traz os centros de custo da Administração. Usa o de-para centro de custo → obra validado pela Suellen.")
@@ -247,7 +249,7 @@ with aba_res:
     st.markdown("**Confirmar o DRE do mês** — escolha, linha a linha, de qual fonte vem o valor")
     from dre_mapa import LINHAS as _LIN
     _folhas = [(k, n) for k, n, t in _LIN if t == "folha"]
-    _api_f = P.dre_do_mes(P.resultado_por_conta(conn, mes_r, sem_previsao=sem_prev_r, so_obras=so_obras))["valores"] if mes_r in meses_em else None
+    _api_f = P.dre_do_mes(P.resultado_por_conta(conn, mes_r, sem_previsao=sem_prev_r, so_obras=so_obras, sem_distrato=sem_dist_r))["valores"] if mes_r in meses_em else None
     _pdf_f = P.dre_do_mes([{"plano_cod": c, "plano_nome": "", "valor": x} for c, x in P.dre_contas_importadas(conn, imp["id"]).items()])["valores"] if imp else None
     _fontes = {}
     if _api_f is not None:
@@ -319,7 +321,7 @@ with aba_res:
     if mes_r not in meses_em:
         st.info(f"Ainda não há contas emitidas em {mes_r} no banco. Sincronize esse mês (tipo I) na primeira aba para conferir.")
     else:
-        contas_r = P.resultado_por_conta(conn, mes_r, sem_previsao=sem_prev_r, so_obras=so_obras)
+        contas_r = P.resultado_por_conta(conn, mes_r, sem_previsao=sem_prev_r, so_obras=so_obras, sem_distrato=sem_dist_r)
         dre = P.dre_do_mes(contas_r)
         v = dre["valores"]
         if not imp:
@@ -362,7 +364,7 @@ with aba_res:
             if imp:
                 with st.expander("Conferência por obra (PDF × API, usando o de-para de centros de custo)"):
                     pdf_obras = P.dre_por_obra_importado(conn, imp["id"])
-                    api_obras = P.resultado_por_obra_api(conn, mes_r, sem_previsao=sem_prev_r)
+                    api_obras = P.resultado_por_obra_api(conn, mes_r, sem_previsao=sem_prev_r, sem_distrato=sem_dist_r)
                     if not api_obras:
                         st.info("Sem o de-para de centros de custo no banco não dá para agrupar a API por obra.")
                     else:
@@ -388,15 +390,15 @@ with aba_res:
                             tab_o[c] = tab_o[c].map(F.moeda_br)
                         st.dataframe(tab_o, hide_index=True, width="stretch")
                         st.caption("Obras com diferença primeiro. 'sem de-para' = centros de custo que ainda não estão no de-para.")
-            chave_r = f"pn2_logado_res_{nome_ref}_{mes_r}_{int(v['14'] * 100)}_{int(ref_dre['14'] * 100)}_{int(sem_prev_r)}_{int(so_obras)}"
+            chave_r = f"pn2_logado_res_{nome_ref}_{mes_r}_{int(v['14'] * 100)}_{int(ref_dre['14'] * 100)}_{int(sem_prev_r)}_{int(so_obras)}_{int(sem_dist_r)}"
             if not st.session_state.get(chave_r):
                 st.session_state[chave_r] = P.registrar_log(
                     conn, "CONFERENCIA_RESULTADO", "INFO" if not cmp_r["contas_com_diferenca"] else "AVISO", usuario, mes_r,
                     {"referencia": nome_ref, "importacao_id": imp["id"] if imp else None, "arquivo": (imp["arquivo"] if imp else (arq_r.name if arq_r is not None else None)),
                      "contas": len(cmp_r["contas"]), "contas_com_diferenca": len(cmp_r["contas_com_diferenca"]), "diferenca_resultado_final": tot_dif,
-                     "sem_previsao": bool(sem_prev_r), "so_obras": bool(so_obras), "resultado": "bate" if not cmp_r["contas_com_diferenca"] else "difere"})
+                     "sem_previsao": bool(sem_prev_r), "so_obras": bool(so_obras), "sem_distrato": bool(sem_dist_r), "resultado": "bate" if not cmp_r["contas_com_diferenca"] else "difere"})
         with st.expander("De onde vem o valor: por centro de custo (diagnóstico)"):
-            pc = P.resultado_por_centro(conn, mes_r, sem_previsao=sem_prev_r)
+            pc = P.resultado_por_centro(conn, mes_r, sem_previsao=sem_prev_r, sem_distrato=sem_dist_r)
             if pc:
                 grupos = {}
                 for a in pc:

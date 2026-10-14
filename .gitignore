@@ -18,3 +18,6 @@ config.txt
 
 # orientacao local da sessao (tem caminho do vault e nomes): fica so no computador
 CLAUDE.md
+
+# token do GitHub para o Claude enviar codigo: NUNCA commitar
+token-github.txt
