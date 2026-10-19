@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """GDF V2 — Painel EnerMais (EM CONSTRUCAO): sincroniza o Sienge, confere com o CSV e mostra a previa da aba Despesas.
-O PDF do relatorio entra na proxima etapa. Todos os uploads ficam na aba Importacoes (V2)."""
+O PDF do relatorio (rascunho) fica na ultima aba. Todos os uploads ficam na aba Importacoes (V2)."""
 import altair as alt
 import pandas as pd
 import datetime as dt
@@ -37,8 +37,9 @@ if not P.v2_instalado(conn):
                "no Supabase (SQL Editor). Depois disso esta tela passa a funcionar.")
     st.stop()
 
-aba_sync, aba_imp, aba_desp, aba_res, aba_obras, aba_adm, aba_pess, aba_regras, aba_log = st.tabs(
-    ["Sincronizar com o Sienge", "Importações (V2)", "Despesas (prévia)", "Resultado (prévia)", "Obras (prévia)", "Administração (prévia)", "Pessoas (prévia)", "Regras", "Histórico e logs"])
+aba_sync, aba_imp, aba_desp, aba_res, aba_obras, aba_adm, aba_pess, aba_regras, aba_log, aba_pdf = st.tabs(
+    ["Sincronizar com o Sienge", "Importações (V2)", "Despesas (prévia)", "Resultado (prévia)", "Obras (prévia)", "Administração (prévia)", "Pessoas (prévia)", "Regras", "Histórico e logs",
+     "Relatório PDF (rascunho)"])
 
 # ------------------------------------------------------------------ importacoes (todos os uploads da V2, historico, reverter, editar)
 with aba_imp:
@@ -661,3 +662,26 @@ with aba_log:
             st.download_button("Baixar o histórico (CSV)", P.csv_logs(logs), file_name="historico_painel.csv", mime="text/csv", key="pn2_dl_log")
         else:
             st.info("Nada registrado ainda.")
+
+# ------------------------------------------------------------------ relatorio PDF (rascunho)
+with aba_pdf:
+    st.markdown("PDF do **Painel EnerMais** do mês, no padrão visual dos demonstrativos (capa, resumo, DRE, obras, administração, pessoas e notas). "
+                "É um **rascunho**: o layout ainda será validado e pode mudar. Usa os mesmos números das abas; a parte que ainda não tem dado vira um aviso do que falta importar.")
+    _m_pdf = sorted(set(P.meses_com_dre(conn)) | set(P.meses_confirmados(conn)) | set(P.meses_com_dados(conn)) | set(P.folha_meses(conn)))
+    if not _m_pdf:
+        st.info("Ainda não há dados no painel para montar o relatório.")
+    else:
+        _conf_pdf = P.meses_confirmados(conn)
+        _padrao = _conf_pdf[-1] if _conf_pdf else _m_pdf[-1]
+        mes_pdf = st.selectbox("Mês do relatório", _m_pdf, index=_m_pdf.index(_padrao), key="pn2_mes_pdf")
+        if st.button("Gerar o PDF", type="primary", key="pn2_btn_pdf"):
+            import relatorio_painel_pdf as RPP
+            _agora = dt.datetime.now().strftime("%d/%m/%Y %H:%M")
+            with st.spinner("Montando o relatório…"):
+                _ctx_pdf = RPP.montar_ctx(conn, mes_pdf, _agora)
+                st.session_state["pn2_pdf"] = (mes_pdf, RPP.gerar_pdf_painel(_ctx_pdf, gerado_em=_agora), _ctx_pdf["dre"]["origem"])
+            P.registrar_log(conn, "RELATORIO_PAINEL_PDF", "INFO", usuario, mes_pdf, {"origem_dre": _ctx_pdf["dre"]["origem"], "rascunho": True})
+        _pdf = st.session_state.get("pn2_pdf")
+        if _pdf and _pdf[0] == mes_pdf:
+            st.success(f"Relatório de {_pdf[0][5:]}/{_pdf[0][:4]} pronto. DRE: {_pdf[2]}.")
+            st.download_button("Baixar o PDF (rascunho)", _pdf[1], file_name=f"painel_enermais_{_pdf[0]}_rascunho.pdf", mime="application/pdf", key="pn2_dl_pdf")

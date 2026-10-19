@@ -187,7 +187,7 @@ def test_tela_com_dados_mostra_despesas(conn):
     with patch("conexao.get_conn", return_value=conn):
         at = _tela(conn).run()
         assert not at.exception, at.exception
-        assert len(at.tabs) == 9
+        assert len(at.tabs) == 10
         assert at.selectbox(key="pn2_mes_desp").value == "2026-09"
         valores = [m.value for m in at.metric]
         assert any("1.000,00" in v for v in valores)
@@ -890,3 +890,26 @@ def test_tela_importacoes_sem_sql_19_avisa_e_nao_quebra(conn):
     finally:
         with conn.cursor() as cur:
             cur.execute("ALTER TABLE gdf.pnl_edicao_off RENAME TO pnl_edicao")
+
+
+def test_relatorio_pdf_do_painel_rascunho(conn):
+    """O PDF do painel sai com DRE confirmado, avisa o que falta (obras/adm/pessoas) e o botao da ultima aba entrega o arquivo."""
+    import hashlib
+    import relatorio_painel_pdf as RPP
+    _ingerir(conn, lado="P", tipo="I")
+    _ingerir(conn, regs=income(), lado="R", tipo="I")
+    b, dre = _pdf_lido()
+    P.gravar_dre(conn, dre, "dre.pdf", hashlib.sha256(b).hexdigest(), "teste@x")
+    ctx = RPP.montar_ctx(conn, "2026-09", "19/10/2026 10:00")
+    assert ctx["dre"]["origem"].startswith("DRE oficial") and ctx["pessoas"] is None and ctx["obras"] is not None
+    pdf = RPP.gerar_pdf_painel(ctx, gerado_em="19/10/2026 10:00")
+    assert pdf[:5] == b"%PDF-" and pdf.count(b"/Type /Page\n") + pdf.count(b"/Type /Page ") >= 7
+    # mes sem nada: nenhuma pagina estoura, todas viram aviso
+    vazio = RPP.gerar_pdf_painel(RPP.montar_ctx(conn, "2024-01"))
+    assert vazio[:5] == b"%PDF-"
+    with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", side_effect=_uploader_por_chave({})):
+        at = _tela(conn).run()
+        assert not at.exception, at.exception
+        at.button(key="pn2_btn_pdf").click().run()
+        assert not at.exception, at.exception
+        assert any("pronto" in s.value for s in at.success)
