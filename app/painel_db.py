@@ -1282,7 +1282,7 @@ def nomes_obras_extra(conn) -> dict:
     return out
 
 
-# ---------------------------------------------------------------- Importacoes (V2): historico, reverter sem apagar, editar valores (SQL-19)
+# ---------------------------------------------------------------- Importacoes (V2): historico, reverter sem apagar, editar valores (SQL-19; v0.15.0)
 # Cada tipo de importacao grava numa tabela; os campos abaixo sao os que a tela deixa editar (tipo: text, num, int, date). NOT NULL = obrigatorios.
 EDIT_CFG = {
     "FOLHA": {"tabela": "pnl_folha_recibo", "ordem": "empresa, nome, id", "nome": "Recibos da folha",
