@@ -649,3 +649,13 @@ def test_gravar_orcamento_e_resumo_mes_e_acumulado(conn):
     assert [(c["codigo"], c["desvio"]) for c in ac["abaixo"]] == [("2.01.01", -49.5)]
     assert ac["total"]["desvio_pct"] == round(50.5 / 4600.0, 4)
     assert [g["codigo"] for g in ac["grupos"]] == ["2.01", "2.02"]
+
+
+def test_importacao_por_sha_acha_arquivo_salvo(conn):
+    from folha_sintetica import pdf_folha_sintetico
+    import importador_folha as IF
+    assert P.importacao_por_sha(conn, "FOLHA", "d" * 64) is None
+    P.gravar_folha(conn, IF.ler_recibos_pdf(pdf_folha_sintetico()), "r.pdf", "d" * 64, "teste@x")
+    r = P.importacao_por_sha(conn, "FOLHA", "d" * 64)
+    assert r["ativo"] is True and r["mes"] == "2026-09" and r["quem"] == "teste@x" and r["linhas"] == 3
+    assert P.importacao_por_sha(conn, "PROJECAO", "d" * 64) is None                         # tipo diferente nao confunde

@@ -67,3 +67,22 @@ def test_erros_em_portugues():
         IP.ler_projecao_xlsx(buf.getvalue())
     with pytest.raises(IP.ErroProjecao, match="mes da projecao"):
         IP.ler_projecao_xlsx(_xlsx(LINHAS, cab_mes="mes qualquer"))
+
+
+def test_comparacao_usa_nomes_completos_quando_o_dre_so_tem_o_cliente():
+    """No DRE real o nome da obra e' so' 'ELETROBRAS'; a planilha diz 'LOTE 03' / 'OPGW II'. Os nomes completos do de-para fazem o casamento."""
+    import painel_db as P
+    ob = {"linhas": [{"obra": "104", "nome": "ELETROBRAS", "receita": 100.0, "custo": -60.0, "bdi": 40.0},
+                     {"obra": "111", "nome": "ELETROBRAS", "receita": 200.0, "custo": -150.0, "bdi": 50.0},
+                     {"obra": "118", "nome": "ELETROBRAS", "receita": 300.0, "custo": -100.0, "bdi": 200.0}],
+          "total": {"receita": 600.0}}
+    proj = {"linhas": [{"obra": "LOTE 03", "cliente": "AXIA", "valor_mes": 150.0, "custos": 100.0, "bdi": 50.0},
+                       {"obra": "OPGW II", "cliente": "AXIA", "valor_mes": 250.0, "custos": 170.0, "bdi": 80.0}]}
+    sem = P.projecao_x_realizado(proj, ob)
+    assert sem["linhas"] == [] and len(sem["sem_correspondencia"]) == 2                      # so' com o nome do cliente nao casa
+    extra = {"104": "AXIA — Lote 03 ELETROBRAS - SPE NOVA ERA - LOTE 03 - 001/2024", "111": "AXIA — OPGW RJ|SP|ES ELETROBRAS - OPGW II - RJ | SP | ES",
+             "118": "ELETROBRAS - CHESF - OPGW III NORDESTE"}
+    r = P.projecao_x_realizado(proj, ob, extra)
+    por = {x["codigo"]: x for x in r["linhas"]}
+    assert set(por) == {"104", "111"} and r["sem_correspondencia"] == []                      # OPGW II nao casa com OPGW III (118)
+    assert por["104"]["desvio"] == -50.0 and por["111"]["desvio"] == -50.0

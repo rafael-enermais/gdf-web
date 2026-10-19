@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """GDF V2 — Painel EnerMais (EM CONSTRUCAO): sincroniza o Sienge, confere com o CSV e mostra a previa da aba Despesas.
-As demais abas (Resultado, Obras, Administracao, Pessoas) e o PDF entram nas proximas etapas."""
+O PDF do relatorio entra na proxima etapa."""
 import altair as alt
 import pandas as pd
 import datetime as dt
@@ -16,6 +16,18 @@ import painel_db as P
 import sienge_api as S
 from auth import usuario_atual
 from conexao import get_conn, sidebar_rodape
+
+
+def _ja_salvo(conn, tipo: str, conteudo: bytes) -> bool:
+    """Se este arquivo ja esta salvo no banco, mostra o aviso (numero, mes, quem e quando) e devolve True: a tela nao oferece o botao Salvar de novo.
+    Assim, depois de salvar (a pagina recarrega), o usuario continua vendo que gravou."""
+    r = P.importacao_por_sha(conn, tipo, __import__("hashlib").sha256(conteudo).hexdigest())
+    if not r:
+        return False
+    quando = r["quando"].astimezone(dt.timezone(dt.timedelta(hours=-3))).strftime("%d/%m/%Y %H:%M") if r["quando"] else "–"
+    situacao = "em uso" if r["ativo"] else "substituída por uma importação mais nova"
+    st.success(f"✅ Já salvo no banco: importação #{r['id']} (mês {r['mes'][5:]}/{r['mes'][:4]}, {r['linhas']} linhas) por {r['quem'] or '–'} em {quando} · {situacao}.")
+    return True
 
 
 def _grafico_meses(valores: list, meses: list, nome: str, linha: bool = False):
@@ -236,7 +248,7 @@ with aba_res:
                     st.caption("Conferido: a soma das contas fecha com cada linha do DRE e a soma das obras fecha com a coluna Total do PDF.")
                 if mes_pdf and mes_pdf != mes_r:
                     st.info(f"Este PDF é de {mes_pdf}; ao salvar, ele vira o DRE oficial de {mes_pdf} (o mês escolhido acima é {mes_r}).")
-                if st.button(f"Salvar como DRE oficial de {mes_pdf}", type="primary", disabled=not (P.dre_instalado(conn) and mes_pdf), key="pn2_pdf_salvar"):
+                if not _ja_salvo(conn, "DRE", pdf_bytes) and st.button(f"Salvar como DRE oficial de {mes_pdf}", type="primary", disabled=not (P.dre_instalado(conn) and mes_pdf), key="pn2_pdf_salvar"):
                     try:
                         res_g = P.gravar_dre(conn, lido_pdf, pdf_arq.name, __import__("hashlib").sha256(pdf_bytes).hexdigest(), usuario)
                         if res_g["repetido"]:
@@ -500,7 +512,7 @@ with aba_obras:
                                f"BDI previsto {F.moeda_br(lido_p['total']['bdi'])}.")
                     for av in lido_p["avisos"]:
                         st.warning(av)
-                    if st.button(f"Salvar como projeção de {lido_p['mes'][5:]}/{lido_p['mes'][:4]}", type="primary", key=f"pn2_proj_salvar_{sha_p}"):
+                    if not _ja_salvo(conn, "PROJECAO", b_p) and st.button(f"Salvar como projeção de {lido_p['mes'][5:]}/{lido_p['mes'][:4]}", type="primary", key=f"pn2_proj_salvar_{sha_p}"):
                         try:
                             res_p = P.gravar_projecao(conn, lido_p, arq_p.name, __import__("hashlib").sha256(b_p).hexdigest(), usuario)
                             if res_p["repetido"]:
@@ -513,7 +525,7 @@ with aba_obras:
         if _proj is None:
             st.info(f"Ainda não há projeção importada para {mes_o[5:]}/{mes_o[:4]}.")
         else:
-            cmp_ = P.projecao_x_realizado(_proj, ob)
+            cmp_ = P.projecao_x_realizado(_proj, ob, P.nomes_obras_extra(conn))
             _pr = lambda v: (F.pct_br(v) if v is not None else "–")
             p1, p2, p3, p4 = st.columns(4)
             p1.metric("Receita projetada", F.moeda_br(cmp_["receita_proj_total"]), border=True)
@@ -589,7 +601,6 @@ with aba_adm:
             if len(evo) > 1:
                 st.markdown("**Evolução mensal (pago nas unidades ADM)**")
                 _grafico_meses([e["valor"] for e in evo], [e["mes"] for e in evo], "Pago (R$)")
-        st.info("**Orçado × realizado** (orçamento ADM do Sienge) entra quando o relatório *Orçamento ADM* (PDF) for importado — o leitor desse arquivo é a próxima etapa desta aba.")
     with st.expander("De-para de credores: quem fica em “Outros credores/Dir” (fora do ranking)"):
         if not P.credor_grupo_instalado(conn):
             st.warning("Falta executar o **SQL-11** (`sql/v2_credor_grupo.sql`) no Supabase para poder agrupar credores. Até lá o ranking mostra todos.")
@@ -644,7 +655,7 @@ with aba_adm:
                     st.warning(av)
                 if not lido_o["avisos"]:
                     st.caption("Conferido: cada total fecha com a soma das contas e o saldo fecha com realizado − orçado.")
-                if st.button("Salvar como Orçamento ADM", type="primary", disabled=not P.orcamento_instalado(conn), key=f"pn2_orc_salvar_{sha_o}"):
+                if not _ja_salvo(conn, "ORCAMENTO", b_o) and st.button("Salvar como Orçamento ADM", type="primary", disabled=not P.orcamento_instalado(conn), key=f"pn2_orc_salvar_{sha_o}"):
                     try:
                         res_o = P.gravar_orcamento(conn, lido_o, arq_o.name, __import__("hashlib").sha256(b_o).hexdigest(), usuario)
                         if res_o["repetido"]:
@@ -711,8 +722,8 @@ with aba_pess:
                 st.warning(av)
             if not lido_f["avisos"]:
                 st.caption("Conferido: em todos os recibos a soma dos eventos fecha com o total de proventos e de descontos do recibo.")
-            if st.button(f"Salvar a folha de {comp_f[5:]}/{comp_f[:4]} ({', '.join(P.EMPRESAS_FOLHA.get(e, e) for e in lido_f['empresas'])})", type="primary",
-                         disabled=not (_folha_ok and comp_f), key=f"pn2_folha_salvar_{sha_f}"):
+            if not _ja_salvo(conn, "FOLHA", b_f) and st.button(f"Salvar a folha de {comp_f[5:]}/{comp_f[:4]} ({', '.join(P.EMPRESAS_FOLHA.get(e, e) for e in lido_f['empresas'])})", type="primary",
+                                                               disabled=not (_folha_ok and comp_f), key=f"pn2_folha_salvar_{sha_f}"):
                 try:
                     res_f = P.gravar_folha(conn, lido_f, arq_f.name, __import__("hashlib").sha256(b_f).hexdigest(), usuario)
                     if res_f["repetido"]:

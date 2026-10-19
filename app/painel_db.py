@@ -1148,12 +1148,14 @@ def projecao_do_mes(conn, mes: str) -> dict | None:
     return {"id": imp[0], "arquivo": imp[1], "quem": imp[2], "quando": imp[3], "linhas": linhas}
 
 
-def projecao_x_realizado(proj: dict, ob: dict) -> dict:
+def projecao_x_realizado(proj: dict, ob: dict, nomes_extra: dict | None = None) -> dict:
     """Compara a projecao do mes com o DRE oficial por obra. `ob` e' o resultado de obras_do_dre (linhas com obra/nome/receita/custo/bdi).
     Devolve {'linhas': [{obra_proj, codigo, nome, receita_proj, receita_real, desvio, desvio_pct, bdi_proj, bdi_real, desvio_bdi}], 'sem_correspondencia': [...],
     'total': {...}}. Obras do DRE sem projecao nao entram na tabela, mas a receita delas aparece em 'receita_sem_projecao'."""
     from importador_projecao import casar_obra_dre, projecao_por_obra
-    nomes = {l["obra"]: l["nome"] for l in ob["linhas"] if l["obra"] != "DEM"}
+    # O nome da obra no PDF do DRE e' so' o cliente ('ELETROBRAS'); a projecao usa 'LOTE 03', 'OPGW II'... Por isso o casamento tambem olha os nomes
+    # completos cadastrados para o codigo (de-para de centros de custo e de departamentos da folha), passados em nomes_extra {codigo: "nome1 nome2"}.
+    nomes = {l["obra"]: f'{l["nome"]} {(nomes_extra or {}).get(l["obra"], "")}'.strip() for l in ob["linhas"] if l["obra"] != "DEM"}
     por_cod = {l["obra"]: l for l in ob["linhas"]}
     linhas, sem, usados = [], [], set()
     for o in projecao_por_obra([{"obra": l["obra"], "cliente": l["cliente"], "valor_mes": l["valor_mes"], "custos": l["custos"], "bdi": l["bdi"]} for l in proj["linhas"]]):
@@ -1245,3 +1247,36 @@ def orcamento_resumo(conn, importacao_id: int, mes: str, acumulado: bool = False
     contas = [r for r in regs if r["tipo"] in ("R", "M") and (abs(r["orcado"]) > 0.005 or abs(r["realizado"]) > 0.005)]
     return {"total": total, "grupos": grupos, "acima": sorted((r for r in contas if r["desvio"] > 0.005), key=lambda r: -r["desvio"])[:top],
             "abaixo": sorted((r for r in contas if r["desvio"] < -0.005), key=lambda r: r["desvio"])[:top]}
+
+
+def importacao_por_sha(conn, tipo: str, sha256: str) -> dict | None:
+    """Esse arquivo (pelo SHA-256 completo) ja foi salvo? Devolve {id, ativo, mes, quando, quem, linhas} ou None. So leitura; nunca levanta erro."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, ativo, mes, importado_em, importado_por, n_linhas FROM pnl_importacao WHERE tipo=%s AND arquivo_sha256=%s", (tipo, sha256))
+            r = cur.fetchone()
+    except Exception:
+        return None
+    if not r:
+        return None
+    return {"id": r[0], "ativo": r[1], "mes": r[2].strftime("%Y-%m"), "quando": r[3], "quem": r[4], "linhas": r[5]}
+
+
+def nomes_obras_extra(conn) -> dict:
+    """{codigo_obra: 'nome completo 1 nome completo 2 ...'} juntando os nomes do de-para de centros de custo e do de-para de departamentos da folha.
+    Serve para casar o nome curto da projecao ('LOTE 03') com a obra do DRE. So leitura; sem as tabelas devolve {}."""
+    out: dict = {}
+    for sql in ("SELECT codigo_obra, obra_nome FROM pnl_centro_grupo WHERE codigo_obra IS NOT NULL AND obra_nome IS NOT NULL",
+                "SELECT codigo_obra, obra_nome FROM pnl_folha_depto_obra WHERE obra_nome IS NOT NULL"):
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                for cod, nome in cur.fetchall():
+                    if nome and nome not in out.get(cod, ""):
+                        out[cod] = f"{out.get(cod, '')} {nome}".strip()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+    return out
