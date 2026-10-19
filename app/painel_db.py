@@ -1268,6 +1268,23 @@ def orcamento_resumo(conn, importacao_id: int, mes: str, acumulado: bool = False
             "abaixo": sorted((r for r in contas if r["desvio"] < -0.005), key=lambda r: r["desvio"])[:top]}
 
 
+def orcamento_serie_mensal(conn, importacao_id: int) -> list:
+    """Serie mes a mes do total de despesas (codigo 2): orcado, realizado, desvio (realizado - orcado), desvio % e desvio acumulado no periodo.
+    Devolve [{'mes':'AAAA-MM','orcado','realizado','desvio','desvio_pct','desvio_acum'}] em ordem de mes."""
+    with conn.cursor() as cur:
+        cur.execute("""SELECT to_char(mes,'YYYY-MM'), sum(orcado), sum(realizado) FROM pnl_orcamento_linha
+                       WHERE importacao_id=%s AND codigo='2' GROUP BY mes ORDER BY mes""", (importacao_id,))
+        linhas = cur.fetchall()
+    saida, acum = [], 0.0
+    for mes, orc, real in linhas:
+        orc, real = round(float(orc or 0), 2), round(float(real or 0), 2)
+        desvio = round(real - orc, 2)
+        acum = round(acum + desvio, 2)
+        saida.append({"mes": mes, "orcado": orc, "realizado": real, "desvio": desvio,
+                      "desvio_pct": round(desvio / orc, 4) if abs(orc) > 0.005 else None, "desvio_acum": acum})
+    return saida
+
+
 def importacao_por_sha(conn, tipo: str, sha256: str) -> dict | None:
     """Esse arquivo (pelo SHA-256 completo) ja foi salvo? Devolve {id, ativo, mes, quando, quem, linhas} ou None. So leitura; nunca levanta erro."""
     try:

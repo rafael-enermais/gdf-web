@@ -691,6 +691,11 @@ def test_gravar_orcamento_e_resumo_mes_e_acumulado(conn):
     assert [(c["codigo"], c["desvio"]) for c in ac["abaixo"]] == [("2.01.01", -49.5)]
     assert ac["total"]["desvio_pct"] == round(50.5 / 4600.0, 4)
     assert [g["codigo"] for g in ac["grupos"]] == ["2.01", "2.02"]
+    serie = P.orcamento_serie_mensal(conn, ativo["id"])                                      # desvio mes a mes + acumulado
+    assert [x["mes"] for x in serie] == ativo["meses"] and len(serie) == 6
+    assert (serie[0]["orcado"], serie[0]["realizado"], serie[0]["desvio"], serie[0]["desvio_acum"]) == (1500.0, 1550.5, 50.5, 50.5)
+    assert serie[2]["desvio_acum"] == 50.5 and round(sum(x["desvio"] for x in serie), 2) == serie[-1]["desvio_acum"]
+    assert serie[0]["desvio_pct"] == round(50.5 / 1500.0, 4)
 
 
 def test_importacao_por_sha_acha_arquivo_salvo(conn):

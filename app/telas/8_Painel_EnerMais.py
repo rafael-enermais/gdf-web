@@ -555,6 +555,13 @@ with aba_adm:
         cb_.markdown("**Contas que mais sobraram do orçado**")
         cb_.dataframe(pd.DataFrame([{"Conta": f"{c['codigo']} · {c['conta']}", "Orçado": F.moeda_br(c["orcado"]), "Realizado": F.moeda_br(c["realizado"]), "Desvio": F.moeda_br(c["desvio"])} for c in res_orc["abaixo"]]),
                       hide_index=True, width="stretch")
+        serie_o = P.orcamento_serie_mensal(conn, _orc["id"])
+        if len(serie_o) > 1:
+            st.markdown("**Desvio mês a mês (todos os meses do arquivo)**")
+            st.dataframe(pd.DataFrame([{"Mês": f"{x['mes'][5:]}/{x['mes'][:4]}", "Orçado": F.moeda_br(x["orcado"]), "Realizado": F.moeda_br(x["realizado"]),
+                                        "Desvio": F.moeda_br(x["desvio"]), "Desvio %": _prc(x["desvio_pct"]), "Desvio acumulado": F.moeda_br(x["desvio_acum"])} for x in serie_o]),
+                         hide_index=True, width="stretch")
+            _grafico_meses([x["desvio"] for x in serie_o], [x["mes"] for x in serie_o], "Desvio do mês (R$)")
         st.caption(f"Fonte: PDF “{_orc['arquivo']}” (importação #{_orc['id']}), valores do Realizado do próprio Sienge (seleção do relatório). Só despesas (contas 2.*); desvio positivo = gastou mais que o orçado.")
 
 with aba_pess:
