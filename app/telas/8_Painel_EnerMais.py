@@ -253,12 +253,14 @@ with aba_res:
             b1.button("Usar PDF em todas", key=f"pn2_todos_pdf_{mes_r}", on_click=_todos, args=("PDF",))
         if "API" in _fontes:
             b2.button("Usar API em todas", key=f"pn2_todos_api_{mes_r}", on_click=_todos, args=("API",))
-        cab = st.columns([3, 2, 2, 2, 2])
-        for c_, t_ in zip(cab, ["Linha do DRE", "API", "PDF", "Diferença", "Fonte adotada"]):
+        st.caption("Se a leitura do PDF falhar (ou você quiser corrigir um valor), escolha **MANUAL** na linha e digite o valor. Só vale para o resultado gerado aqui; "
+                   "os dados que vêm da API não são editados. Todo ajuste manual exige uma observação e fica registrado (quem, quando, valor da API e do PDF).")
+        cab = st.columns([3, 2, 2, 2, 2, 2])
+        for c_, t_ in zip(cab, ["Linha do DRE", "API", "PDF", "Diferença", "Fonte adotada", "Valor manual"]):
             c_.markdown(f"**{t_}**")
-        escolha = {}
+        escolha, manuais = {}, {}
         for k_, n_ in _folhas:
-            cols = st.columns([3, 2, 2, 2, 2])
+            cols = st.columns([3, 2, 2, 2, 2, 2])
             cols[0].write(f"{k_} · {n_}")
             va, vp = (_api_f or {}).get(k_), (_pdf_f or {}).get(k_)
             cols[1].write(F.moeda_br(va) if va is not None else "–")
@@ -269,9 +271,13 @@ with aba_res:
             else:
                 cols[3].write("–")
             salvo = ((conf or {}).get("fontes") or {}).get(k_)
-            ini_ = salvo if salvo in _fontes else _padrao
-            escolha[k_] = cols[4].selectbox("Fonte", list(_fontes), index=list(_fontes).index(ini_), key=f"pn2_fonte_{mes_r}_{k_}", label_visibility="collapsed")
-        adotado = {k_: _fontes[escolha[k_]].get(k_, 0.0) for k_, _ in _folhas}
+            _opcoes = list(_fontes) + ["MANUAL"]
+            ini_ = salvo if salvo in _opcoes else _padrao
+            escolha[k_] = cols[4].selectbox("Fonte", _opcoes, index=_opcoes.index(ini_), key=f"pn2_fonte_{mes_r}_{k_}", label_visibility="collapsed")
+            _ini_man = float(((conf or {}).get("valores") or {}).get(k_, 0.0)) if salvo == "MANUAL" else float(va if va is not None else (vp or 0.0))
+            manuais[k_] = cols[5].number_input("Valor manual", value=_ini_man, step=0.01, format="%.2f", key=f"pn2_manual_{mes_r}_{k_}",
+                                               disabled=(escolha[k_] != "MANUAL"), label_visibility="collapsed")
+        adotado = P.valores_adotados(_fontes, escolha, manuais)
         final = P.dre_de_folhas(adotado)
         fv = final["valores"]
         m1, m2, m3, m4 = st.columns(4)
@@ -284,7 +290,7 @@ with aba_res:
         obs = st.text_input("Observação (opcional): por que escolheu essas fontes", key=f"pn2_conf_obs_{mes_r}")
         if st.button(f"Confirmar o DRE de {mes_r}", type="primary", disabled=not P.confirmacao_instalada(conn), key=f"pn2_confirmar_{mes_r}"):
             try:
-                resumo = {"lucro_liquido_adotado": fv["14"], "lucro_liquido_api": (P.dre_de_folhas({k_: _api_f.get(k_, 0.0) for k_, _ in _folhas})["valores"]["14"] if _api_f else None),
+                resumo = {"manuais": P.resumo_manuais(escolha, adotado, _fontes), "lucro_liquido_adotado": fv["14"], "lucro_liquido_api": (P.dre_de_folhas({k_: _api_f.get(k_, 0.0) for k_, _ in _folhas})["valores"]["14"] if _api_f else None),
                           "lucro_liquido_pdf": (_pdf_f or {}).get("14")}
                 res_c = P.gravar_confirmacao(conn, mes_r, escolha, adotado, usuario, obs, resumo, imp["id"] if imp else None)
                 st.session_state["pn2_conf_ok"] = f"DRE de {mes_r} confirmado (confirmação #{res_c['id']})." + (f" Substituiu a #{res_c['substituiu']}." if res_c["substituiu"] else "")
@@ -520,29 +526,7 @@ with aba_adm:
             if len(evo) > 1:
                 st.markdown("**Evolução mensal (pago nas unidades ADM)**")
                 _grafico_meses([e["valor"] for e in evo], [e["mes"] for e in evo], "Pago (R$)")
-    with st.expander("De-para de credores: quem fica em “Outros credores/Dir” (fora do ranking)"):
-        if not P.credor_grupo_instalado(conn):
-            st.warning("Falta executar o **SQL-11** (`sql/v2_credor_grupo.sql`) no Supabase para poder agrupar credores. Até lá o ranking mostra todos.")
-        else:
-            st.caption("O credor entra no grupo se o nome dele **começa com** o texto cadastrado (sem diferenciar acento ou maiúscula). Nada é apagado: remover só desativa.")
-            atuais = P.credor_grupo_ativos(conn)
-            if atuais:
-                st.dataframe(pd.DataFrame([{"Cadastrado como": c["nome"], "Por": c["quem"] or "", "Quando": c["quando"].strftime("%d/%m/%Y")} for c in atuais]), hide_index=True, width="stretch")
-            else:
-                st.info("Nenhum credor cadastrado ainda neste grupo.")
-            n1, n2 = st.columns([3, 1])
-            novo_nome = n1.text_input("Adicionar credor ao grupo (nome ou começo do nome)", key="pn2_cg_nome")
-            if n2.button("Adicionar", key="pn2_cg_add", disabled=not novo_nome.strip()):
-                r_add = P.credor_grupo_adicionar(conn, novo_nome, usuario)
-                st.success("Credor adicionado ao grupo.") if r_add["ok"] else st.error(r_add["erro"])
-                if r_add["ok"]:
-                    st.rerun()
-            if atuais:
-                r1, r2 = st.columns([3, 1])
-                rem = r1.selectbox("Tirar do grupo", [c["id"] for c in atuais], format_func=lambda i: next(c["nome"] for c in atuais if c["id"] == i), key="pn2_cg_rem")
-                if r2.button("Tirar", key="pn2_cg_btn_rem"):
-                    P.credor_grupo_remover(conn, rem, usuario)
-                    st.rerun()
+    st.caption("Para mudar quem fica em “Outros credores/Dir”, use o cadastro de credores na aba **Importações (V2)**.")
 
     # ---- Orcamento ADM (orcado x realizado), PDF do Sienge
     st.divider()

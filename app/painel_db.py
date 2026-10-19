@@ -747,12 +747,31 @@ def meses_confirmados(conn) -> list:
         return []
 
 
+def valores_adotados(fontes_disp: dict, escolha: dict, manuais: dict | None = None) -> dict:
+    """Valor adotado por linha: da fonte escolhida (API/PDF) ou, se a escolha for 'MANUAL', o numero digitado na tela."""
+    manuais = manuais or {}
+    saida = {}
+    for k, f in escolha.items():
+        if f == "MANUAL":
+            saida[k] = round(float(manuais.get(k, 0.0)), 2)
+        else:
+            saida[k] = float(fontes_disp[f].get(k, 0.0))
+    return saida
+
+
+def resumo_manuais(escolha: dict, adotado: dict, fontes_disp: dict) -> dict:
+    """Para cada linha ajustada a mao: o valor digitado e o que a API e o PDF diziam (auditoria do ajuste)."""
+    return {k: {"manual": round(float(adotado[k]), 2), **{f: fontes_disp[f].get(k) for f in fontes_disp}} for k, f in escolha.items() if f == "MANUAL"}
+
+
 def gravar_confirmacao(conn, mes: str, fontes: dict, valores: dict, usuario: str | None, observacao: str | None = None,
                        resumo: dict | None = None, dre_importacao_id: int | None = None) -> dict:
     """Grava o DRE confirmado do mes: para cada linha 'folha' guarda a FONTE escolhida (API/PDF) e o valor adotado. A confirmacao anterior do mes
     fica ativo=false (historico). Devolve {'id', 'mes', 'substituiu': id_anterior|None}."""
     if set(fontes) != set(valores):
         raise ValueError("Fontes e valores precisam cobrir as mesmas linhas.")
+    if any(f == "MANUAL" for f in fontes.values()) and not (observacao or "").strip():
+        raise ValueError("Ajuste manual exige uma observação explicando o motivo.")
     with db.transacao(conn):
         with conn.cursor() as cur:
             cur.execute("UPDATE pnl_dre_confirmacao SET ativo=false WHERE mes=%s::date AND ativo RETURNING id", (f"{mes}-01",))
@@ -1282,7 +1301,7 @@ def nomes_obras_extra(conn) -> dict:
     return out
 
 
-# ---------------------------------------------------------------- Importacoes (V2): historico, reverter sem apagar, editar valores (SQL-19; v0.15.0)
+# ---------------------------------------------------------------- Importacoes (V2): historico, reverter sem apagar, editar valores (SQL-19)
 # Cada tipo de importacao grava numa tabela; os campos abaixo sao os que a tela deixa editar (tipo: text, num, int, date). NOT NULL = obrigatorios.
 EDIT_CFG = {
     "FOLHA": {"tabela": "pnl_folha_recibo", "ordem": "empresa, nome, id", "nome": "Recibos da folha",

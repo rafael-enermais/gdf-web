@@ -363,7 +363,7 @@ def _editor(conn, usuario):
 def _cadastros(conn, usuario):
     st.markdown("**Cadastro: departamento da folha → obra**")
     st.caption("Diz de qual obra é cada departamento dos recibos (ex.: 001.021 da Construtora). Pode corrigir ou acrescentar; nada é apagado. "
-               "O de-para de credores continua na aba Administração.")
+               "O de-para de credores está logo abaixo.")
     if not P.edicao_instalada(conn):
         st.warning("Falta executar o **SQL-19** (`sql/v2_edicao.sql`) no Supabase para poder editar o cadastro.")
         return
@@ -385,6 +385,34 @@ def _cadastros(conn, usuario):
             st.rerun()
         except Exception as exc:
             st.error(f"Não consegui salvar: {exc}")
+
+
+def _cadastro_credores(conn, usuario):
+    """De-para de credores: quem fica em 'Outros credores/Dir' (fora do ranking da Administracao). Antes ficava na aba Administracao."""
+    st.markdown("**Cadastro: credores em “Outros credores/Dir” (fora do ranking da Administração)**")
+    if not P.credor_grupo_instalado(conn):
+        st.warning("Falta executar o **SQL-11** (`sql/v2_credor_grupo.sql`) no Supabase para poder agrupar credores. Até lá o ranking mostra todos.")
+        return
+    st.caption("O credor entra no grupo se o nome dele **começa com** o texto cadastrado (sem diferenciar acento ou maiúscula). Nada é apagado: remover só desativa.")
+    atuais = P.credor_grupo_ativos(conn)
+    if atuais:
+        st.dataframe(pd.DataFrame([{"Cadastrado como": c["nome"], "Por": c["quem"] or "", "Quando": c["quando"].strftime("%d/%m/%Y")} for c in atuais]), hide_index=True, width="stretch")
+    else:
+        st.info("Nenhum credor cadastrado ainda neste grupo.")
+    n1, n2 = st.columns([3, 1])
+    novo_nome = n1.text_input("Adicionar credor ao grupo (nome ou começo do nome)", key="pn2_cg_nome")
+    if n2.button("Adicionar", key="pn2_cg_add", disabled=not novo_nome.strip()):
+        r_add = P.credor_grupo_adicionar(conn, novo_nome, usuario)
+        if r_add["ok"]:
+            st.rerun()
+        else:
+            st.error(r_add["erro"])
+    if atuais:
+        r1, r2 = st.columns([3, 1])
+        rem = r1.selectbox("Tirar do grupo", [c["id"] for c in atuais], format_func=lambda i: next(c["nome"] for c in atuais if c["id"] == i), key="pn2_cg_rem")
+        if r2.button("Tirar", key="pn2_cg_btn_rem"):
+            P.credor_grupo_remover(conn, rem, usuario)
+            st.rerun()
 
 
 def _log_edicoes(conn):
@@ -419,5 +447,7 @@ def render(conn, usuario):
     _editor(conn, usuario)
     st.divider()
     _cadastros(conn, usuario)
+    st.divider()
+    _cadastro_credores(conn, usuario)
     st.divider()
     _log_edicoes(conn)

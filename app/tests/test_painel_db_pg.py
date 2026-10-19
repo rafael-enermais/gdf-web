@@ -468,6 +468,48 @@ def test_tela_resultado_confirma_dre_escolhendo_fonte_por_linha(conn):
     assert c["resumo"]["lucro_liquido_pdf"] is not None
 
 
+def test_valores_adotados_e_resumo_manuais():
+    fd = {"API": {"01.01": 2000.0, "04.01": -300.0}, "PDF": {"01.01": 1000.0, "04.01": -600.0}}
+    esc = {"01.01": "MANUAL", "04.01": "PDF"}
+    ad = P.valores_adotados(fd, esc, {"01.01": 1234.567, "04.01": 9.0})
+    assert ad == {"01.01": 1234.57, "04.01": -600.0}                       # manual so' vale na linha MANUAL
+    assert P.resumo_manuais(esc, ad, fd) == {"01.01": {"manual": 1234.57, "API": 2000.0, "PDF": 1000.0}}
+
+
+def test_confirmacao_manual_exige_observacao_e_fica_registrada(conn):
+    f, v = {"01.01": "MANUAL", "04.01": "API"}, {"01.01": 1500.0, "04.01": -300.0}
+    with pytest.raises(ValueError):
+        P.gravar_confirmacao(conn, "2026-09", f, v, "teste@x", "  ")
+    assert P.confirmacao_ativa(conn, "2026-09") is None                     # nada gravado
+    P.gravar_confirmacao(conn, "2026-09", f, v, "teste@x", "PDF leu errado a receita", {"manuais": {"01.01": {"manual": 1500.0}}})
+    c = P.confirmacao_ativa(conn, "2026-09")
+    assert c["fontes"]["01.01"] == "MANUAL" and c["valores"]["01.01"] == 1500.0 and c["resumo"]["manuais"]["01.01"]["manual"] == 1500.0
+
+
+def test_tela_resultado_ajuste_manual_de_uma_linha(conn):
+    import hashlib
+    _ingerir(conn, lado="P", tipo="I")
+    _ingerir(conn, regs=income(), lado="R", tipo="I")
+    b, dre = _pdf_lido()
+    P.gravar_dre(conn, dre, "dre.pdf", hashlib.sha256(b).hexdigest(), "teste@x")
+    with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", side_effect=_uploader_por_chave({})):
+        at = _tela(conn).run()
+        assert not at.exception, at.exception
+        assert at.number_input(key="pn2_manual_2026-09_01.01").disabled                 # so' edita com MANUAL
+        at.selectbox(key="pn2_fonte_2026-09_01.01").select("MANUAL").run()
+        assert not at.number_input(key="pn2_manual_2026-09_01.01").disabled
+        at.number_input(key="pn2_manual_2026-09_01.01").set_value(1777.77).run()
+        at.button(key="pn2_confirmar_2026-09").click().run()                            # sem observacao: recusa
+        assert any("observação" in e.value for e in at.error)
+        assert P.confirmacao_ativa(conn, "2026-09") is None
+        at.text_input(key="pn2_conf_obs_2026-09").input("corrigido a mao").run()
+        at.button(key="pn2_confirmar_2026-09").click().run()
+        assert not at.exception, at.exception
+    c = P.confirmacao_ativa(conn, "2026-09")
+    assert c["fontes"]["01.01"] == "MANUAL" and c["valores"]["01.01"] == 1777.77 and c["fontes"]["04.01"] == "PDF"
+    assert c["resumo"]["manuais"]["01.01"]["manual"] == 1777.77
+
+
 def test_resultado_traz_imposto_do_titulo_no_dre_02_02(conn):
     """taxAmount do titulo de receita = impostos da NF (DRE 02.02); mesmos filtros da receita (previsao e distrato)."""
     regs = [{**income()[0], "billId": 50, "taxAmount": 150.0},
@@ -795,6 +837,18 @@ def test_tela_importacoes_mostra_situacao_historico_e_reverte(conn):
         assert not at.exception, at.exception
         assert P.importacoes_lista(conn)[0]["ativo"] is True and P.folha_meses(conn) == ["2026-09"]
         assert {e["acao"] for e in P.edicoes_lista(conn)} == {"DESATIVOU", "REATIVOU"}
+
+
+def test_tela_importacoes_cadastro_de_credores_adiciona_e_tira(conn):
+    with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", side_effect=_uploader_por_chave({})):
+        at = _tela(conn).run()
+        assert not at.exception, at.exception
+        at.text_input(key="pn2_cg_nome").input("Fulano de Tal").run()
+        at.button(key="pn2_cg_add").click().run()
+        assert not at.exception, at.exception
+        assert [c["chave"] for c in P.credor_grupo_ativos(conn)] == ["FULANO DE TAL"]
+        at.button(key="pn2_cg_btn_rem").click().run()
+        assert P.credor_grupo_ativos(conn) == []
 
 
 def test_tela_importacoes_sem_sql_19_avisa_e_nao_quebra(conn):

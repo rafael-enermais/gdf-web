@@ -201,7 +201,7 @@ def test_tela_administracao_sem_sql_11_avisa_e_nao_quebra(conn):
     with patch("conexao.get_conn", return_value=conn), patch("painel_db.credor_grupo_instalado", return_value=False):
         at = _tela(conn).run()
     assert not at.exception, at.exception
-    assert any("SQL-11" in w.value for w in at.tabs[5].warning)
+    assert any("SQL-11" in w.value for w in at.tabs[1].warning)   # o cadastro de credores mudou para a aba Importações (V2)
 
 
 @pytest.mark.pg
