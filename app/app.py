@@ -11,10 +11,11 @@ from auth import require_login
 import acesso
 import db
 import situacao
-from conexao import NOME_APP, empresa_atual, get_conn, mostrar_flash, sidebar_rodape
+from conexao import NOME_APP, empresa_atual, get_conn, logo_marca, mostrar_flash, sidebar_rodape
 
 st.set_page_config(page_title="GDF — EnerMais", page_icon="📑", layout="wide")
 
+logo_marca()                          # logo da EnerMais (tambem na tela de login)
 usuario_logado = require_login()      # st.stop() aqui se nao autenticado
 
 

@@ -8,7 +8,7 @@ import psycopg2
 import psycopg2.extensions
 import streamlit as st
 
-APP_VERSION = "0.21.4"        # 0.MAJOR.MINOR ate' o lancamento oficial (mesma regra do EGC)
+APP_VERSION = "0.22.0"        # 0.MAJOR.MINOR ate' o lancamento oficial (mesma regra do EGC)
 NOME_APP = "GDF — Gestão de Demonstrativo Financeiro"
 CONTATO = "rafael.nakahara@enermais.com.br"       # mesmo contato do rodape do EGC/RADAR
 
@@ -114,6 +114,14 @@ def mostrar_flash() -> None:
         {"ok": st.success, "warn": st.warning, "erro": st.error}.get(nivel, st.info)(texto)
 
 
+def logo_marca() -> None:
+    """Logo da EnerMais no topo do app (st.logo: aparece no menu lateral e tambem na tela de login, que nao tem menu)."""
+    from pathlib import Path
+    arq = Path(__file__).parent / "assets_relatorio" / "logo_enermais_app.png"
+    if arq.exists():
+        st.logo(str(arq), size="large")
+
+
 def sidebar_rodape() -> None:
     """Rodape fixo no fundo da coluna cinza (sidebar): nome do app + versao + contato. Mesmo padrao do EGC: a sidebar tem uma cadeia de
     containers que precisam virar flex column para o 'margin-top: auto' empurrar o ultimo elemento (este) para baixo; 'sticky' segura o
@@ -128,11 +136,11 @@ def sidebar_rodape() -> None:
         [data-testid="stSidebarUserContent"] > div {{ display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }}
         [data-testid="stSidebarUserContent"] [data-testid="stVerticalBlock"] {{ flex: 1 1 auto; min-height: 0; }}
         [data-testid="stSidebarUserContent"] [data-testid="stElementContainer"]:last-child {{
-            margin-top: auto; position: sticky; bottom: 0; background: rgb(38, 39, 48); z-index: 999; padding-bottom: 0.8rem;
+            margin-top: auto; position: sticky; bottom: 0; background: #F3F5F9; z-index: 999; padding-bottom: 0.8rem;
         }}
         </style>
-        <div style="margin-top:2rem;padding-top:0.6rem;border-top:1px solid rgba(245,246,250,0.15);
-                    font-size:0.7rem;color:rgba(245,246,250,0.5);line-height:1.4;">
+        <div style="margin-top:2rem;padding-top:0.6rem;border-top:1px solid rgba(23,28,96,0.18);
+                    font-size:0.7rem;color:rgba(23,28,96,0.65);line-height:1.4;">
             {NOME_APP} · v{APP_VERSION}{linha_contato}
         </div>
         """,

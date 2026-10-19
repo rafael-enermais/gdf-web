@@ -1,5 +1,9 @@
-# Tema FIXO ESCURO (mesmo do EGC: todo mundo ve igual, independente da preferencia do sistema/navegador).
-# NAO usar [theme] com so' primaryColor (fixa o CLARO).
+# Tema FIXO CLARO (fundo branco) com as cores oficiais da marca EnerMais: azul #171C60 e laranja #F99D20.
+# Fixo para que todo mundo veja igual, independente da preferencia do sistema/navegador.
 [theme]
-base = "dark"
-primaryColor = "#EA9527"
+base = "light"
+primaryColor = "#171C60"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F3F5F9"
+textColor = "#1B1F3B"
+linkColor = "#171C60"

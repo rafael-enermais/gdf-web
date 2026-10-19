@@ -82,6 +82,7 @@ def _data_fim_mes(chave: str) -> str:
     return f"{calendar.monthrange(a, m)[1]:02d}/{m:02d}/{a}"
 
 
+COR_NEG_TELA = "#C26A00"      # laranja escuro dos negativos na TELA (o laranja claro do PDF nao tem contraste no fundo branco)
 ND = "n/d"          # coluna que não pôde ser calculada (faltam balancetes): sempre explicado em "O que falta"
 
 
@@ -173,6 +174,6 @@ def estilizar(df: pd.DataFrame, estilos: list):
         i = row.name
         base = "font-weight:700;" if estilos[i] in ("total", "secao") else ""
         if estilos[i] == "secao":
-            base += "background-color:rgba(100,110,160,0.18);"
-        return [base + (f"color:{F.COR_NEG};" if isinstance(v, str) and v.startswith(F.MENOS) else "") for v in row]
+            base += "background-color:rgba(23,28,96,0.08);"
+        return [base + (f"color:{COR_NEG_TELA};" if isinstance(v, str) and v.startswith(F.MENOS) else "") for v in row]
     return df.style.apply(linha, axis=1)
