@@ -10,6 +10,8 @@ import streamlit as st
 import formatacao as F
 import importador_dre
 import importador_folha
+import importador_orcamento
+import importador_projecao
 import painel_db as P
 import sienge_api as S
 from auth import usuario_atual
@@ -473,6 +475,63 @@ with aba_obras:
             c_p.success("Nenhuma obra com BDI negativo neste mês.")
         st.caption(f"Fonte: DRE oficial importado do arquivo “{ob['arquivo']}” (importação #{ob['importacao_id']}).")
 
+        # ---- projecao de receitas (xlsx) x realizado
+        st.divider()
+        st.markdown("**Projeção de receitas × realizado**")
+        _proj = P.projecao_do_mes(conn, mes_o)
+        with st.expander("Importar a planilha de projeção de receitas (xlsx)", expanded=_proj is None):
+            st.caption("Planilha 'Projeções-Receitas-Obras' (colunas CONTRATO, CLIENTE, OBRA, ..., mês da projeção, CUSTOS, BDI). O mês vem do cabeçalho da coluna (ex.: set/26). O app só lê os valores.")
+            arq_p = st.file_uploader("Planilha de projeção (xlsx)", type=["xlsx"], key="pn2_xlsx_proj")
+            if arq_p is not None and str(getattr(arq_p, "name", "")).lower().endswith(".xlsx"):
+                b_p = arq_p.getvalue()
+                sha_p = P.sha256_curto(b_p)
+                ch_p = f"pn2_proj_lida_{sha_p}"
+                if ch_p not in st.session_state:
+                    try:
+                        st.session_state[ch_p] = importador_projecao.ler_projecao_xlsx(b_p)
+                    except importador_projecao.ErroProjecao as exc:
+                        st.session_state[ch_p] = str(exc)
+                        P.registrar_log(conn, "PROJECAO_XLSX_ERRO", "ERRO", usuario, None, {"arquivo": arq_p.name, "sha256": sha_p, "erro": str(exc)[:300]})
+                lido_p = st.session_state[ch_p]
+                if isinstance(lido_p, str):
+                    st.error(lido_p)
+                else:
+                    st.success(f"Planilha lida: projeção de {lido_p['mes'][5:]}/{lido_p['mes'][:4]} · {len(lido_p['linhas'])} linhas · receita prevista {F.moeda_br(lido_p['total']['valor_mes'])} · "
+                               f"BDI previsto {F.moeda_br(lido_p['total']['bdi'])}.")
+                    for av in lido_p["avisos"]:
+                        st.warning(av)
+                    if st.button(f"Salvar como projeção de {lido_p['mes'][5:]}/{lido_p['mes'][:4]}", type="primary", key=f"pn2_proj_salvar_{sha_p}"):
+                        try:
+                            res_p = P.gravar_projecao(conn, lido_p, arq_p.name, __import__("hashlib").sha256(b_p).hexdigest(), usuario)
+                            if res_p["repetido"]:
+                                st.info(f"Esta mesma planilha já foi importada antes (importação #{res_p['id']}, mês {res_p['mes']}).")
+                            else:
+                                st.success(f"Projeção de {res_p['mes']} salva (importação #{res_p['id']}).")
+                                st.rerun()
+                        except Exception as exc:
+                            st.error(f"Não consegui salvar: {exc}")
+        if _proj is None:
+            st.info(f"Ainda não há projeção importada para {mes_o[5:]}/{mes_o[:4]}.")
+        else:
+            cmp_ = P.projecao_x_realizado(_proj, ob)
+            _pr = lambda v: (F.pct_br(v) if v is not None else "–")
+            p1, p2, p3, p4 = st.columns(4)
+            p1.metric("Receita projetada", F.moeda_br(cmp_["receita_proj_total"]), border=True)
+            p2.metric("Receita real (DRE)", F.moeda_br(cmp_["receita_real_total"]), border=True)
+            _dv = cmp_["receita_real_total"] - cmp_["receita_proj_total"]
+            p3.metric("Desvio", F.moeda_br(_dv), delta=F.pct_br(_dv / cmp_["receita_proj_total"]) if abs(cmp_["receita_proj_total"]) > 0.005 else None, border=True)
+            p4.metric("BDI previsto", F.moeda_br(cmp_["total"]["bdi_proj"]), border=True)
+            st.dataframe(pd.DataFrame([{"Obra (projeção)": x["obra_proj"], "Obra (DRE)": f"{x['codigo']} · {x['nome']}", "Receita projetada": F.moeda_br(x["receita_proj"]),
+                                        "Receita real": F.moeda_br(x["receita_real"]), "Desvio": F.moeda_br(x["desvio"]), "Desvio %": _pr(x["desvio_pct"]),
+                                        "BDI previsto": F.moeda_br(x["bdi_proj"]), "BDI real": F.moeda_br(x["bdi_real"]), "Desvio BDI": F.moeda_br(x["desvio_bdi"])} for x in cmp_["linhas"]]),
+                         hide_index=True, width="stretch")
+            if cmp_["sem_correspondencia"]:
+                st.warning("Obras da projeção sem correspondência única no DRE (confira o nome): "
+                           + "; ".join(f"{o['obra']} ({F.moeda_br(o['receita'])})" for o in cmp_["sem_correspondencia"]))
+            if abs(cmp_["receita_sem_projecao"]) > 0.005:
+                st.caption(f"Receita do DRE em obras sem projeção neste mês: {F.moeda_br(cmp_['receita_sem_projecao'])}.")
+            st.caption(f"Projeção do arquivo “{_proj['arquivo']}” (importação #{_proj['id']}). BDI real = receita bruta − custos diretos do DRE; BDI previsto = receita − custos previstos da planilha.")
+
 with aba_adm:
     st.markdown("Despesas **pagas** nas unidades administrativas (centros de custo do grupo **ADM** no de-para), por credor, conta e unidade. "
                 "Mesmas regras da aba Despesas: sem pessoal, encargos e transferências entre empresas, e sem documentos de previsão.")
@@ -554,6 +613,69 @@ with aba_adm:
                 if r2.button("Tirar", key="pn2_cg_btn_rem"):
                     P.credor_grupo_remover(conn, rem, usuario)
                     st.rerun()
+
+    # ---- Orcamento ADM (orcado x realizado), PDF do Sienge
+    st.divider()
+    st.markdown("**Orçamento ADM: orçado × realizado**")
+    _orc = P.orcamento_ativo(conn)
+    with st.expander("Importar o PDF do Orçamento ADM (Comparativo Orçado × Realizado)", expanded=_orc is None):
+        if not P.orcamento_instalado(conn):
+            st.warning("Falta executar o arquivo `sql/v2_orcamento_adm.sql` (SQL-18) no Supabase para o app guardar o orçamento. Você já pode ler o PDF; só não dá para salvar.")
+        st.caption("PDF 'Comparativo Orçado X Realizado Agrupado' do Sienge (agrupamento ORÇAMENTO TOTAL | ADMINISTRATIVO), com os meses lado a lado. Pode ser o acumulado do ano.")
+        arq_o = st.file_uploader("PDF do Orçamento ADM", type=["pdf"], key="pn2_pdf_orc")
+        if arq_o is not None and str(getattr(arq_o, "name", "")).lower().endswith(".pdf"):
+            b_o = arq_o.getvalue()
+            sha_o = P.sha256_curto(b_o)
+            ch_o = f"pn2_orc_lido_{sha_o}"
+            if ch_o not in st.session_state:
+                try:
+                    with st.spinner("Lendo o PDF… (cerca de 5 a 15 segundos)"):
+                        st.session_state[ch_o] = importador_orcamento.ler_orcamento_adm_pdf(b_o)
+                except importador_orcamento.ErroOrcamento as exc:
+                    st.session_state[ch_o] = str(exc)
+                    P.registrar_log(conn, "ORCAMENTO_ADM_ERRO", "ERRO", usuario, None, {"arquivo": arq_o.name, "sha256": sha_o, "erro": str(exc)[:300]})
+            lido_o = st.session_state[ch_o]
+            if isinstance(lido_o, str):
+                st.error(lido_o)
+            else:
+                cab_o = lido_o["cabecalho"]
+                st.success(f"PDF lido: {cab_o['inicio']} a {cab_o['fim']} · {len(lido_o['meses'])} meses · {len({l['codigo'] for l in lido_o['linhas']})} contas.")
+                for av in lido_o["avisos"][:20]:
+                    st.warning(av)
+                if not lido_o["avisos"]:
+                    st.caption("Conferido: cada total fecha com a soma das contas e o saldo fecha com realizado − orçado.")
+                if st.button("Salvar como Orçamento ADM", type="primary", disabled=not P.orcamento_instalado(conn), key=f"pn2_orc_salvar_{sha_o}"):
+                    try:
+                        res_o = P.gravar_orcamento(conn, lido_o, arq_o.name, __import__("hashlib").sha256(b_o).hexdigest(), usuario)
+                        if res_o["repetido"]:
+                            st.info(f"Este mesmo arquivo já foi importado antes (importação #{res_o['id']}).")
+                        else:
+                            st.success(f"Orçamento ADM salvo (importação #{res_o['id']}, {res_o['linhas']} linhas).")
+                            st.rerun()
+                    except Exception as exc:
+                        st.error(f"Não consegui salvar: {exc}")
+    if _orc:
+        oa1, oa2 = st.columns([1, 2])
+        mes_orc = oa1.selectbox("Mês", _orc["meses"], index=len(_orc["meses"]) - 1, key="pn2_mes_orc")
+        acum_orc = oa2.toggle("Acumulado do ano até este mês", value=False, key="pn2_acum_orc")
+        res_orc = P.orcamento_resumo(conn, _orc["id"], mes_orc, acumulado=acum_orc)
+        tot_o = res_orc["total"]
+        _prc = lambda v: (F.pct_br(v) if v is not None else "–")
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("Orçado", F.moeda_br(tot_o["orcado"]), border=True)
+        r2.metric("Realizado", F.moeda_br(tot_o["realizado"]), border=True)
+        r3.metric("Desvio (realizado − orçado)", F.moeda_br(tot_o["desvio"]), border=True)
+        r4.metric("Desvio %", _prc(tot_o["desvio_pct"]), border=True)
+        st.dataframe(pd.DataFrame([{"Código": g["codigo"], "Grupo": g["conta"], "Orçado": F.moeda_br(g["orcado"]), "Realizado": F.moeda_br(g["realizado"]),
+                                    "Desvio": F.moeda_br(g["desvio"]), "Desvio %": _prc(g["desvio_pct"])} for g in res_orc["grupos"]]), hide_index=True, width="stretch")
+        ca_, cb_ = st.columns(2)
+        ca_.markdown("**Contas que mais passaram do orçado**")
+        ca_.dataframe(pd.DataFrame([{"Conta": f"{c['codigo']} · {c['conta']}", "Orçado": F.moeda_br(c["orcado"]), "Realizado": F.moeda_br(c["realizado"]), "Desvio": F.moeda_br(c["desvio"])} for c in res_orc["acima"]]),
+                      hide_index=True, width="stretch")
+        cb_.markdown("**Contas que mais sobraram do orçado**")
+        cb_.dataframe(pd.DataFrame([{"Conta": f"{c['codigo']} · {c['conta']}", "Orçado": F.moeda_br(c["orcado"]), "Realizado": F.moeda_br(c["realizado"]), "Desvio": F.moeda_br(c["desvio"])} for c in res_orc["abaixo"]]),
+                      hide_index=True, width="stretch")
+        st.caption(f"Fonte: PDF “{_orc['arquivo']}” (importação #{_orc['id']}), valores do Realizado do próprio Sienge (seleção do relatório). Só despesas (contas 2.*); desvio positivo = gastou mais que o orçado.")
 
 with aba_pess:
     st.markdown("**Folha de pagamento (CLT)** pelos recibos em PDF e a evolução do **faturamento** mês a mês.")

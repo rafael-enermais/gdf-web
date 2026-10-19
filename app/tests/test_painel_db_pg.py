@@ -592,3 +592,60 @@ def test_folha_sem_de_para_aparece_na_lista_e_colab_por_linha_obras(conn):
     assert P.colab_por_linha_obras(linhas, f) == {"103": 2, "DEM": 1}                     # obra 104 nao tem linha propria: entra em Demais obras
     assert P.colab_por_linha_obras(linhas, None) == {}
     assert P.folha_do_mes(conn, "2025-01") is None
+
+
+# ---------------------------------------------------------------- Projecao de receitas (xlsx) e Orcamento ADM (PDF)
+def _ob_falso():
+    return {"linhas": [{"obra": "103", "nome": "ANASTACIO - LOTE 11 - 001/2024", "receita": 1200.0, "custo": -800.0, "bdi": 400.0},
+                       {"obra": "111", "nome": "ELETROBRAS - OPGW II - RJ | SP | ES", "receita": 2500.0, "custo": -1700.0, "bdi": 800.0},
+                       {"obra": "DEM", "nome": "Demais obras (2)", "receita": 300.0, "custo": -100.0, "bdi": 200.0}],
+            "total": {"receita": 4000.0, "custo": -2600.0, "bdi": 1400.0, "margem": 0.35}}
+
+
+def test_gravar_projecao_e_comparar_com_o_dre(conn):
+    import io
+    import openpyxl
+    import importador_projecao as IP
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws.append(["CONTRATO", "CLIENTE", "OBRA", "CATEGORIA", "NATUREZA", "EMPRESA / FORNECEDOR", "set/26", "CUSTOS", "BDI"])
+    ws.append(["C1", "CLI A", "LOTE 11", "INDIRETO", None, "CONSTRUTORA", 1000.0, 700.0, 300.0])
+    ws.append(["C1", "CLI A", "LOTE 11", "INDIRETO", None, "ENERGIA", 500.0, 350.0, 150.0])
+    ws.append(["C2", "CLI B", "OPGW II", "INDIRETO", None, "ENERGIA", 2000.0, 1400.0, 600.0])
+    ws.append(["C3", "CLI C", "OBRA SEM DRE", "INDIRETO", None, "ENERGIA", 100.0, 70.0, 30.0])
+    buf = io.BytesIO(); wb.save(buf)
+    proj = IP.ler_projecao_xlsx(buf.getvalue())
+    r = P.gravar_projecao(conn, proj, "proj.xlsx", "e" * 64, "teste@x")
+    assert r["repetido"] is False and r["mes"] == "2026-09" and r["linhas"] == 4
+    assert P.gravar_projecao(conn, proj, "proj.xlsx", "e" * 64, "teste@x")["repetido"] is True
+    P.gravar_projecao(conn, proj, "proj2.xlsx", "f" * 64, "teste@x")                         # nova do mesmo mes substitui a antiga
+    assert P.projecao_meses(conn) == ["2026-09"]
+    pm = P.projecao_do_mes(conn, "2026-09")
+    assert pm["arquivo"] == "proj2.xlsx" and len(pm["linhas"]) == 4 and P.projecao_do_mes(conn, "2025-01") is None
+    cmp_ = P.projecao_x_realizado(pm, _ob_falso())
+    por = {x["codigo"]: x for x in cmp_["linhas"]}
+    assert por["103"]["receita_proj"] == 1500.0 and por["103"]["desvio"] == -300.0 and por["103"]["bdi_proj"] == 450.0 and por["103"]["desvio_bdi"] == -50.0
+    assert por["111"]["receita_proj"] == 2000.0 and por["111"]["desvio"] == 500.0 and por["111"]["desvio_pct"] == 0.25
+    assert [o["obra"] for o in cmp_["sem_correspondencia"]] == ["OBRA SEM DRE"]
+    assert cmp_["receita_proj_total"] == 3600.0 and cmp_["receita_real_total"] == 4000.0
+    assert cmp_["receita_sem_projecao"] == 300.0                                              # Demais obras (sem projecao)
+
+
+def test_gravar_orcamento_e_resumo_mes_e_acumulado(conn):
+    from orcamento_sintetico import pdf_orcamento_sintetico
+    import importador_orcamento as IO
+    assert P.orcamento_instalado(conn)
+    orc = IO.ler_orcamento_adm_pdf(pdf_orcamento_sintetico())
+    r = P.gravar_orcamento(conn, orc, "orc.pdf", "1" * 64, "teste@x")
+    assert r["repetido"] is False and r["mes"] == "2026-01"
+    assert P.gravar_orcamento(conn, orc, "orc.pdf", "1" * 64, "teste@x")["repetido"] is True
+    ativo = P.orcamento_ativo(conn)
+    assert ativo["arquivo"] == "orc.pdf" and ativo["meses"][0] == "2026-01" and len(ativo["meses"]) == 6
+    jan = P.orcamento_resumo(conn, ativo["id"], "2026-01")
+    assert (jan["total"]["orcado"], jan["total"]["realizado"], jan["total"]["desvio"]) == (1500.0, 1550.5, 50.5)
+    assert [g["codigo"] for g in jan["grupos"]] == ["2.01"]                                 # 2.02 so tem valor a partir de março
+    ac = P.orcamento_resumo(conn, ativo["id"], "2026-03", acumulado=True)                    # jan + fev + mar
+    assert (ac["total"]["orcado"], ac["total"]["realizado"], ac["total"]["desvio"]) == (4600.0, 4650.5, 50.5)
+    assert [(c["codigo"], c["desvio"]) for c in ac["acima"]] == [("2.02.01", 80.0), ("2.01.02", 20.0)]
+    assert [(c["codigo"], c["desvio"]) for c in ac["abaixo"]] == [("2.01.01", -49.5)]
+    assert ac["total"]["desvio_pct"] == round(50.5 / 4600.0, 4)
+    assert [g["codigo"] for g in ac["grupos"]] == ["2.01", "2.02"]

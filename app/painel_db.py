@@ -1099,3 +1099,149 @@ def colab_por_linha_obras(linhas: list, folha: dict | None) -> dict:
         else:
             res[l["obra"]] = folha["por_obra"].get(l["obra"], {}).get("colab", 0)
     return res
+
+
+# ---------------------------------------------------------------- Projecao de receitas das obras (planilha xlsx; tabela pnl_projecao_linha do SQL v2)
+def gravar_projecao(conn, proj: dict, arquivo: str, sha256: str, usuario: str | None) -> dict:
+    """Grava a projecao lida do xlsx como importacao ativa do mes (a anterior do mesmo mes fica ativo=false). Mesmo arquivo: nao grava de novo."""
+    mes = proj["mes"] + "-01"
+    with db.transacao(conn):
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, ativo, mes FROM pnl_importacao WHERE tipo='PROJECAO' AND arquivo_sha256=%s", (sha256,))
+            ja = cur.fetchone()
+            if ja:
+                return {"repetido": True, "id": ja[0], "ativo": ja[1], "mes": ja[2].strftime("%Y-%m")}
+            cur.execute("UPDATE pnl_importacao SET ativo=false WHERE tipo='PROJECAO' AND mes=%s AND escopo='' AND ativo", (mes,))
+            cur.execute("""INSERT INTO pnl_importacao (tipo, mes, escopo, arquivo_nome, arquivo_sha256, importado_por, n_linhas, detalhe)
+                           VALUES ('PROJECAO', %s, '', %s, %s, %s, %s, %s) RETURNING id""",
+                        (mes, arquivo, sha256, usuario, len(proj["linhas"]), json.dumps({"linhas": len(proj["linhas"]), "avisos": proj["avisos"]}, ensure_ascii=False)))
+            iid = cur.fetchone()[0]
+            execute_values(cur, """INSERT INTO pnl_projecao_linha (importacao_id, linha, contrato, cliente, obra, categoria, natureza, empresa, valor_mes, custos, bdi) VALUES %s""",
+                           [(iid, l["linha"], l["contrato"], l["cliente"], l["obra"], l["categoria"], l["natureza"], l["empresa"], l["valor_mes"], l["custos"], l["bdi"]) for l in proj["linhas"]])
+    registrar_log(conn, "PROJECAO_XLSX_IMPORTADA", "AVISO" if proj["avisos"] else "INFO", usuario, mes[:7],
+                  {"arquivo": arquivo, "sha256": sha256[:16], "importacao_id": iid, "linhas": len(proj["linhas"]), "avisos": len(proj["avisos"])})
+    return {"repetido": False, "id": iid, "mes": mes[:7], "linhas": len(proj["linhas"])}
+
+
+def projecao_meses(conn) -> list:
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_char(mes,'YYYY-MM') FROM pnl_importacao WHERE tipo='PROJECAO' AND ativo ORDER BY 1")
+            return [r[0] for r in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def projecao_do_mes(conn, mes: str) -> dict | None:
+    """Projecao ativa do mes: {'id','arquivo','quem','quando','linhas':[{obra, cliente, empresa, valor_mes, custos, bdi}]} ou None."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT id, arquivo_nome, importado_por, importado_em FROM pnl_importacao
+                           WHERE tipo='PROJECAO' AND mes=%s::date AND escopo='' AND ativo ORDER BY id DESC LIMIT 1""", (f"{mes}-01",))
+            imp = cur.fetchone()
+            if not imp:
+                return None
+            cur.execute("""SELECT obra, cliente, empresa, valor_mes, custos, bdi FROM pnl_projecao_linha WHERE importacao_id=%s ORDER BY linha""", (imp[0],))
+            linhas = [{"obra": o or "", "cliente": c or "", "empresa": e or "", "valor_mes": float(v or 0), "custos": float(cu or 0), "bdi": float(b or 0)} for o, c, e, v, cu, b in cur.fetchall()]
+    except Exception:
+        return None
+    return {"id": imp[0], "arquivo": imp[1], "quem": imp[2], "quando": imp[3], "linhas": linhas}
+
+
+def projecao_x_realizado(proj: dict, ob: dict) -> dict:
+    """Compara a projecao do mes com o DRE oficial por obra. `ob` e' o resultado de obras_do_dre (linhas com obra/nome/receita/custo/bdi).
+    Devolve {'linhas': [{obra_proj, codigo, nome, receita_proj, receita_real, desvio, desvio_pct, bdi_proj, bdi_real, desvio_bdi}], 'sem_correspondencia': [...],
+    'total': {...}}. Obras do DRE sem projecao nao entram na tabela, mas a receita delas aparece em 'receita_sem_projecao'."""
+    from importador_projecao import casar_obra_dre, projecao_por_obra
+    nomes = {l["obra"]: l["nome"] for l in ob["linhas"] if l["obra"] != "DEM"}
+    por_cod = {l["obra"]: l for l in ob["linhas"]}
+    linhas, sem, usados = [], [], set()
+    for o in projecao_por_obra([{"obra": l["obra"], "cliente": l["cliente"], "valor_mes": l["valor_mes"], "custos": l["custos"], "bdi": l["bdi"]} for l in proj["linhas"]]):
+        cod = casar_obra_dre(o["chave"], nomes)
+        if cod is None:
+            sem.append(o)
+            continue
+        usados.add(cod)
+        r = por_cod[cod]
+        linhas.append({"obra_proj": o["obra"], "codigo": cod, "nome": r["nome"], "receita_proj": o["receita"], "receita_real": r["receita"],
+                       "desvio": round(r["receita"] - o["receita"], 2), "desvio_pct": round((r["receita"] - o["receita"]) / o["receita"], 4) if abs(o["receita"]) > 0.005 else None,
+                       "bdi_proj": o["bdi"], "bdi_real": r["bdi"], "desvio_bdi": round(r["bdi"] - o["bdi"], 2)})
+    soma = lambda k, L: round(sum(x[k] for x in L), 2)
+    total = {"receita_proj": soma("receita_proj", linhas) + soma("receita", sem), "receita_real": soma("receita_real", linhas), "bdi_proj": soma("bdi_proj", linhas) + soma("bdi", sem)}
+    return {"linhas": linhas, "sem_correspondencia": sem, "total": total,
+            "receita_sem_projecao": round(sum(l["receita"] for l in ob["linhas"] if l["obra"] not in usados), 2),
+            "receita_proj_total": round(sum(o["valor_mes"] for o in proj["linhas"]), 2), "receita_real_total": ob["total"]["receita"]}
+
+
+# ---------------------------------------------------------------- Orcamento ADM (PDF "Comparativo Orcado X Realizado"; SQL-18)
+def orcamento_instalado(conn) -> bool:
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema='gdf' AND table_name='pnl_orcamento_linha'")
+            return cur.fetchone()[0] == 1
+    except Exception:
+        return False
+
+
+def gravar_orcamento(conn, orc: dict, arquivo: str, sha256: str, usuario: str | None) -> dict:
+    """Grava o orcamento lido do PDF como importacao ativa (a anterior com o mesmo mes inicial fica ativo=false). Mesmo arquivo: nao grava de novo."""
+    ini = (orc["cabecalho"].get("inicio") or "")[:7]
+    if not ini:
+        raise ValueError("O PDF não informa o período; não sei a que mês o orçamento começa.")
+    mes = ini + "-01"
+    with db.transacao(conn):
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, ativo, mes FROM pnl_importacao WHERE tipo='ORCAMENTO' AND arquivo_sha256=%s", (sha256,))
+            ja = cur.fetchone()
+            if ja:
+                return {"repetido": True, "id": ja[0], "ativo": ja[1], "mes": ja[2].strftime("%Y-%m")}
+            cur.execute("UPDATE pnl_importacao SET ativo=false WHERE tipo='ORCAMENTO' AND mes=%s AND escopo='' AND ativo", (mes,))
+            cur.execute("""INSERT INTO pnl_importacao (tipo, mes, escopo, arquivo_nome, arquivo_sha256, importado_por, n_linhas, detalhe)
+                           VALUES ('ORCAMENTO', %s, '', %s, %s, %s, %s, %s) RETURNING id""",
+                        (mes, arquivo, sha256, usuario, len(orc["linhas"]),
+                         json.dumps({"cabecalho": orc["cabecalho"], "meses": orc["meses"], "avisos": orc["avisos"]}, ensure_ascii=False)))
+            iid = cur.fetchone()[0]
+            execute_values(cur, "INSERT INTO pnl_orcamento_linha (importacao_id, codigo, conta, tipo, mes, orcado, realizado, saldo) VALUES %s",
+                           [(iid, l["codigo"], l["conta"], l["tipo"], l["mes"] + "-01", l["orcado"], l["realizado"], l["saldo"]) for l in orc["linhas"]])
+    registrar_log(conn, "ORCAMENTO_ADM_IMPORTADO", "AVISO" if orc["avisos"] else "INFO", usuario, ini,
+                  {"arquivo": arquivo, "sha256": sha256[:16], "importacao_id": iid, "linhas": len(orc["linhas"]), "meses": len(orc["meses"]), "avisos": len(orc["avisos"])})
+    return {"repetido": False, "id": iid, "mes": ini, "linhas": len(orc["linhas"])}
+
+
+def orcamento_ativo(conn) -> dict | None:
+    """Orcamento ADM mais recente e ativo: {'id','arquivo','quem','quando','inicio','meses':['AAAA-MM'...]} ou None."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT id, arquivo_nome, importado_por, importado_em, to_char(mes,'YYYY-MM') FROM pnl_importacao
+                           WHERE tipo='ORCAMENTO' AND ativo ORDER BY mes DESC, id DESC LIMIT 1""")
+            r = cur.fetchone()
+            if not r:
+                return None
+            cur.execute("SELECT DISTINCT to_char(mes,'YYYY-MM') FROM pnl_orcamento_linha WHERE importacao_id=%s ORDER BY 1", (r[0],))
+            meses = [x[0] for x in cur.fetchall()]
+    except Exception:
+        return None
+    return {"id": r[0], "arquivo": r[1], "quem": r[2], "quando": r[3], "inicio": r[4], "meses": meses}
+
+
+def orcamento_resumo(conn, importacao_id: int, mes: str, acumulado: bool = False, top: int = 8) -> dict:
+    """Orcado x realizado das DESPESAS (codigo 2.*) no mes ou acumulado do inicio do periodo ate o mes. Desvio = realizado - orcado (positivo = gastou mais
+    que o orcado). Devolve {'total': {...}, 'grupos': [linhas T de 2 e 3 niveis], 'acima': [contas que mais passaram], 'abaixo': [contas que mais sobraram]}."""
+    with conn.cursor() as cur:
+        if acumulado:
+            cur.execute("""SELECT codigo, max(conta), tipo, sum(orcado), sum(realizado) FROM pnl_orcamento_linha
+                           WHERE importacao_id=%s AND mes <= %s::date AND (codigo = '2' OR codigo LIKE '2.%%') GROUP BY codigo, tipo""", (importacao_id, f"{mes}-01"))
+        else:
+            cur.execute("""SELECT codigo, max(conta), tipo, sum(orcado), sum(realizado) FROM pnl_orcamento_linha
+                           WHERE importacao_id=%s AND mes = %s::date AND (codigo = '2' OR codigo LIKE '2.%%') GROUP BY codigo, tipo""", (importacao_id, f"{mes}-01"))
+        linhas = cur.fetchall()
+    def reg(cod, nome, tipo, orc, real):
+        orc, real = round(float(orc or 0), 2), round(float(real or 0), 2)
+        return {"codigo": cod, "conta": nome, "tipo": tipo, "orcado": orc, "realizado": real, "desvio": round(real - orc, 2),
+                "desvio_pct": round((real - orc) / orc, 4) if abs(orc) > 0.005 else None}
+    regs = [reg(*l) for l in linhas]
+    total = next((r for r in regs if r["codigo"] == "2"), None) or {"codigo": "2", "conta": "SAÍDAS/CUSTOS/DESPESAS", "tipo": "T", "orcado": 0.0, "realizado": 0.0, "desvio": 0.0, "desvio_pct": None}
+    grupos = sorted((r for r in regs if r["tipo"] == "T" and r["codigo"].count(".") in (1, 2)), key=lambda r: r["codigo"])
+    contas = [r for r in regs if r["tipo"] in ("R", "M") and (abs(r["orcado"]) > 0.005 or abs(r["realizado"]) > 0.005)]
+    return {"total": total, "grupos": grupos, "acima": sorted((r for r in contas if r["desvio"] > 0.005), key=lambda r: -r["desvio"])[:top],
+            "abaixo": sorted((r for r in contas if r["desvio"] < -0.005), key=lambda r: r["desvio"])[:top]}
