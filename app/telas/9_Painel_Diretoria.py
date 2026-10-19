@@ -320,6 +320,9 @@ with t_pes:
             dfh = pd.DataFrame({"Mês": [_rot(x["mes"]) for x in sf], "%": [round(x["he_pct"] * 100, 1) for x in sf]})
             st.altair_chart(alt.Chart(dfh).mark_line(point=True, color=NAVY).encode(x=alt.X("Mês:N", sort=list(dfh["Mês"]), axis=alt.Axis(labelAngle=-45, title=None)), y="%:Q",
                                                                                  tooltip=["Mês", "%"]), width="stretch")
+            if {x["origem"] for x in sf} == {"historico", "app"}:
+                st.caption("Atenção à comparação: os meses do histórico (painel da contabilidade) usam como base proventos menos HE, sem descontar INSS/IRRF etc.; "
+                           "os meses com folha no app usam a remuneração líquida (menos todos os descontos), como a contabilidade pediu em 20/10/2026. Por isso pode haver um degrau entre as duas fontes.")
 
 with t_dre:
     rb = v["01"]

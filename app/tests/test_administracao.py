@@ -178,6 +178,7 @@ def test_graficos_da_aba_pessoas_em_ordem_cronologica(conn):
 def _tela(conn):
     at = AppTest.from_file(str(APP / "telas" / "8_Painel_EnerMais.py"), default_timeout=30)
     at.session_state["auth_session"] = SESSAO
+    at.session_state["pn2_todas_abas"] = True
     return at
 
 

@@ -70,7 +70,7 @@ def up_dre(conn, usuario):
                         if res_g["repetido"]:
                             st.info(f"Este mesmo arquivo já foi importado antes (importação #{res_g['id']}, mês {res_g['mes']}).")
                         else:
-                            st.success(f"DRE de {res_g['mes']} salvo (importação #{res_g['id']}).")
+                            st.toast(f"DRE de {res_g['mes']} salvo (importação #{res_g['id']}).", icon="✅")   # toast: sobrevive ao rerun (o success sumia)
                             st.rerun()
                     except Exception as exc:
                         st.error(f"Não consegui salvar: {exc}")
@@ -105,7 +105,7 @@ def up_projecao(conn, usuario):
                         if res_p["repetido"]:
                             st.info(f"Esta mesma planilha já foi importada antes (importação #{res_p['id']}, mês {res_p['mes']}).")
                         else:
-                            st.success(f"Projeção de {res_p['mes']} salva (importação #{res_p['id']}).")
+                            st.toast(f"Projeção de {res_p['mes']} salva (importação #{res_p['id']}).", icon="✅")   # toast: sobrevive ao rerun (o success sumia)
                             st.rerun()
                     except Exception as exc:
                         st.error(f"Não consegui salvar: {exc}")
@@ -145,7 +145,7 @@ def up_orcamento(conn, usuario):
                         if res_o["repetido"]:
                             st.info(f"Este mesmo arquivo já foi importado antes (importação #{res_o['id']}).")
                         else:
-                            st.success(f"Orçamento ADM salvo (importação #{res_o['id']}, {res_o['linhas']} linhas).")
+                            st.toast(f"Orçamento ADM salvo (importação #{res_o['id']}, {res_o['linhas']} linhas).", icon="✅")   # toast: sobrevive ao rerun (o success sumia)
                             st.rerun()
                     except Exception as exc:
                         st.error(f"Não consegui salvar: {exc}")
@@ -191,7 +191,7 @@ def up_folha(conn, usuario):
                     if res_f["repetido"]:
                         st.info(f"Este mesmo arquivo já foi importado antes (importação #{res_f['id']}, mês {res_f['mes']}).")
                     else:
-                        st.success(f"Folha de {res_f['mes']} ({res_f['escopo']}) salva: {res_f['recibos']} colaboradores (importação #{res_f['id']}).")
+                        st.toast(f"Folha de {res_f['mes']} ({res_f['escopo']}) salva: {res_f['recibos']} colaboradores (importação #{res_f['id']}).", icon="✅")   # toast: sobrevive ao rerun (o success sumia)
                         st.rerun()
                 except Exception as exc:
                     st.error(f"Não consegui salvar: {exc}")
@@ -245,7 +245,7 @@ def up_historico(conn, usuario):
                         st.info(f"Este mesmo arquivo já foi importado antes (importação #{res['id']}, mês {res['mes']}).")
                     else:
                         P.registrar_log(conn, "HISTORICO_IMPORTADO", "INFO", usuario, mes, {"arquivo": arq.name, "sha256": lido["sha256"][:16], "importacao_id": res["id"], "meses": len(lido["meses"])})
-                        st.success(f"Histórico até {mes_n:02d}/{int(ano)} salvo (importação #{res['id']}).")
+                        st.toast(f"Histórico até {mes_n:02d}/{int(ano)} salvo (importação #{res['id']}).", icon="✅")   # toast: sobrevive ao rerun (o success sumia)
                         st.rerun()
                 except Exception as exc:
                     st.error(f"Não consegui salvar: {exc}")
@@ -391,7 +391,7 @@ def _editor(conn, usuario):
     if st.button(f"Salvar {len(alteracoes)} alteração(ões)", type="primary", disabled=not alteracoes, key=f"pn2_ed_salvar_{esc}"):
         try:
             r = P.edicao_aplicar(conn, imp["tipo"], imp["id"], alteracoes, [], usuario, mot or None)
-            st.success(f"✅ {r['editados']} célula(s) alterada(s). O antes e o depois estão no histórico de edições.")
+            st.toast(f"{r['editados']} célula(s) alterada(s). O antes e o depois estão no histórico de edições.", icon="✅")   # toast: sobrevive ao rerun (o success sumia)
             st.rerun()
         except Exception as exc:
             st.error(f"Não consegui salvar: {exc}")
@@ -407,7 +407,7 @@ def _editor(conn, usuario):
         if st.button(f"Adicionar {len(lin_novas)} linha(s)", disabled=not lin_novas, key=f"pn2_ed_add_{esc}"):
             try:
                 r = P.edicao_aplicar(conn, imp["tipo"], imp["id"], [], lin_novas, usuario, mot2 or None)
-                st.success(f"✅ {r['linhas_novas']} linha(s) adicionada(s).")
+                st.toast(f"{r['linhas_novas']} linha(s) adicionada(s).", icon="✅")   # toast: sobrevive ao rerun (o success sumia)
                 st.rerun()
             except Exception as exc:
                 st.error(f"Não consegui adicionar: {exc}")
@@ -435,7 +435,7 @@ def _cadastros(conn, usuario):
     if st.button(f"Salvar {len(mudou)} alteração(ões) no cadastro", type="primary", disabled=not mudou, key="pn2_depto_salvar"):
         try:
             r = P.depto_obra_salvar(conn, mudou, usuario, mot or None)
-            st.success(f"✅ Cadastro salvo: {r['novos']} novo(s), {r['alterados']} alterado(s).")
+            st.toast(f"Cadastro salvo: {r['novos']} novo(s), {r['alterados']} alterado(s).", icon="✅")   # toast: sobrevive ao rerun (o success sumia)
             st.rerun()
         except Exception as exc:
             st.error(f"Não consegui salvar: {exc}")

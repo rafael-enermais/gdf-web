@@ -83,6 +83,7 @@ def test_cadastro_de_visualizador_na_aba_regras(conn):
     with patch("conexao.get_conn", return_value=conn):
         at = AppTest.from_file(str(APP / "telas" / "8_Painel_EnerMais.py"), default_timeout=30)
         at.session_state["auth_session"] = SimpleNamespace(user=SimpleNamespace(email="rafael@x"))
+        at.session_state["pn2_abas"] = "Regras"                       # as abas rodam so' quando abertas
         at.run()
         assert not at.exception, at.exception
         at.text_input(key="pn2_ac_email").input("novo.diretor@empresa.com").run()
