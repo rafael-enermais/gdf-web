@@ -616,7 +616,8 @@ def test_gravar_folha_ativa_repetido_e_totais(conn):
     t = f["total"]
     assert t["colab"] == 3 and t["salarios"] == 10000.00                                   # 3.000 + 4.000 + 3.000
     assert round(t["hora_extra"], 2) == 1000.00 and t["dsr_he"] == 100.00                  # 500 + 200 + 300 ; DSR 100
-    assert t["he_pct"] == 0.11                                                             # (1000 + 100) / 10000
+    assert t["descontos"] == 1060.00 and t["base_he"] == 8940.00                           # base = 11.100 - 1.100 (HE+DSR) - 1.060 (todos os descontos; contabilidade 20/10)
+    assert t["he_pct"] == 0.123                                                            # (1000 + 100) / 8940
     assert t["proventos"] == 11100.00 and t["fgts"] == 888.00 and t["custo"] == 11988.00
     assert f["por_obra"]["103"]["colab"] == 2 and f["por_obra"]["104"]["colab"] == 1
     assert f["sem_depara"] == []

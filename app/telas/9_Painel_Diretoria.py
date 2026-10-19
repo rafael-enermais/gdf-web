@@ -306,7 +306,7 @@ with t_pes:
         b.metric("Remuneração (base da HE)", _mi(t["base_he"]), border=True)
         c.metric("Horas extras + DSR", _mi(t["hora_extra"] + t["dsr_he"]), border=True)
         d.metric("HE + DSR ÷ remuneração", F.pct_br(t["he_pct"]) if t["he_pct"] is not None else "–", border=True)
-        st.caption("Horas extras + DSR sobre a remuneração (proventos que não são hora extra, menos faltas), definição da contabilidade.")
+        st.caption("Horas extras + DSR sobre a remuneração (proventos que não são hora extra, menos todos os descontos: remuneração líquida), definição da contabilidade.")
         st.dataframe(pd.DataFrame([{"Empresa": e["empresa"], "Colab.": e["colab"], "Remuneração": _m(e["base_he"]), "HE + DSR": _m(e["hora_extra"] + e["dsr_he"]),
                                     "HE ÷ remuneração": F.pct_br(e["he_pct"]) if e["he_pct"] is not None else "–", "Custo (proventos + FGTS)": _m(e["custo"])} for e in fo["por_empresa"]]),
                      hide_index=True, width="stretch")

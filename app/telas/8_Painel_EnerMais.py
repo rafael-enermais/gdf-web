@@ -595,7 +595,7 @@ with aba_pess:
         if fo["sem_depara"]:
             st.warning("Departamentos da folha sem de-para com obra (cadastre em `pnl_folha_depto_obra`): "
                        + "; ".join(f"{x['empresa']} {x['departamento']} ({x['subnivel'] or '–'}, {x['colab']} colab.)" for x in fo["sem_depara"]))
-        st.caption("Remuneração (base da HE, definição da contabilidade) = proventos que não são HE nem DSR s/ HE, menos descontos de faltas; “Salários” = só o evento 1 (horas normais). Horas extras = eventos de HE 50/60/80/100/110% (inclui HE de mês anterior) + DSR s/ HE, como a contabilidade pediu. "
+        st.caption("Remuneração (base da HE, definição da contabilidade) = proventos que não são HE nem DSR s/ HE, menos todos os descontos do recibo (remuneração líquida, contabilidade 20/10); “Salários” = só o evento 1 (horas normais). Horas extras = eventos de HE 50/60/80/100/110% (inclui HE de mês anterior) + DSR s/ HE, como a contabilidade pediu. "
                    "Custo = total de proventos + FGTS do mês (não inclui INSS patronal, férias/13º provisionados nem os PJ). Fonte: "
                    + "; ".join(f"“{i['arquivo']}” ({i['escopo']}, importação #{i['id']})" for i in fo["importacoes"]) + ".")
         _sf = [x for x in P.folha_serie(conn) if x["he_pct"] is not None]

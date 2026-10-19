@@ -76,3 +76,11 @@ def test_pdf_que_nao_e_de_recibos_da_erro():
     c.save()
     with pytest.raises(IF.ErroFolha, match="recibos"):
         IF.ler_recibos_pdf(buf.getvalue())
+
+
+def test_total_do_recibo_com_mensagem_de_aniversario_na_mesma_linha(folha):
+    """Bug real (set/2026): "Parabens ! Feliz Aniversario 23/10 Total 5.724,87 782,11" deixava o total em branco e o recibo sumia do custo da folha."""
+    a = folha["recibos"][0]
+    assert a["cadastro"] == "10" and (a["total_proventos"], a["total_descontos"]) == (3600.00, 300.00)
+    assert all(r["total_proventos"] is not None and r["total_descontos"] is not None for r in folha["recibos"])
+    assert folha["avisos"] == []                                       # sem aviso de "nao li o total"

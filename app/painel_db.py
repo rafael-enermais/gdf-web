@@ -15,7 +15,7 @@ from psycopg2.extras import execute_values
 
 import db
 
-EVENTOS_DESCONTO_REMUNERACAO = (23,)    # 23 = Horas Faltas Diurnas: desconto que reduz a remuneracao (entra na base da HE; INSS/IRRF etc. nao)
+# Base da HE (contabilidade 20/10/2026): "pode descontar tudo, considere somente os salarios liquidos" -> todos os descontos do recibo saem da base
 
 TABELAS_V2 = ("pnl_sync", "pnl_titulo", "pnl_baixa", "pnl_rateio", "pnl_regra", "pnl_obra", "pnl_centro_custo")
 
@@ -1081,38 +1081,38 @@ def folha_do_mes(conn, mes: str) -> dict | None:
                            WHERE i.tipo='FOLHA' AND i.mes=%s::date AND i.ativo
                            GROUP BY r.empresa, r.departamento, d.codigo_obra""", (f"{mes}-01",))
             linhas = cur.fetchall()
-            # descontos de REMUNERACAO (faltas/atrasos: evento 23) por departamento: entram na base da HE (contabilidade 19/10: remuneracao liquida)
+            # TODOS os descontos do recibo por departamento (contabilidade 20/10: base da HE = remuneracao liquida)
             cur.execute("""SELECT e.empresa, e.departamento, COALESCE(sum(e.desconto),0)
                            FROM pnl_folha_evento e JOIN pnl_importacao i ON i.id = e.importacao_id
-                           WHERE i.tipo='FOLHA' AND i.mes=%s::date AND i.ativo AND e.ev = ANY(%s)
-                           GROUP BY e.empresa, e.departamento""", (f"{mes}-01", list(EVENTOS_DESCONTO_REMUNERACAO)))
-            faltas = {(a, b): float(v) for a, b, v in cur.fetchall()}
+                           WHERE i.tipo='FOLHA' AND i.mes=%s::date AND i.ativo
+                           GROUP BY e.empresa, e.departamento""", (f"{mes}-01",))
+            descontos = {(a, b): float(v) for a, b, v in cur.fetchall()}
     except Exception:
         return None
-    tot = {"colab": 0, "salarios": 0.0, "hora_extra": 0.0, "dsr_he": 0.0, "proventos": 0.0, "fgts": 0.0, "faltas": 0.0}
+    tot = {"colab": 0, "salarios": 0.0, "hora_extra": 0.0, "dsr_he": 0.0, "proventos": 0.0, "fgts": 0.0, "descontos": 0.0}
     por_emp, por_obra, sem = {}, {}, []
     for emp, dep, sub, cod, onome, n, sal, he, dsr, prov, fgts in linhas:
         vals = {"colab": int(n), "salarios": float(sal), "hora_extra": float(he), "dsr_he": float(dsr), "proventos": float(prov), "fgts": float(fgts),
-                "faltas": faltas.get((emp, dep), 0.0)}
+                "descontos": descontos.get((emp, dep), 0.0)}
         for k, v in vals.items():
             tot[k] += v
-        e = por_emp.setdefault(emp, {"empresa": EMPRESAS_FOLHA.get(emp, emp), "colab": 0, "salarios": 0.0, "hora_extra": 0.0, "dsr_he": 0.0, "proventos": 0.0, "fgts": 0.0, "faltas": 0.0})
+        e = por_emp.setdefault(emp, {"empresa": EMPRESAS_FOLHA.get(emp, emp), "colab": 0, "salarios": 0.0, "hora_extra": 0.0, "dsr_he": 0.0, "proventos": 0.0, "fgts": 0.0, "descontos": 0.0})
         for k, v in vals.items():
             e[k] += v
         if cod is None:
             sem.append({"empresa": EMPRESAS_FOLHA.get(emp, emp), "departamento": dep, "subnivel": sub, "colab": int(n)})
             cod = "sem de-para"
-        o = por_obra.setdefault(cod, {"codigo": cod, "nome": onome or (sub if cod == "sem de-para" else ""), "colab": 0, "salarios": 0.0, "hora_extra": 0.0, "dsr_he": 0.0, "proventos": 0.0, "fgts": 0.0, "faltas": 0.0})
+        o = por_obra.setdefault(cod, {"codigo": cod, "nome": onome or (sub if cod == "sem de-para" else ""), "colab": 0, "salarios": 0.0, "hora_extra": 0.0, "dsr_he": 0.0, "proventos": 0.0, "fgts": 0.0, "descontos": 0.0})
         for k, v in vals.items():
             o[k] += v
-    # Base da HE (contabilidade, 19/10/2026): remuneracao liquida = proventos que nao sao HE nem DSR s/ HE, menos os descontos de remuneracao (faltas)
+    # Base da HE (contabilidade, 20/10/2026): remuneracao liquida = proventos que nao sao HE nem DSR s/ HE, menos todos os descontos do recibo
     for d in [tot, *por_emp.values(), *por_obra.values()]:
-        d["base_he"] = d["proventos"] - d["hora_extra"] - d["dsr_he"] - d["faltas"]
+        d["base_he"] = d["proventos"] - d["hora_extra"] - d["dsr_he"] - d["descontos"]
     pct = lambda d: round((d["hora_extra"] + d["dsr_he"]) / d["base_he"], 4) if d["base_he"] > 0.005 else None
     for d in [tot, *por_emp.values(), *por_obra.values()]:
         d["custo"] = round(d["proventos"] + d["fgts"], 2)
         d["he_pct"] = pct(d)
-        for k in ("salarios", "hora_extra", "dsr_he", "proventos", "fgts", "faltas", "base_he"):
+        for k in ("salarios", "hora_extra", "dsr_he", "proventos", "fgts", "descontos", "base_he"):
             d[k] = round(d[k], 2)
     return {"mes": mes, "importacoes": [{"id": i[0], "escopo": i[1], "arquivo": i[2], "quem": i[3], "quando": i[4]} for i in imps], "total": tot,
             "por_empresa": sorted(por_emp.values(), key=lambda d: d["empresa"]), "por_obra": por_obra, "sem_depara": sem}

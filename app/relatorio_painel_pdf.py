@@ -454,7 +454,7 @@ def p_pessoas(c, n, N, ctx):
         barras(c, MX + 6, y - 100, CW - 12, 84, [_rot_mes(x["mes"]) for x in sf], [round(x["he_pct"] * 100, 1) for x in sf], fmt=lambda v_: fnum(v_, 1), size=6)
         y -= 124
     if y > 90:
-        caixa_nota(c, y, "Remuneração (base da HE, definição da contabilidade) = proventos que não são HE nem DSR s/ HE, menos faltas. Horas extras = eventos de HE 50/60/80/100/110% mais DSR sobre HE. Custo = proventos + FGTS do mês "
+        caixa_nota(c, y, "Remuneração (base da HE, definição da contabilidade) = proventos que não são HE nem DSR s/ HE, menos todos os descontos do recibo (remuneração líquida). Horas extras = eventos de HE 50/60/80/100/110% mais DSR sobre HE. Custo = proventos + FGTS do mês "
                          "(não inclui INSS patronal, férias/13º provisionados nem PJ).")
 
 
@@ -537,7 +537,7 @@ def p_notas(c, n, N, ctx):
              "O DRE usa a confirmação da contabilidade quando existe; sem ela, mostra o DRE oficial importado ou a reconstrução pela API, sempre identificando a origem.",
              "Edições do painel valem para dados importados e resultados gerados; não alteram o que vem da API do Sienge.",
              "Regras confirmadas pela contabilidade em 19/10/2026: previsões fora das despesas, distrato e títulos desfeitos/multas AEJ fora; INSS/FGTS pela guia fica (a guia entra depois da emissão do PDF).",
-             "Pessoas: custo da folha não inclui PJ, INSS patronal nem provisões de férias e 13º. A % de horas extras usa como base a remuneração (proventos que não são HE nem DSR s/ HE, menos faltas), definição confirmada pela contabilidade em 19/10/2026; a diferença para o painel dela (~R$ 139 mil de proventos) vem dos recibos, que prevalecem.",
+             "Pessoas: custo da folha não inclui PJ, INSS patronal nem provisões de férias e 13º. A % de horas extras usa como base a remuneração (proventos que não são HE nem DSR s/ HE, menos todos os descontos: remuneração líquida), definição confirmada pela contabilidade em 20/10/2026; a diferença para o painel dela (~R$ 139 mil de proventos) vem dos recibos, que prevalecem.",
              "Histórico do ano (acumulado, desvio mensal, recomposição out–dez e custos com pessoas): vem do painel da contabilidade importado em Importações (V2); sem essa importação, as páginas explicam o que falta."]
     for a in ctx["avisos"]:
         itens.append("Atenção na montagem do relatório: " + a + " (a seção correspondente pode estar incompleta).")

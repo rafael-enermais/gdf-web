@@ -108,3 +108,13 @@ def test_pdf_e_diretoria_usam_o_historico(conn):
         assert not at.exception, at.exception
     with conn.cursor() as cur:
         cur.execute("DELETE FROM pnl_regra WHERE tipo='EXCLUI_PREVISAO'")
+
+
+def test_resumo_mantem_a_ordem_das_linhas_do_painel_apos_gravar_no_banco(conn):
+    """O jsonb do banco reordena as chaves (por tamanho); o resumo precisa devolver Receita, Custos, BDI, ADM, Lucro."""
+    d = _d()
+    d["dev"]["rows"] = {"Base-line (Receita)": [1.0], "Custos": [2.0], "BDI - Resultado": [3.0], "Despesas ADM": [4.0], "Lucro do Período": [5.0]}
+    d["dev"]["meses"] = ["Fev"]
+    H.gravar(conn, H.ler_historico(json.dumps(d).encode(), "o.json"), "2026-09", "o.json", "rafael@x")
+    r = H.resumo(H.ativo(conn))
+    assert list(r["desvio_linhas"]) == ["Base-line (Receita)", "Custos", "BDI - Resultado", "Despesas ADM", "Lucro do Período"]

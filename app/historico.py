@@ -151,7 +151,10 @@ def resumo(h: dict) -> dict:
     rotulos = [m for m in dev.get("meses", []) if m in MESES]
     # Janeiro nao vem no painel: = desvio acumulado menos a soma de fev a set (conta explicada pela contabilidade)
     linhas, tem_jan = {}, bool(accdev) and rotulos[:1] == ["Fev"]
-    for nome, vals in dev.get("rows", {}).items():
+    # o banco (jsonb) reordena as chaves do objeto; a ordem do painel (Receita, Custos, BDI, ADM, Lucro) e' refeita pela tabela ROT
+    ordem = list(ROT)
+    itens = sorted(dev.get("rows", {}).items(), key=lambda kv: (ordem.index(kv[0]) if kv[0] in ordem else len(ordem), kv[0]))
+    for nome, vals in itens:
         vals = [float(x) for x in vals]
         k = ROT.get(nome)
         jan = (float(_par(accdev[k])) - sum(vals)) if (tem_jan and k in accdev) else None

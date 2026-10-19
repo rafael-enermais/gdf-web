@@ -112,12 +112,16 @@ def _ler_bloco(palavras: list, aviso) -> dict | None:
                 if vals:
                     rec["liquido"] = vals[-1]
                 continue
-            if t.startswith("Total "):
-                vals = [_num(w["text"]) for w in l if _RE_NUM.match(w["text"])]
+            # Linha "Total": pode vir com mensagem a esquerda na mesma linha ("Parabens ! Feliz Aniversario 23/10 Total 5.724,87 782,11"),
+            # entao procura a palavra "Total" (que nao seja "Total Liquido") em qualquer posicao e le so' os numeros a direita dela.
+            ix_total = next((k for k, w in enumerate(l) if w["text"] == "Total" and not (k + 1 < len(l) and l[k + 1]["text"].startswith("L\u00edquido"))), None)
+            if ix_total is not None:
+                nums_t = [w for w in l[ix_total + 1:] if _RE_NUM.match(w["text"])]
+                vals = [_num(w["text"]) for w in nums_t]
                 if len(vals) == 2:
                     rec["total_proventos"], rec["total_descontos"] = vals
                 elif len(vals) == 1:                   # so' um dos lados preenchido: o lado vem da posicao
-                    w = [x for x in l if _RE_NUM.match(x["text"])][0]
+                    w = nums_t[0]
                     if w["x1"] > limite_desc:
                         rec["total_proventos"], rec["total_descontos"] = 0.0, vals[0]
                     else:
@@ -247,6 +251,15 @@ def ler_recibos_pdf(conteudo: bytes) -> dict:
         avisos.append(f"O PDF tem mais de uma competencia ({', '.join(sorted(comps))}); vale a mais frequente ({competencia}).")
     empresas = sorted({r["empresa"] for r in recibos})
     for r in recibos:
+        if r["total_proventos"] is None or r["total_descontos"] is None:
+            # rede de seguranca: nunca deixar o total em branco (um recibo sem total some do custo da folha sem ninguem perceber)
+            sp0 = round(sum(e["provento"] for e in r["eventos"]), 2)
+            sd0 = round(sum(e["desconto"] for e in r["eventos"]), 2)
+            if r["total_proventos"] is None:
+                r["total_proventos"] = sp0
+            if r["total_descontos"] is None:
+                r["total_descontos"] = sd0
+            avisos.append(f"Cadastro {r['cadastro']} (empresa {r['empresa']}): nao li o total do recibo; usei a soma dos eventos (proventos {sp0:.2f}, descontos {sd0:.2f}). Confira.")
         _marcar_informativos(r)
         sp = round(sum(e["provento"] for e in r["eventos"]), 2)
         sd = round(sum(e["desconto"] for e in r["eventos"]), 2)

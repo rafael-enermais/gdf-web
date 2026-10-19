@@ -11,7 +11,7 @@ def br(v):
     return f"{v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def _via(c, y0, emp, cad, nome, cbo, depto, fl, cargo, evs, tot_p=None, tot_d=None, liq=None, sub=None, fgts=None, continua=False, comp="09/2026"):
+def _via(c, y0, emp, cad, nome, cbo, depto, fl, cargo, evs, tot_p=None, tot_d=None, liq=None, sub=None, fgts=None, continua=False, comp="09/2026", msg=None):
     """y0 = topo da via (pontos a partir do topo da pagina). evs: [(codigo, descricao, referencia, provento, desconto)] ou ('sub', texto, desconto)."""
     H = A4[1]
     y = lambda dy: H - (y0 + dy)
@@ -54,6 +54,8 @@ def _via(c, y0, emp, cad, nome, cbo, depto, fl, cargo, evs, tot_p=None, tot_d=No
         c.drawString(338, y(yy), "Total")
         c.drawString(362, y(yy + 24), "Total Líquido")
         return
+    if msg:                                    # mensagem do recibo (ex.: aniversario) na MESMA linha do "Total", como no PDF real
+        c.drawString(60, y(yy), msg)
     c.drawString(338, y(yy), "Total")
     c.drawRightString(488, y(yy), br(tot_p))
     c.drawRightString(589, y(yy), br(tot_d))
@@ -74,7 +76,7 @@ def pdf_folha_sintetico(empresa=("0468", "EMPRESA TESTE LTDA")) -> bytes:
              evs=[(1, "Horas Normais Diurnas", "30 Dias", 3000.00, 0), (35, "Horas Extras 50% Diurnas", "010:00 hs", 500.00, 0),
                   (59, "DSR S/Horas Extras Diurnas", "005:00 hs", 100.00, 0), (840, "Inf. Vale Alimentação Ticket/Cartão", "", 600.00, 0),
                   (1950, "INSS", "14,00 %", 0, 300.00)],
-             tot_p=3600.00, tot_d=300.00, liq=3300.00, sub="OBRA TESTE UM", fgts=288.00)
+             tot_p=3600.00, tot_d=300.00, liq=3300.00, sub="OBRA TESTE UM", fgts=288.00, msg="Parabens ! Feliz Aniversario 23/10")
     B = dict(cad=11, nome="BRUNO IMAGINARIO LIMA", cbo="715615", depto="001.010", fl="01", cargo="ELETRICISTA",
              evs=[(1, "Horas Normais Diurnas", "30 Dias", 4000.00, 0), (1029, "Horas Extra 110% Diurna", "004:00 hs", 200.00, 0),
                   (1817, "Desconto Consultas", "", 0, 0), ("sub", "1 - DEPENDENTE FICTICIO", 90.00), (1950, "INSS", "14,00 %", 0, 400.00)],
