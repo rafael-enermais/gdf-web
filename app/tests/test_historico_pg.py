@@ -103,7 +103,11 @@ def test_pdf_e_diretoria_usam_o_historico(conn):
         at.run()
         assert not at.exception, at.exception
         assert not any("O acumulado do ano aparece quando" in i.value for i in at.info)
-        assert any("Acumulado do ano até" in m.value for m in at.markdown)
+        at.radio(key="dir_periodo").set_value("Acumulado no ano").run()                     # formula do ano: vem do historico (jan..mes)
+        assert not at.exception, at.exception
+        assert not any("O acumulado do ano aparece quando" in i.value for i in at.info)
+        rec_acc = next(m for m in at.metric if m.label == "Receita (base-line)")
+        assert rec_acc.value == "R$ 900"
         at.selectbox(key="dir_ano_linha").select("Custos").run()                            # escolher outra linha do desvio nao quebra
         assert not at.exception, at.exception
     with conn.cursor() as cur:

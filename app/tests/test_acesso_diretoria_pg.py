@@ -72,8 +72,11 @@ def test_painel_da_diretoria_com_dados_e_abas(conn):
     with patch("conexao.get_conn", return_value=conn):
         at = _app_como(conn, "diretor@empresa.com").run()
         assert not at.exception, at.exception
-        assert [t.label for t in at.tabs] == ["Ano", "Obras", "Administração", "Despesas", "Pessoas", "Resultado (DRE)"]
-        assert any("Receita" == m.label for m in at.metric)
+        assert [t.label for t in at.tabs] == ["Resultado", "Obras", "Administração", "Despesas", "Pessoas"]
+        assert any("Receita (base-line)" == m.label for m in at.metric)
+        at.session_state["dir_todas_abas"] = True                                       # renderiza as 5 abas (so' a aberta roda por padrao)
+        at.run()
+        assert not at.exception, at.exception
         at.text_input(key="dir_ob_busca").input("zzz-inexistente").run()                 # busca sem resultado nao quebra
         assert not at.exception, at.exception
 
@@ -99,3 +102,54 @@ def test_banco_fora_do_ar_nao_libera_o_menu():
     assert not at.exception, at.exception
     assert any("verificar o seu acesso" in e.value for e in at.error)
     assert not any("Situação do ano" in s.value for s in at.subheader)
+
+
+def test_painel_da_diretoria_cinco_abas_com_tudo(conn):
+    """Cenario completo (v0.23): DRE por obra, folha, orcamento ADM, historico, contas pagas com PJ -> as 5 abas renderizam e mostram o que a contabilidade espera."""
+    import io
+    import openpyxl
+    import historico as H
+    import importador_folha as IF
+    import importador_orcamento as IO
+    import importador_projecao as IP
+    from folha_sintetica import pdf_folha_sintetico
+    from orcamento_sintetico import pdf_orcamento_sintetico
+    from test_historico_pg import _html
+    from test_painel_db_pg import _depara_folha
+    _ingerir(conn, lado="P", tipo="P")                       # contas pagas de ago/set (inclui "Salarios PJ")
+    _ingerir(conn, regs=income(), lado="R", tipo="I")
+    b, dre = _pdf_lido()
+    P.gravar_dre(conn, dre, "dre.pdf", hashlib.sha256(b).hexdigest(), "teste@x")
+    _depara_folha(conn)
+    P.gravar_folha(conn, IF.ler_recibos_pdf(pdf_folha_sintetico()), "r.pdf", "d" * 64, "teste@x")
+    ro = P.gravar_orcamento(conn, IO.ler_orcamento_adm_pdf(pdf_orcamento_sintetico()), "o.pdf", "1" * 64, "teste@x")
+    with conn.cursor() as cur:                               # o orcamento sintetico vai de jan a jun: desloca 3 meses para cobrir setembro
+        cur.execute("UPDATE pnl_orcamento_linha SET mes = mes + interval '3 months' WHERE importacao_id=%s", (ro["id"],))
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws.append(["CONTRATO", "CLIENTE", "OBRA", "CATEGORIA", "NATUREZA", "EMPRESA / FORNECEDOR", "set/26", "CUSTOS", "BDI"])
+    ws.append(["C1", "CLI A", "OBRA UM", "INDIRETO", None, "CONSTRUTORA", 1000.0, 700.0, 300.0])
+    buf = io.BytesIO(); wb.save(buf)
+    P.gravar_projecao(conn, IP.ler_projecao_xlsx(buf.getvalue()), "p.xlsx", "e" * 64, "teste@x")
+    H.gravar(conn, H.ler_historico(_html(), "a.html"), "2026-09", "a.html", "rafael@x")
+    acesso.definir(conn, "diretor@empresa.com", acesso.VISUALIZADOR, True, "rafael@x")
+    with patch("conexao.get_conn", return_value=conn):
+        at = _app_como(conn, "diretor@empresa.com")
+        at.session_state["dir_todas_abas"] = True
+        at.run()
+        assert not at.exception, at.exception
+        rotulos = [m.label for m in at.metric]
+        for esperado in ("Receita (base-line)", "Custos diretos", "BDI", "Administração", "Resultado",        # Resultado
+                         "Receita realizada", "Obras com prejuízo",                                           # Obras
+                         "Orçado 09/2026", "Meses acima do orçado",                                           # Administracao
+                         "Pago em 09/2026", "Top 12 jan–09",                                                  # Despesas
+                         "Colaboradores 09/2026", "Receita por colaborador"):                                 # Pessoas
+            assert esperado in rotulos, (esperado, rotulos)
+        colab = next(m for m in at.metric if m.label == "Colaboradores 09/2026")
+        assert colab.value == "4" and "3 CLT + 1 PJ" in colab.delta                                            # 3 CLT (folha) + 1 PJ (contas pagas)
+        assert any("PJ do mês" in e.label for e in at.expander)
+        at.radio(key="dir_periodo").set_value("Acumulado no ano").run()
+        assert not at.exception, at.exception
+        at.radio(key="dir_pes_linhas").set_value("Todas").run()
+        assert not at.exception, at.exception
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM pnl_regra WHERE tipo='EXCLUI_PREVISAO'")

@@ -1,0 +1,193 @@
+# -*- coding: utf-8 -*-
+"""GDF V2 - dados do Painel da Diretoria (replica do painel da contabilidade) que dependem do acumulado do ano: Despesas e Pessoas por conta -> credor -> obra,
+e o PJ por colaborador. Tudo vem das CONTAS PAGAS (baixas de pagamento x rateio, mesmas regras da aba Despesas). So' leitura.
+
+Como funciona, em linguagem simples:
+- `pagos_detalhe` busca no banco quanto foi pago, mes a mes, por conta do plano, credor e obra (um unico select);
+- as demais funcoes so' somam/filtram essa lista (nao tocam no banco), por isso sao faceis de testar;
+- PJ por colaborador: a contabilidade definiu que a fonte e' a conta paga "Salarios PJ" (obra e administracao) e que nao ha regras para eles; cada credor PJ conta
+  1 colaborador, alocado na obra onde ele recebeu mais naquele mes (ou na administracao).
+Nomes de pessoas/credores so' aparecem na tela (com login) e ficam no banco; nada disso vai para o repositorio publico."""
+from __future__ import annotations
+
+import re
+import unicodedata
+
+import pandas as pd
+
+PESSOAS = ("2.01.02", "2.02.01")                                      # pessoal de obra e pessoal ADM (o painel mostra na aba Pessoas)
+SALARIOS_E_PREMIACOES = ("2.01.02.01", "2.01.02.10", "2.01.02.11", "2.02.01.01", "2.02.01.02", "2.02.01.06")   # PJ, CLT e premiacoes: fora dos "custos prioritarios"
+CONTAS_PJ = ("2.01.02.01", "2.02.01.01")
+COLUNAS = ["mes", "plano_cod", "plano_nome", "credor", "cc", "obra", "grupo", "valor"]
+
+
+def _sem_acento(s) -> str:
+    return unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode().lower().strip()
+
+
+def eh_pj(cod: str, nome: str) -> bool:
+    """Conta de salario de PJ: codigos conhecidos ou nome 'Salarios PJ | ...'."""
+    return cod in CONTAS_PJ or _sem_acento(nome).startswith("salarios pj")
+
+
+def nome_conta_pessoas(nome: str) -> str:
+    """'Horas Extras | Obra' e 'Horas Extras | ADM' viram a mesma linha 'Horas Extras' (o painel da contabilidade une obra e administracao)."""
+    n = re.sub(r"\s*\|\s*(Obra|ADM)\s*$", "", str(nome or "").strip(), flags=re.I).strip()
+    return n or "(sem nome)"
+
+
+def _excluido(cod: str, prefixos) -> bool:
+    return any(cod == p or cod.startswith(p + ".") for p in prefixos)
+
+
+# ------------------------------------------------------------------ banco
+def pagos_detalhe(conn, mes_ini: str, mes_fim: str, sem_previsao: bool = False) -> list:
+    """Pago (liquido da baixa x % do rateio) entre os meses 'AAAA-MM' (inclusive), por mes de pagamento, conta, credor, centro de custo e obra do de-para.
+    Devolve [{'mes','plano_cod','plano_nome','credor','cc','obra','grupo','valor'}]. Sem o de-para de centros de custo, 'obra' e 'grupo' ficam vazios."""
+    filtro = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
+    base = """SELECT to_char(b.data_pagamento,'YYYY-MM'), r.plano_cod, max(r.plano_nome),
+                     COALESCE(NULLIF(trim(t.contraparte_nome),''),'(sem credor)'),
+                     COALESCE(NULLIF(trim(r.centro_custo_nome),''),'(sem centro de custo)'),
+                     {obra}, {grupo}, sum(b.liquido * r.percentual / 100.0)
+              FROM pnl_v_baixa b
+              JOIN pnl_v_rateio r ON r.lado=b.lado AND r.bill_id=b.bill_id AND r.installment_id=b.installment_id
+              JOIN pnl_titulo t ON t.lado=b.lado AND t.bill_id=b.bill_id AND t.installment_id=b.installment_id
+              {juncao}
+              WHERE b.lado='P' AND b.data_pagamento >= %s::date AND b.data_pagamento < (%s::date + interval '1 month') {filtro}
+              GROUP BY 1, 2, 4, 5, 6, 7"""
+    par = (f"{mes_ini}-01", f"{mes_fim}-01")
+    tentativas = (
+        base.format(obra="COALESCE(g.codigo_obra,'')", grupo="COALESCE(g.grupo,'')", juncao="LEFT JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id", filtro=filtro),
+        base.format(obra="''", grupo="''", juncao="", filtro=filtro),
+    )
+    for sql in tentativas:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql, par)
+                linhas = cur.fetchall()
+            return [{"mes": m, "plano_cod": c, "plano_nome": n or "", "credor": cr, "cc": cc, "obra": ob, "grupo": gr, "valor": float(v or 0)}
+                    for m, c, n, cr, cc, ob, gr, v in linhas]
+        except Exception:                                           # noqa: BLE001  (sem a tabela do de-para: segue sem obra)
+            try:
+                conn.rollback()
+            except Exception:                                       # noqa: BLE001
+                pass
+    return []
+
+
+# ------------------------------------------------------------------ base em DataFrame
+def para_df(linhas: list) -> pd.DataFrame:
+    df = pd.DataFrame(linhas or [], columns=COLUNAS)
+    if len(df):
+        df["valor"] = df["valor"].astype(float)
+    return df
+
+
+def despesas_df(df: pd.DataFrame, prefixos_fora: list) -> pd.DataFrame:
+    """Contas pagas SEM as contas excluidas pelas regras da aba Despesas (pessoal, encargos, transferencias...)."""
+    if not len(df):
+        return df
+    return df[~df["plano_cod"].map(lambda c: _excluido(c, prefixos_fora))].copy()
+
+
+def pessoas_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Custos prioritarios com pessoas: contas 2.01.02 e 2.02.01, SEM salarios CLT/PJ e premiacoes. 'plano_nome' ja vem sem o sufixo Obra/ADM."""
+    if not len(df):
+        return df
+    m = df["plano_cod"].map(lambda c: _excluido(c, PESSOAS) and c not in SALARIOS_E_PREMIACOES)
+    out = df[m].copy()
+    out["plano_nome"] = out["plano_nome"].map(nome_conta_pessoas)
+    return out
+
+
+# ------------------------------------------------------------------ somas
+def meses_do_ano(mes: str) -> list:
+    """['AAAA-01', ..., mes]"""
+    return [f"{mes[:4]}-{i:02d}" for i in range(1, int(mes[5:]) + 1)]
+
+
+def total_por(df: pd.DataFrame, col: str = "plano_nome") -> list:
+    """[(chave, acumulado)] do maior para o menor."""
+    if not len(df):
+        return []
+    s = df.groupby(col)["valor"].sum().sort_values(ascending=False)
+    return [(k, round(float(v), 2)) for k, v in s.items()]
+
+
+def serie_mensal(df: pd.DataFrame, meses: list, conta: str | None = None) -> list:
+    """Valor pago em cada mes de `meses` (0 onde nao houve), de uma conta (plano_nome) ou de todas."""
+    d = df if conta is None else df[df["plano_nome"] == conta]
+    por = d.groupby("mes")["valor"].sum().to_dict() if len(d) else {}
+    return [round(float(por.get(m, 0.0)), 2) for m in meses]
+
+
+def agrupar(df: pd.DataFrame, por: str, mes_ref: str, conta: str | None = None, credor: str | None = None, top: int = 15) -> dict:
+    """Acumulado do periodo e valor do mes de referencia, agrupado por `por` ('credor' ou 'cc'), filtrado por conta e/ou credor.
+    -> {'linhas': [{'chave','acumulado','mes'}] (top N), 'n': total de chaves, 'total': soma do filtro}"""
+    d = df
+    if conta is not None:
+        d = d[d["plano_nome"] == conta]
+    if credor is not None:
+        d = d[d["credor"] == credor]
+    if not len(d):
+        return {"linhas": [], "n": 0, "total": 0.0}
+    g = d.groupby(por)["valor"].sum()
+    gm = d[d["mes"] == mes_ref].groupby(por)["valor"].sum()
+    ordem = g.sort_values(ascending=False)
+    linhas = [{"chave": k, "acumulado": round(float(v), 2), "mes": round(float(gm.get(k, 0.0)), 2)} for k, v in ordem.head(top).items()]
+    return {"linhas": linhas, "n": int(len(ordem)), "total": round(float(g.sum()), 2)}
+
+
+def tabela_pessoas(df_pess: pd.DataFrame, mes: str, colab_mes: int | None, colab_soma_antes: int | None) -> list:
+    """Linha por conta de pessoas: valor do mes, % do mes, R$/colab no mes, acumulado ate o mes anterior, R$/colab acumulado e variacao
+    (R$/colab do mes ÷ R$/colab acumulado − 1). `colab_mes` = colaboradores do mes; `colab_soma_antes` = soma do headcount mensal dos meses anteriores do ano.
+    Sem headcount, as colunas por colaborador ficam None."""
+    if not len(df_pess):
+        return []
+    antes = [m for m in meses_do_ano(mes) if m < mes]
+    set_ = df_pess[df_pess["mes"] == mes].groupby("plano_nome")["valor"].sum()
+    acu = df_pess[df_pess["mes"].isin(antes)].groupby("plano_nome")["valor"].sum()
+    contas = sorted(set(set_.index) | set(acu.index), key=lambda c: -float(set_.get(c, 0.0)))
+    tot_mes = float(set_.sum())
+    out = []
+    for c in contas:
+        v, a = float(set_.get(c, 0.0)), float(acu.get(c, 0.0))
+        rc_m = v / colab_mes if colab_mes else None
+        rc_a = a / colab_soma_antes if colab_soma_antes else None
+        out.append({"conta": c, "mes": round(v, 2), "pct_mes": round(v / tot_mes, 4) if abs(tot_mes) > 0.005 else None, "por_colab_mes": None if rc_m is None else round(rc_m, 2),
+                    "acum_antes": round(a, 2), "por_colab_acum": None if rc_a is None else round(rc_a, 2),
+                    "variacao": round(rc_m / rc_a - 1, 4) if rc_m is not None and rc_a else None})
+    return out
+
+
+# ------------------------------------------------------------------ PJ por colaborador (fonte: contas pagas "Salarios PJ")
+def pj_do_mes(df: pd.DataFrame, mes: str) -> dict:
+    """PJ do mes a partir das contas pagas 'Salarios PJ': cada credor com valor positivo conta 1 colaborador, alocado onde recebeu mais (empate: obra).
+    -> {'total','obra','adm','por_obra': {codigo_obra|'sem de-para': n}, 'colaboradores': [{'credor','destino','valor'}]}.
+    Destino = codigo da obra (do de-para), 'ADM' (conta de pessoal ADM / centro do grupo ADM) ou 'sem de-para'."""
+    vazio = {"total": 0, "obra": 0, "adm": 0, "por_obra": {}, "colaboradores": []}
+    if not len(df):
+        return vazio
+    d = df[(df["mes"] == mes) & df.apply(lambda r: eh_pj(r["plano_cod"], r["plano_nome"]), axis=1)] if len(df) else df
+    if not len(d):
+        return vazio
+
+    def destino(r) -> str:
+        if r["plano_cod"].startswith("2.02.01") or r["grupo"] == "ADM":
+            return "ADM"
+        return r["obra"] or "sem de-para"
+
+    d = d.assign(destino=d.apply(destino, axis=1))
+    por = d.groupby(["credor", "destino"])["valor"].sum().reset_index()
+    tot_credor = por.groupby("credor")["valor"].sum()
+    colabs, n_obra = [], {}
+    for credor, sub in por.groupby("credor"):
+        if tot_credor[credor] <= 0.005:
+            continue                                                    # estornos/zerados nao sao colaborador no mes
+        sub = sub.assign(ord=sub["destino"].map(lambda x: 1 if x == "ADM" else 0)).sort_values(["valor", "ord"], ascending=[False, True])
+        dest, val = sub.iloc[0]["destino"], float(tot_credor[credor])
+        colabs.append({"credor": credor, "destino": dest, "valor": round(val, 2)})
+        if dest != "ADM":
+            n_obra[dest] = n_obra.get(dest, 0) + 1
+    n_adm = sum(1 for c in colabs if c["destino"] == "ADM")
+    return {"total": len(colabs), "obra": len(colabs) - n_adm, "adm": n_adm, "por_obra": n_obra, "colaboradores": sorted(colabs, key=lambda c: -c["valor"])}
