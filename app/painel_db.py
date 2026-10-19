@@ -967,3 +967,135 @@ def receita_mensal(conn, mes_atual: str | None = None, sem_distrato: bool = True
         if (yb * 12 + mb) - (ya * 12 + ma) == 1 and ant["receita"] > 0:
             atu["var"] = round(atu["receita"] / ant["receita"] - 1, 4)
     return out
+
+
+# ---------------------------------------------------------------- Folha de pagamento (recibos em PDF; SQL-16)
+EMPRESAS_FOLHA = {"468": "CONSTRUTORA", "469": "ENERGIA"}          # codigo da empresa no recibo -> escopo da importacao
+
+
+def folha_instalada(conn) -> bool:
+    """True se o SQL da folha (sql/v2_folha.sql) ja foi executado."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema='gdf' AND table_name IN ('pnl_folha_recibo','pnl_folha_depto_obra')")
+            return cur.fetchone()[0] == 2
+    except Exception:
+        return False
+
+
+def gravar_folha(conn, folha: dict, arquivo: str, sha256: str, usuario: str | None) -> dict:
+    """Grava os recibos lidos do PDF como importacao ativa do mes+empresa (a anterior do mesmo mes/escopo fica ativo=false). Mesmo arquivo (sha256)
+    ja importado: nao grava de novo ({'repetido': True}). Tudo numa transacao so. O log guarda so' contagens (nada de nome nem salario)."""
+    from importador_folha import resumo_por_recibo
+    if not folha.get("competencia"):
+        raise ValueError("O PDF não informa a competência (mês/ano); não sei a que mês pertence.")
+    mes = folha["competencia"] + "-01"
+    escopo = "+".join(EMPRESAS_FOLHA.get(e, f"EMP{e}") for e in folha["empresas"])
+    with db.transacao(conn):
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, ativo, mes FROM pnl_importacao WHERE tipo='FOLHA' AND arquivo_sha256=%s", (sha256,))
+            ja = cur.fetchone()
+            if ja:
+                return {"repetido": True, "id": ja[0], "ativo": ja[1], "mes": ja[2].strftime("%Y-%m"), "escopo": escopo}
+            cur.execute("UPDATE pnl_importacao SET ativo=false WHERE tipo='FOLHA' AND mes=%s AND escopo=%s AND ativo", (mes, escopo))
+            cur.execute("""INSERT INTO pnl_importacao (tipo, mes, escopo, arquivo_nome, arquivo_sha256, importado_por, n_linhas, detalhe)
+                           VALUES ('FOLHA', %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                        (mes, escopo, arquivo, sha256, usuario, len(folha["recibos"]),
+                         json.dumps({"recibos": len(folha["recibos"]), "paginas": folha["paginas"], "avisos": folha["avisos"]}, ensure_ascii=False)))
+            iid = cur.fetchone()[0]
+            linhas_r, linhas_e = [], []
+            for r in folha["recibos"]:
+                s = resumo_por_recibo(r)
+                linhas_r.append((iid, r["empresa"], r["cadastro"], r["nome"], r["cargo"], r["local"], r["departamento"], r["subnivel_texto"], r["admissao"],
+                                 s["salario"], s["hora_extra"], s["dsr_he"], r["total_proventos"], r["total_descontos"], r["liquido"], r["fgts_mes"]))
+                for e in r["eventos"]:
+                    linhas_e.append((iid, r["empresa"], r["cadastro"], r["nome"], r["cbo"], r["cargo"], r["local"], r["departamento"], r["admissao"],
+                                     e["ev"], e["descricao"], e["referencia"], e["provento"], e["desconto"], e["informativo"]))
+            execute_values(cur, """INSERT INTO pnl_folha_recibo (importacao_id, empresa, cadastro, nome, cargo, local_obra, departamento, subnivel_texto, admissao,
+                                   salario, hora_extra, dsr_he, total_proventos, total_descontos, liquido, fgts_mes) VALUES %s""", linhas_r)
+            execute_values(cur, """INSERT INTO pnl_folha_evento (importacao_id, empresa, cadastro, nome, cbo, cargo, local_obra, departamento, admissao,
+                                   ev, descricao, referencia, provento, desconto, informativo) VALUES %s""", linhas_e)
+    registrar_log(conn, "FOLHA_PDF_IMPORTADA", "AVISO" if folha["avisos"] else "INFO", usuario, mes[:7],
+                  {"arquivo": arquivo, "sha256": sha256[:16], "importacao_id": iid, "escopo": escopo, "recibos": len(folha["recibos"]),
+                   "eventos": len(linhas_e), "avisos": len(folha["avisos"])})
+    return {"repetido": False, "id": iid, "mes": mes[:7], "escopo": escopo, "recibos": len(folha["recibos"])}
+
+
+def folha_meses(conn) -> list:
+    """Meses ('AAAA-MM') com folha importada e ativa."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT DISTINCT to_char(mes,'YYYY-MM') FROM pnl_importacao WHERE tipo='FOLHA' AND ativo ORDER BY 1")
+            return [r[0] for r in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def folha_do_mes(conn, mes: str) -> dict | None:
+    """Folha CLT do mes (todas as empresas importadas): total de colaboradores, salarios (evento 1), HE + DSR s/HE, % HE/salarios, custo (proventos + FGTS),
+    por empresa, por obra (de-para departamento -> obra) e os departamentos sem de-para. None se o mes nao tem folha."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT id, escopo, arquivo_nome, importado_por, importado_em FROM pnl_importacao
+                           WHERE tipo='FOLHA' AND mes=%s::date AND ativo ORDER BY escopo""", (f"{mes}-01",))
+            imps = cur.fetchall()
+            if not imps:
+                return None
+            cur.execute("""SELECT r.empresa, r.departamento, max(r.subnivel_texto), d.codigo_obra, max(d.obra_nome), count(*),
+                                  sum(COALESCE(r.salario,0)), sum(COALESCE(r.hora_extra,0)), sum(COALESCE(r.dsr_he,0)),
+                                  sum(COALESCE(r.total_proventos,0)), sum(COALESCE(r.fgts_mes,0))
+                           FROM pnl_folha_recibo r JOIN pnl_importacao i ON i.id = r.importacao_id
+                           LEFT JOIN pnl_folha_depto_obra d ON d.empresa = r.empresa AND d.departamento = r.departamento
+                           WHERE i.tipo='FOLHA' AND i.mes=%s::date AND i.ativo
+                           GROUP BY r.empresa, r.departamento, d.codigo_obra""", (f"{mes}-01",))
+            linhas = cur.fetchall()
+    except Exception:
+        return None
+    tot = {"colab": 0, "salarios": 0.0, "hora_extra": 0.0, "dsr_he": 0.0, "proventos": 0.0, "fgts": 0.0}
+    por_emp, por_obra, sem = {}, {}, []
+    for emp, dep, sub, cod, onome, n, sal, he, dsr, prov, fgts in linhas:
+        vals = {"colab": int(n), "salarios": float(sal), "hora_extra": float(he), "dsr_he": float(dsr), "proventos": float(prov), "fgts": float(fgts)}
+        for k, v in vals.items():
+            tot[k] += v
+        e = por_emp.setdefault(emp, {"empresa": EMPRESAS_FOLHA.get(emp, emp), "colab": 0, "salarios": 0.0, "hora_extra": 0.0, "dsr_he": 0.0, "proventos": 0.0, "fgts": 0.0})
+        for k, v in vals.items():
+            e[k] += v
+        if cod is None:
+            sem.append({"empresa": EMPRESAS_FOLHA.get(emp, emp), "departamento": dep, "subnivel": sub, "colab": int(n)})
+            cod = "sem de-para"
+        o = por_obra.setdefault(cod, {"codigo": cod, "nome": onome or (sub if cod == "sem de-para" else ""), "colab": 0, "salarios": 0.0, "hora_extra": 0.0, "dsr_he": 0.0, "proventos": 0.0, "fgts": 0.0})
+        for k, v in vals.items():
+            o[k] += v
+    pct = lambda d: round((d["hora_extra"] + d["dsr_he"]) / d["salarios"], 4) if d["salarios"] > 0.005 else None
+    for d in [tot, *por_emp.values(), *por_obra.values()]:
+        d["custo"] = round(d["proventos"] + d["fgts"], 2)
+        d["he_pct"] = pct(d)
+        for k in ("salarios", "hora_extra", "dsr_he", "proventos", "fgts"):
+            d[k] = round(d[k], 2)
+    return {"mes": mes, "importacoes": [{"id": i[0], "escopo": i[1], "arquivo": i[2], "quem": i[3], "quando": i[4]} for i in imps], "total": tot,
+            "por_empresa": sorted(por_emp.values(), key=lambda d: d["empresa"]), "por_obra": por_obra, "sem_depara": sem}
+
+
+def folha_serie(conn) -> list:
+    """[{'mes','colab','salarios','he_pct'}] dos meses com folha importada (para o grafico HE / salarios)."""
+    out = []
+    for m in folha_meses(conn):
+        f = folha_do_mes(conn, m)
+        if f:
+            out.append({"mes": m, "colab": f["total"]["colab"], "salarios": f["total"]["salarios"], "he_pct": f["total"]["he_pct"]})
+    return out
+
+
+def colab_por_linha_obras(linhas: list, folha: dict | None) -> dict:
+    """Para cada linha da tabela de Obras ({'obra': cod, ...}) devolve {cod: colaboradores CLT}. 'DEM' soma as obras da folha que nao aparecem em linha propria
+    (e que nao sao a administracao central, codigo 99). Sem folha, {}."""
+    if not folha:
+        return {}
+    proprias = {l["obra"] for l in linhas if l["obra"] != "DEM"}
+    res = {}
+    for l in linhas:
+        if l["obra"] == "DEM":
+            res["DEM"] = sum(o["colab"] for c, o in folha["por_obra"].items() if c not in proprias and c != "99")
+        else:
+            res[l["obra"]] = folha["por_obra"].get(l["obra"], {}).get("colab", 0)
+    return res

@@ -528,3 +528,67 @@ def test_tela_obras_mostra_tabela(conn):
     tab = at.tabs[3].dataframe[0].value
     assert list(tab["Obra"]) == ["100", "101", "102"] and "Margem (BDI/receita)" in tab.columns and "Custo/colab." in tab.columns
     assert "70,0%" in set(tab["Margem (BDI/receita)"])
+
+
+# ---------------------------------------------------------------- Folha de pagamento (recibos; SQL-16)
+def _depara_folha(conn):
+    with conn.cursor() as cur:
+        cur.execute("""INSERT INTO pnl_folha_depto_obra (empresa, departamento, subnivel_texto, codigo_obra, obra_nome) VALUES
+                       ('468', '001.004', 'OBRA TESTE UM', '103', 'OBRA UM'), ('468', '001.010', 'OBRA TESTE DOIS', '104', 'OBRA DOIS')""")
+
+
+def test_gravar_folha_ativa_repetido_e_totais(conn):
+    from folha_sintetica import pdf_folha_sintetico
+    import importador_folha as IF
+    assert P.folha_instalada(conn)
+    _depara_folha(conn)
+    folha = IF.ler_recibos_pdf(pdf_folha_sintetico())
+    r = P.gravar_folha(conn, folha, "recibos.pdf", "a" * 64, "teste@x")
+    assert r["repetido"] is False and r["mes"] == "2026-09" and r["escopo"] == "CONSTRUTORA" and r["recibos"] == 3
+    assert P.gravar_folha(conn, folha, "recibos.pdf", "a" * 64, "teste@x")["repetido"] is True        # mesmo arquivo: nao grava de novo
+    assert _contar(conn, "pnl_folha_recibo") == 3
+    assert P.folha_meses(conn) == ["2026-09"]
+    f = P.folha_do_mes(conn, "2026-09")
+    t = f["total"]
+    assert t["colab"] == 3 and t["salarios"] == 10000.00                                   # 3.000 + 4.000 + 3.000
+    assert round(t["hora_extra"], 2) == 1000.00 and t["dsr_he"] == 100.00                  # 500 + 200 + 300 ; DSR 100
+    assert t["he_pct"] == 0.11                                                             # (1000 + 100) / 10000
+    assert t["proventos"] == 11100.00 and t["fgts"] == 888.00 and t["custo"] == 11988.00
+    assert f["por_obra"]["103"]["colab"] == 2 and f["por_obra"]["104"]["colab"] == 1
+    assert f["sem_depara"] == []
+    assert f["por_empresa"][0]["empresa"] == "CONSTRUTORA"
+    # os eventos guardam a linha informativa (vale alimentacao) com valor zero
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*), sum(provento) FILTER (WHERE informativo) FROM pnl_folha_evento")
+        n_ev, soma_inf = cur.fetchone()
+    assert n_ev >= 12 and float(soma_inf or 0) == 0.0
+
+
+def test_folha_nova_do_mesmo_mes_substitui_a_antiga_e_log_sem_nomes(conn):
+    from folha_sintetica import pdf_folha_sintetico
+    import importador_folha as IF
+    folha = IF.ler_recibos_pdf(pdf_folha_sintetico())
+    P.gravar_folha(conn, folha, "v1.pdf", "b" * 64, "teste@x")
+    P.gravar_folha(conn, folha, "v2.pdf", "c" * 64, "teste@x")
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*) FILTER (WHERE ativo), count(*) FROM pnl_importacao WHERE tipo='FOLHA'")
+        assert cur.fetchone() == (1, 2)
+    assert P.folha_do_mes(conn, "2026-09")["total"]["colab"] == 3                       # so a ativa conta (nao dobra)
+    with conn.cursor() as cur:
+        cur.execute("SELECT detalhe::text FROM pnl_log WHERE acao='FOLHA_PDF_IMPORTADA'")
+        logs = " ".join(r[0] for r in cur.fetchall())
+    assert "FICTICIA" not in logs and "IMAGINARIO" not in logs                              # o historico nao guarda nome de pessoa
+
+
+def test_folha_sem_de_para_aparece_na_lista_e_colab_por_linha_obras(conn):
+    from folha_sintetica import pdf_folha_sintetico
+    import importador_folha as IF
+    P.gravar_folha(conn, IF.ler_recibos_pdf(pdf_folha_sintetico()), "r.pdf", "d" * 64, "teste@x")
+    f = P.folha_do_mes(conn, "2026-09")                                                   # sem de-para: tudo cai em 'sem de-para'
+    assert {x["departamento"] for x in f["sem_depara"]} == {"001.004", "001.010"}
+    _depara_folha(conn)
+    f = P.folha_do_mes(conn, "2026-09")
+    linhas = [{"obra": "103"}, {"obra": "DEM"}]
+    assert P.colab_por_linha_obras(linhas, f) == {"103": 2, "DEM": 1}                     # obra 104 nao tem linha propria: entra em Demais obras
+    assert P.colab_por_linha_obras(linhas, None) == {}
+    assert P.folha_do_mes(conn, "2025-01") is None

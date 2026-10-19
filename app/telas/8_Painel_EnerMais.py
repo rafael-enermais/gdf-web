@@ -9,6 +9,7 @@ import streamlit as st
 
 import formatacao as F
 import importador_dre
+import importador_folha
 import painel_db as P
 import sienge_api as S
 from auth import usuario_atual
@@ -446,10 +447,22 @@ with aba_obras:
         o3.metric("BDI real", F.moeda_br(t["bdi"]), border=True)
         o4.metric("Margem de contribuição", f"{t['margem'] * 100:,.1f}%".replace(",", "X").replace(".", ",").replace("X", ".") if t["margem"] is not None else "–", border=True)
         pct = lambda m: (f"{m * 100:,.1f}%".replace(",", "X").replace(".", ",").replace("X", ".") if m is not None else "–")
+        _folha_o = P.folha_do_mes(conn, mes_o)
+        _colab = P.colab_por_linha_obras(ob["linhas"], _folha_o)
+        def _por_colab(v, n):
+            return F.moeda_br(v / n) if n else "–"
         st.dataframe(pd.DataFrame([{"Obra": l["obra"], "Nome": l["nome"], "Receita": F.moeda_br(l["receita"]), "Custos": F.moeda_br(l["custo"]), "BDI real": F.moeda_br(l["bdi"]),
-                                    "Margem (BDI/receita)": pct(l["margem"]), "Colab.": "–", "Fat./colab.": "–", "Custo/colab.": "–"} for l in ob["linhas"]]),
+                                    "Margem (BDI/receita)": pct(l["margem"]),
+                                    "Colab. (CLT)": (str(_colab.get(l["obra"], 0)) if _folha_o else "–"),
+                                    "Fat./colab.": (_por_colab(l["receita"], _colab.get(l["obra"], 0)) if _folha_o else "–"),
+                                    "Custo/colab.": (_por_colab(-l["custo"], _colab.get(l["obra"], 0)) if _folha_o else "–")} for l in ob["linhas"]]),
                      hide_index=True, width="stretch")
-        st.caption("Colab., Fat./colab. e Custo/colab. dependem da folha de pagamento do mês (CLT) e dos PJ pagos nas obras; entram na próxima etapa, quando a folha for importada.")
+        if _folha_o:
+            st.caption(f"Colaboradores CLT pelos recibos de {mes_o[5:]}/{mes_o[:4]} (obra pelo departamento do recibo e o de-para de departamentos). "
+                       "Fat./colab. = receita ÷ colaboradores; Custo/colab. = custos diretos ÷ colaboradores. Ainda não entram os PJ pagos nas obras."
+                       + (f" Atenção: {sum(x['colab'] for x in _folha_o['sem_depara'])} recibo(s) sem de-para de departamento (veja a aba Pessoas)." if _folha_o["sem_depara"] else ""))
+        else:
+            st.caption("Colab., Fat./colab. e Custo/colab. aparecem quando os recibos da folha do mês forem importados (aba Pessoas).")
         c_l, c_p = st.columns(2)
         c_l.markdown("**5 obras com maior BDI**")
         c_l.dataframe(pd.DataFrame([{"Obra": l["obra"], "Nome": l["nome"], "BDI real": F.moeda_br(l["bdi"]), "Margem": pct(l["margem"])} for l in ob["top_lucro"]]), hide_index=True, width="stretch")
@@ -543,7 +556,78 @@ with aba_adm:
                     st.rerun()
 
 with aba_pess:
-    st.markdown("Evolução do **faturamento** mês a mês. A linha **% horas extras ÷ salários CLT** (e os colaboradores por obra) entra quando a folha de pagamento for importada.")
+    st.markdown("**Folha de pagamento (CLT)** pelos recibos em PDF e a evolução do **faturamento** mês a mês.")
+    _folha_ok = P.folha_instalada(conn)
+    _meses_folha = P.folha_meses(conn)
+    with st.expander("Importar os recibos de pagamento (PDF)", expanded=not _meses_folha):
+        if not _folha_ok:
+            st.warning("Falta executar o arquivo `sql/v2_folha.sql` (SQL-16) no Supabase para o app guardar a folha. Você já pode ler os PDFs e ver o resultado; só não dá para salvar.")
+        st.caption("Envie o PDF 'Recibos de Pagamento' de cada empresa (Construtora e Energia). O app lê só o texto; o original não é alterado. Cada recibo vem duas vezes no PDF; conta uma só.")
+        arqs_f = st.file_uploader("PDFs dos recibos (um ou mais)", type=["pdf"], accept_multiple_files=True, key="pn2_pdf_folha")
+        arqs_f = arqs_f if isinstance(arqs_f, (list, tuple)) else ([arqs_f] if arqs_f else [])
+        for arq_f in arqs_f:
+            if not str(getattr(arq_f, "name", "")).lower().endswith(".pdf"):
+                continue
+            b_f = arq_f.getvalue()
+            sha_f = P.sha256_curto(b_f)
+            ch_f = f"pn2_folha_lida_{sha_f}"
+            if ch_f not in st.session_state:
+                try:
+                    with st.spinner(f"Lendo “{arq_f.name}”… (pode levar de 10 segundos a 1 minuto)"):
+                        st.session_state[ch_f] = importador_folha.ler_recibos_pdf(b_f)
+                except importador_folha.ErroFolha as exc:
+                    st.session_state[ch_f] = str(exc)
+                    P.registrar_log(conn, "FOLHA_PDF_ERRO", "ERRO", usuario, None, {"arquivo": arq_f.name, "sha256": sha_f, "erro": str(exc)[:300]})
+            lido_f = st.session_state[ch_f]
+            if isinstance(lido_f, str):
+                st.error(f"{arq_f.name}: {lido_f}")
+                continue
+            comp_f = lido_f["competencia"]
+            st.success(f"{arq_f.name}: {len(lido_f['recibos'])} colaboradores · competência {comp_f[5:]}/{comp_f[:4]} · empresa(s) "
+                       f"{', '.join(P.EMPRESAS_FOLHA.get(e, e) for e in lido_f['empresas'])} · {lido_f['paginas']} páginas.")
+            for av in lido_f["avisos"][:20]:
+                st.warning(av)
+            if not lido_f["avisos"]:
+                st.caption("Conferido: em todos os recibos a soma dos eventos fecha com o total de proventos e de descontos do recibo.")
+            if st.button(f"Salvar a folha de {comp_f[5:]}/{comp_f[:4]} ({', '.join(P.EMPRESAS_FOLHA.get(e, e) for e in lido_f['empresas'])})", type="primary",
+                         disabled=not (_folha_ok and comp_f), key=f"pn2_folha_salvar_{sha_f}"):
+                try:
+                    res_f = P.gravar_folha(conn, lido_f, arq_f.name, __import__("hashlib").sha256(b_f).hexdigest(), usuario)
+                    if res_f["repetido"]:
+                        st.info(f"Este mesmo arquivo já foi importado antes (importação #{res_f['id']}, mês {res_f['mes']}).")
+                    else:
+                        st.success(f"Folha de {res_f['mes']} ({res_f['escopo']}) salva: {res_f['recibos']} colaboradores (importação #{res_f['id']}).")
+                        st.rerun()
+                except Exception as exc:
+                    st.error(f"Não consegui salvar: {exc}")
+    if _meses_folha:
+        mes_f = st.selectbox("Mês da folha", _meses_folha, index=len(_meses_folha) - 1, key="pn2_mes_folha")
+        fo = P.folha_do_mes(conn, mes_f)
+        tt = fo["total"]
+        q1, q2, q3, q4 = st.columns(4)
+        q1.metric("Colaboradores CLT", f"{tt['colab']}", border=True)
+        q2.metric("Salários (horas normais)", F.moeda_br(tt["salarios"]), border=True)
+        q3.metric("Horas extras + DSR", F.moeda_br(tt["hora_extra"] + tt["dsr_he"]), border=True)
+        q4.metric("HE + DSR ÷ salários", F.pct_br(tt["he_pct"]) if tt["he_pct"] is not None else "–", border=True)
+        st.dataframe(pd.DataFrame([{"Empresa": e["empresa"], "Colab.": e["colab"], "Salários": F.moeda_br(e["salarios"]), "HE + DSR": F.moeda_br(e["hora_extra"] + e["dsr_he"]),
+                                    "HE ÷ salários": F.pct_br(e["he_pct"]) if e["he_pct"] is not None else "–", "Custo (proventos + FGTS)": F.moeda_br(e["custo"])} for e in fo["por_empresa"]]),
+                     hide_index=True, width="stretch")
+        st.markdown("**Colaboradores por obra**")
+        st.dataframe(pd.DataFrame([{"Obra": o["codigo"], "Nome": o["nome"], "Colab.": o["colab"], "Salários": F.moeda_br(o["salarios"]), "HE + DSR": F.moeda_br(o["hora_extra"] + o["dsr_he"]),
+                                    "HE ÷ salários": F.pct_br(o["he_pct"]) if o["he_pct"] is not None else "–", "Custo (proventos + FGTS)": F.moeda_br(o["custo"])}
+                                   for o in sorted(fo["por_obra"].values(), key=lambda o: -o["colab"])]), hide_index=True, width="stretch")
+        if fo["sem_depara"]:
+            st.warning("Departamentos da folha sem de-para com obra (cadastre em `pnl_folha_depto_obra`): "
+                       + "; ".join(f"{x['empresa']} {x['departamento']} ({x['subnivel'] or '–'}, {x['colab']} colab.)" for x in fo["sem_depara"]))
+        st.caption("Salários = evento 1 (Horas Normais) dos recibos. Horas extras = eventos de HE 50/60/80/100/110% (inclui HE de mês anterior) + DSR s/ HE, como a contabilidade pediu. "
+                   "Custo = total de proventos + FGTS do mês (não inclui INSS patronal, férias/13º provisionados nem os PJ). Fonte: "
+                   + "; ".join(f"“{i['arquivo']}” ({i['escopo']}, importação #{i['id']})" for i in fo["importacoes"]) + ".")
+        _sf = [x for x in P.folha_serie(conn) if x["he_pct"] is not None]
+        if len(_sf) >= 2:
+            st.markdown("**HE + DSR ÷ salários CLT por mês**")
+            _grafico_meses([round(x["he_pct"] * 100, 1) for x in _sf], [x["mes"] for x in _sf], "HE ÷ salários (%)", linha=True)
+    st.divider()
+    st.markdown("Evolução do **faturamento** mês a mês.")
     _mes_cur = f"{dt.date.today().year}-{dt.date.today().month:02d}"
     serie = P.receita_mensal(conn, mes_atual=_mes_cur)
     if not serie:
