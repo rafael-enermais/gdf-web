@@ -1549,3 +1549,4 @@ def depto_obra_salvar(conn, linhas: list[dict], usuario: str | None, motivo: str
     if novos or alt:
         registrar_log(conn, "DEPARA_DEPTO_OBRA_EDITADO", "AVISO", usuario, None, {"novos": novos, "alterados": alt})
     return {"novos": novos, "alterados": alt}
+# v0.16.1: recarga do modulo (serie mensal do orcamento)
