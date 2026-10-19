@@ -95,7 +95,6 @@ def rect(c, x, y, w, h, fill=None, stroke=None, r=0, lw=0.6):
     else: c.rect(x, y, w, h, fill=1 if fill is not None else 0, stroke=1 if stroke is not None else 0)
 def hline(c, x1, x2, y, color=BORDER, lw=0.5):
     c.setStrokeColor(color); c.setLineWidth(lw); c.line(x1, y, x2, y)
-def numcolor(v, base=NAVY): return NEG_TXT if (v is not None and not isinstance(v, str) and neg(v)) else base
 
 def titulo(c, y, t, sub=None):
     txt(c, MX, y, t, "PB", 15, NAVY)

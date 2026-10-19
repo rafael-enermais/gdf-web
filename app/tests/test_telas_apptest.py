@@ -657,10 +657,7 @@ def test_ordem_do_upload_nao_importa_conferencia_mensal_x_acumulado_e_feita_ao_v
     assert not at.exception, at.exception
 
 
-def test_meses_faltantes_e_aviso_diz_o_que_importar(patch_conn):
-    import contexto
-    assert contexto.meses_faltantes(["2026-02", "2026-05"]) == ["2026-01", "2026-03", "2026-04"]
-    assert contexto.meses_faltantes(["2026-01", "2026-02"]) == []
+def test_aviso_diz_o_que_importar_quando_falta_mes(patch_conn):
     _semear(patch_conn, meses=(1, 3))                                                        # fevereiro falta: março sai com n/d só na DRE e o aviso diz o que importar
     at = _app("2_Demonstrativos.py", patch_conn).run()
     assert not at.exception, at.exception

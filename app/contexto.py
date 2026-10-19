@@ -10,20 +10,6 @@ import fontes
 import motor
 
 
-def meses_validos(meses: list) -> list:
-    """Meses com a sequencia completa de janeiro ate' ele (o Balanco e a DRE precisam disso)."""
-    return [m for m in meses if all(f"{m[:4]}-{i:02d}" in meses for i in range(1, int(m[5:7]) + 1))]
-
-
-def meses_faltantes(meses: list) -> list:
-    """Meses que faltam (de janeiro até o último importado de cada ano) para a sequência ficar completa. Serve para dizer ao usuário o que subir."""
-    falta = []
-    for ano in sorted({m[:4] for m in meses}):
-        ultimo = max(int(m[5:7]) for m in meses if m[:4] == ano)
-        falta += [f"{ano}-{i:02d}" for i in range(1, ultimo + 1) if f"{ano}-{i:02d}" not in meses]
-    return falta
-
-
 def meses_com_dados(conn, empresa_id: int) -> list:
     """Todos os meses ('AAAA-MM') que têm balancete mensal OU acumulado ativo (o relatório pode ser gerado para qualquer um deles)."""
     meses = set()
@@ -57,9 +43,3 @@ def status_usados(dados: dict, status: dict) -> tuple:
     itens = [("MENSAL", m) for m in dados["usados_mensais"]] + [("ACUMULADO", m) for m in dados["usados_acum"]]
     ras = [(f"mensal {m[5:7]}/{m[:4]}" if t == "MENSAL" else f"acumulado até {m[5:7]}/{m[:4]}") for t, m in itens if status.get((t, m)) != "REVISADA"]
     return len(itens) - len(ras), len(ras), ras
-
-
-def status_por_mes(conn, empresa_id: int) -> dict:
-    """{'AAAA-MM': 'RASCUNHO'|'REVISADA'} das importacoes mensais ativas."""
-    return {f"{i['periodo_fim'].year}-{i['periodo_fim'].month:02d}": i["status"]
-            for i in db.listar_importacoes(conn, empresa_id) if i["ativo"] and i["tipo"] == "MENSAL"}

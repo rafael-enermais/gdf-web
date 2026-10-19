@@ -659,7 +659,7 @@ if aba_regras.open or _TODAS:                                   # so' a aba aber
             st.warning("Falta executar o arquivo `sql/v2_acesso.sql` (SQL-20) no Supabase para cadastrar visualizadores. Até lá todos os usuários têm acesso completo, como hoje.")
         else:
             st.caption("O login continua no Supabase (Authentication → Users): crie o usuário lá e cadastre o e-mail aqui como VISUALIZADOR. "
-                       "Quem não estiver na lista continua com acesso completo. Para tirar o acesso: desative aqui e/ou exclua o usuário no Authentication.")
+                       "Quem não estiver na lista continua com acesso completo. Para tirar o acesso: desative aqui. Não exclua o usuário no Authentication sem checar: o login é compartilhado com os outros apps (EGC, Radar) e excluir tira o acesso dele a todos.")
             ac = acesso.listar(conn)
             if ac:
                 st.dataframe(pd.DataFrame([{"E-mail": a["email"], "Papel": a["papel"].lower(), "Ativo": "sim" if a["ativo"] else "não", "Por": a["alterado_por"] or "",
