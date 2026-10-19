@@ -555,7 +555,8 @@ with aba_adm:
         cb_.markdown("**Contas que mais sobraram do orçado**")
         cb_.dataframe(pd.DataFrame([{"Conta": f"{c['codigo']} · {c['conta']}", "Orçado": F.moeda_br(c["orcado"]), "Realizado": F.moeda_br(c["realizado"]), "Desvio": F.moeda_br(c["desvio"])} for c in res_orc["abaixo"]]),
                       hide_index=True, width="stretch")
-        serie_o = P.orcamento_serie_mensal(conn, _orc["id"])
+        # protecao: se o servidor ainda tiver o painel_db antigo em memoria logo apos um deploy, o resto da aba continua funcionando
+        serie_o = P.orcamento_serie_mensal(conn, _orc["id"]) if hasattr(P, "orcamento_serie_mensal") else []
         if len(serie_o) > 1:
             st.markdown("**Desvio mês a mês (todos os meses do arquivo)**")
             st.dataframe(pd.DataFrame([{"Mês": f"{x['mes'][5:]}/{x['mes'][:4]}", "Orçado": F.moeda_br(x["orcado"]), "Realizado": F.moeda_br(x["realizado"]),
