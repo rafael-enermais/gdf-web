@@ -187,7 +187,7 @@ def test_tela_com_dados_mostra_despesas(conn):
     with patch("conexao.get_conn", return_value=conn):
         at = _tela(conn).run()
         assert not at.exception, at.exception
-        assert len(at.tabs) == 8
+        assert len(at.tabs) == 9
         assert at.selectbox(key="pn2_mes_desp").value == "2026-09"
         valores = [m.value for m in at.metric]
         assert any("1.000,00" in v for v in valores)
@@ -256,17 +256,17 @@ def test_tela_historico_e_mes_do_csv_automatico(conn):
     with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", return_value=falso):
         at = _tela(conn).run()
         assert not at.exception, at.exception
-        assert at.tabs[7].label == "Histórico e logs"
+        assert at.tabs[8].label == "Histórico e logs"
         cmp_sel = [sb for sb in at.selectbox if sb.key and sb.key.startswith("pn2_mes_cmp_")][0]
         assert cmp_sel.value == "2026-09"                                       # mes lido do CSV
-        tabelas = [df.value for df in at.tabs[1].dataframe]
+        tabelas = [df.value for df in at.tabs[2].dataframe]
         assert any("Confere" in df.columns and len(df) == 2 for df in tabelas)  # tabela por conta aparece mesmo
         logs = P.ultimos_logs(conn, acao="CONFERENCIA_DESPESAS")
         assert len(logs) == 1 and logs[0]["detalhe"]["resultado"] == "difere" and logs[0]["detalhe"]["mes_lido_do_csv"] == "2026-09"
         at.run()                                                                # nova execucao nao duplica o log
         assert len(P.ultimos_logs(conn, acao="CONFERENCIA_DESPESAS")) == 1
         at = _tela(conn).run()
-        assert any("CONFERENCIA_DESPESAS" in set(df.value["Ação"]) for df in at.tabs[7].dataframe)
+        assert any("CONFERENCIA_DESPESAS" in set(df.value["Ação"]) for df in at.tabs[8].dataframe)
 
 
 # ------------------------------------------------------------------ Resultado (DRE comprometido por emissao)
@@ -309,7 +309,7 @@ def test_tela_resultado_mostra_dre_e_confere(conn):
         at = _tela(conn).run()
         assert not at.exception, at.exception
         assert at.selectbox(key="pn2_mes_res").value == "2026-09"
-        assert any("2.000,00" in m.value for m in at.tabs[2].metric)
+        assert any("2.000,00" in m.value for m in at.tabs[3].metric)
         assert any(l["acao"] == "CONFERENCIA_RESULTADO" for l in P.ultimos_logs(conn))
 
 
@@ -395,13 +395,13 @@ def test_tela_resultado_importa_pdf_e_confere_com_a_api(conn):
     with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", side_effect=_uploader_por_chave({"pn2_pdf_dre": falso})):
         at = _tela(conn).run()
         assert not at.exception, at.exception
-        assert any("PDF lido" in s.value for s in at.tabs[2].success)
+        assert any("PDF lido" in s.value for s in at.tabs[1].success)                  # o upload fica na aba Importacoes (V2)
         at.button(key="pn2_pdf_salvar").click().run()
         assert not at.exception, at.exception
         assert P.meses_com_dre(conn) == ["2026-09"]
         at.run()
         assert not at.exception, at.exception
-        assert any("DRE oficial de 2026-09" in c.value for c in at.tabs[2].caption)
+        assert any("DRE oficial de 2026-09" in c.value for c in at.tabs[3].caption)
         assert any(l["acao"] == "CONFERENCIA_RESULTADO" and l["detalhe"].get("referencia") == "PDF" for l in P.ultimos_logs(conn))
 
 
@@ -410,7 +410,7 @@ def test_tela_resultado_pdf_invalido_mostra_erro_e_registra_log(conn):
     with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", side_effect=_uploader_por_chave({"pn2_pdf_dre": falso})):
         at = _tela(conn).run()
     assert not at.exception, at.exception
-    assert any("PDF" in e.value for e in at.tabs[2].error)
+    assert any("PDF" in e.value for e in at.tabs[1].error)
     assert any(l["acao"] == "DRE_PDF_ERRO" for l in P.ultimos_logs(conn))
 
 
@@ -524,8 +524,8 @@ def test_tela_obras_mostra_tabela(conn):
     with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", side_effect=_uploader_por_chave({})):
         at = _tela(conn).run()
     assert not at.exception, at.exception
-    assert at.tabs[3].label == "Obras (prévia)"
-    tab = at.tabs[3].dataframe[0].value
+    assert at.tabs[4].label == "Obras (prévia)"
+    tab = at.tabs[4].dataframe[0].value
     assert list(tab["Obra"]) == ["100", "101", "102"] and "Margem (BDI/receita)" in tab.columns and "Custo/colab." in tab.columns
     assert "70,0%" in set(tab["Margem (BDI/receita)"])
 
@@ -659,3 +659,154 @@ def test_importacao_por_sha_acha_arquivo_salvo(conn):
     r = P.importacao_por_sha(conn, "FOLHA", "d" * 64)
     assert r["ativo"] is True and r["mes"] == "2026-09" and r["quem"] == "teste@x" and r["linhas"] == 3
     assert P.importacao_por_sha(conn, "PROJECAO", "d" * 64) is None                         # tipo diferente nao confunde
+
+
+def _folha_gravada(conn, sha="a" * 64):
+    from folha_sintetica import pdf_folha_sintetico
+    import importador_folha as IF
+    return P.gravar_folha(conn, IF.ler_recibos_pdf(pdf_folha_sintetico()), "r.pdf", sha, "teste@x")
+
+
+def test_converter_valor_edicao():
+    import datetime as dt
+    c = P.converter_valor_edicao
+    assert c("num", "1.234,56") == c("num", 1234.56) and str(c("num", 10)) == "10.00" and c("num", None) is None and c("num", float("nan")) is None
+    assert c("text", "  abc ") == "abc" and c("text", "") is None and c("int", 3.0) == 3
+    assert c("date", "2026-09-01") == dt.date(2026, 9, 1) and c("date", dt.datetime(2026, 9, 1, 3, 0)) == dt.date(2026, 9, 1)
+    with pytest.raises(ValueError):
+        c("num", "abc")
+    with pytest.raises(ValueError):
+        c("date", "01/09/2026")
+
+
+def test_editar_folha_guarda_antes_e_depois_e_reflete_nos_totais(conn):
+    assert P.edicao_instalada(conn)
+    r = _folha_gravada(conn)
+    linhas = P.edicao_carregar(conn, "FOLHA", r["id"])
+    assert len(linhas) == 3 and "id" in linhas[0] and isinstance(linhas[0]["salario"], float)
+    antes = P.folha_do_mes(conn, "2026-09")["total"]["salarios"]
+    alvo = linhas[0]
+    res = P.edicao_aplicar(conn, "FOLHA", r["id"], [(alvo["id"], "salario", alvo["salario"] + 100.0), (alvo["id"], "nome", alvo["nome"])], [], "teste@x", "leitura errada")
+    assert res == {"editados": 1, "linhas_novas": 0}                                         # nome igual: nao conta nem grava
+    assert round(P.folha_do_mes(conn, "2026-09")["total"]["salarios"] - antes, 2) == 100.0   # a tela le da mesma tabela
+    ed = P.edicoes_lista(conn, r["id"])
+    assert len(ed) == 1 and ed[0]["campo"] == "salario" and ed[0]["acao"] == "EDITOU" and ed[0]["motivo"] == "leitura errada" and ed[0]["quem"] == "teste@x"
+    assert float(ed[0]["depois"]) - float(ed[0]["antes"]) == 100.0
+    assert P.importacoes_lista(conn)[0]["edicoes"] == 1
+
+
+def test_editar_rejeita_campo_invalido_vazio_obrigatorio_e_linha_de_outra_importacao(conn):
+    r = _folha_gravada(conn)
+    lid = P.edicao_carregar(conn, "FOLHA", r["id"])[0]["id"]
+    for alt in ([(lid, "importacao_id", 1)], [(lid, "cadastro", "")], [(lid, "salario", "abc")], [(lid + 999, "salario", 1)]):
+        with pytest.raises(ValueError):
+            P.edicao_aplicar(conn, "FOLHA", r["id"], alt, [], "teste@x")
+    assert P.edicoes_lista(conn, r["id"]) == []                                              # nada ficou gravado pela metade
+
+
+def test_adicionar_linha_nova_incrementa_n_linhas_e_valida_obrigatorios(conn):
+    r = _folha_gravada(conn)
+    with pytest.raises(ValueError):
+        P.edicao_aplicar(conn, "FOLHA", r["id"], [], [{"nome": "Sem cadastro"}], "teste@x")
+    res = P.edicao_aplicar(conn, "FOLHA", r["id"], [], [{"empresa": "468", "cadastro": "9999", "nome": "Manual", "departamento": "001.001", "salario": 1000, "total_proventos": 1000},
+                                                       {"empresa": None}], "teste@x", "recibo que a leitura perdeu")
+    assert res == {"editados": 0, "linhas_novas": 1}
+    assert len(P.edicao_carregar(conn, "FOLHA", r["id"])) == 4
+    assert P.importacoes_lista(conn)[0]["linhas"] == 4
+    assert P.edicoes_lista(conn, r["id"])[0]["acao"] == "ADICIONOU"
+
+
+def test_editar_dre_projecao_e_orcamento(conn):
+    import io
+    import openpyxl
+    import importador_projecao as IP
+    wb = openpyxl.Workbook(); ws = wb.active
+    ws.append(["CONTRATO", "CLIENTE", "OBRA", "CATEGORIA", "NATUREZA", "EMPRESA / FORNECEDOR", "set/26", "CUSTOS", "BDI"])
+    ws.append(["C1", "CLI A", "LOTE 11", "INDIRETO", None, "CONSTRUTORA", 1000.0, 700.0, 300.0])
+    buf = io.BytesIO(); wb.save(buf)
+    rp = P.gravar_projecao(conn, IP.ler_projecao_xlsx(buf.getvalue()), "p.xlsx", "e" * 64, "teste@x")
+    lp = P.edicao_carregar(conn, "PROJECAO", rp["id"])
+    P.edicao_aplicar(conn, "PROJECAO", rp["id"], [(lp[0]["id"], "valor_mes", "1.500,50")], [], "teste@x")
+    assert P.projecao_do_mes(conn, "2026-09")["linhas"][0]["valor_mes"] == 1500.50
+    from orcamento_sintetico import pdf_orcamento_sintetico
+    import importador_orcamento as IO
+    ro = P.gravar_orcamento(conn, IO.ler_orcamento_adm_pdf(pdf_orcamento_sintetico()), "o.pdf", "1" * 64, "teste@x")
+    lo = P.edicao_carregar(conn, "ORCAMENTO", ro["id"])
+    import datetime as dt
+    assert isinstance(lo[0]["mes"], dt.date)
+    P.edicao_aplicar(conn, "ORCAMENTO", ro["id"], [(lo[0]["id"], "orcado", 5.0)], [], "teste@x")
+    assert P.edicao_carregar(conn, "ORCAMENTO", ro["id"])[0]["orcado"] == 5.0
+    with conn.cursor() as cur:                                                                 # DRE: uma linha qualquer
+        cur.execute("INSERT INTO pnl_importacao (tipo, mes, escopo, arquivo_nome, arquivo_sha256) VALUES ('DRE','2026-09-01','','d.pdf',%s) RETURNING id", ("d" * 64,))
+        did = cur.fetchone()[0]
+        cur.execute("INSERT INTO pnl_dre_valor (importacao_id, obra_cod, linha, valor) VALUES (%s,'103','01',100)", (did,))
+    ld = P.edicao_carregar(conn, "DRE", did)
+    P.edicao_aplicar(conn, "DRE", did, [(ld[0]["id"], "valor", 250)], [], "teste@x")
+    assert P.edicao_carregar(conn, "DRE", did)[0]["valor"] == 250.0
+    assert {e["tipo"] for e in P.edicoes_lista(conn)} == {"PROJECAO", "ORCAMENTO", "DRE"}
+
+
+def test_reverter_e_reativar_importacao_sem_apagar(conn):
+    from folha_sintetica import pdf_folha_sintetico
+    import importador_folha as IF
+    folha = IF.ler_recibos_pdf(pdf_folha_sintetico())
+    a = P.gravar_folha(conn, folha, "v1.pdf", "b" * 64, "teste@x")
+    b = P.gravar_folha(conn, folha, "v2.pdf", "c" * 64, "teste@x")                          # v2 substitui v1 (v1 fica ativo=false)
+    ativos = {i["id"]: i["ativo"] for i in P.importacoes_lista(conn)}
+    assert ativos == {a["id"]: False, b["id"]: True}
+    r = P.importacao_definir_ativo(conn, a["id"], True, "teste@x", "v2 estava errada")       # reativa a v1 e tira a v2 de uso
+    assert r["mudou"] and r["substituiu"] == b["id"]
+    ativos = {i["id"]: i["ativo"] for i in P.importacoes_lista(conn)}
+    assert ativos == {a["id"]: True, b["id"]: False}
+    assert P.folha_do_mes(conn, "2026-09")["importacoes"][0]["arquivo"] == "v1.pdf"
+    assert P.importacao_definir_ativo(conn, a["id"], True, "teste@x")["mudou"] is False      # ja estava ativa
+    P.importacao_definir_ativo(conn, a["id"], False, "teste@x")                               # fora de uso, sem substituta
+    assert P.folha_meses(conn) == []
+    assert _contar(conn, "pnl_folha_recibo") == 6                                              # nada foi apagado (3 recibos de cada importacao)
+    assert {"DESATIVOU", "REATIVOU"} <= {e["acao"] for e in P.edicoes_lista(conn)}
+
+
+def test_depara_depto_obra_cria_altera_e_registra(conn):
+    assert P.depto_obra_salvar(conn, [{"empresa": "468", "departamento": "001.050", "codigo_obra": "103", "obra_nome": "A"}], "teste@x") == {"novos": 1, "alterados": 0}
+    assert P.depto_obra_salvar(conn, [{"empresa": "468", "departamento": "001.050", "codigo_obra": "103", "obra_nome": "A"}], "teste@x") == {"novos": 0, "alterados": 0}
+    assert P.depto_obra_salvar(conn, [{"empresa": "468", "departamento": "001.050", "codigo_obra": "104", "obra_nome": "B"}], "teste@x", "corrigido") == {"novos": 0, "alterados": 1}
+    assert P.depto_obra_listar(conn)[0]["codigo_obra"] == "104"
+    assert [e["acao"] for e in P.edicoes_lista(conn)] == ["CADASTRO", "CADASTRO"]
+    with pytest.raises(ValueError):
+        P.depto_obra_salvar(conn, [{"empresa": "468", "departamento": "001.051"}], "teste@x")
+
+
+# ------------------------------------------------------------------ aba Importacoes (V2)
+def test_tela_importacoes_mostra_situacao_historico_e_reverte(conn):
+    r1 = _folha_gravada(conn, "a" * 64)
+    with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", side_effect=_uploader_por_chave({})):
+        at = _tela(conn).run()
+        assert not at.exception, at.exception
+        assert at.tabs[1].label == "Importações (V2)"
+        tabs_df = [df.value for df in at.tabs[1].dataframe]
+        sit = [d for d in tabs_df if "Folha Construtora" in d.columns][0]
+        assert sit.iloc[0]["Folha Construtora"] == "✅" and sit.iloc[0]["Folha Energia"].startswith("❌") and sit.iloc[0]["DRE"].startswith("❌")
+        hist = [d for d in tabs_df if "Situação" in d.columns][0]
+        assert list(hist["#"]) == [r1["id"]] and hist.iloc[0]["Situação"] == "em uso"
+        at.button(key="pn2_imp_rev_off").click().run()                                       # marcar como fora de uso
+        assert not at.exception, at.exception
+        assert P.importacoes_lista(conn)[0]["ativo"] is False and P.folha_meses(conn) == []
+        at.button(key="pn2_imp_rev_on").click().run()                                        # reativar
+        assert not at.exception, at.exception
+        assert P.importacoes_lista(conn)[0]["ativo"] is True and P.folha_meses(conn) == ["2026-09"]
+        assert {e["acao"] for e in P.edicoes_lista(conn)} == {"DESATIVOU", "REATIVOU"}
+
+
+def test_tela_importacoes_sem_sql_19_avisa_e_nao_quebra(conn):
+    _folha_gravada(conn, "a" * 64)
+    with conn.cursor() as cur:
+        cur.execute("ALTER TABLE gdf.pnl_edicao RENAME TO pnl_edicao_off")                  # simula o banco antes do SQL-19
+    try:
+        with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", side_effect=_uploader_por_chave({})):
+            at = _tela(conn).run()
+        assert not at.exception, at.exception
+        assert any("SQL-19" in w.value for w in at.tabs[1].warning)
+        assert P.edicoes_lista(conn) == [] and P.importacoes_lista(conn)[0]["edicoes"] == 0
+    finally:
+        with conn.cursor() as cur:
+            cur.execute("ALTER TABLE gdf.pnl_edicao_off RENAME TO pnl_edicao")

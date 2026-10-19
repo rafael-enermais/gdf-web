@@ -1280,3 +1280,236 @@ def nomes_obras_extra(conn) -> dict:
             except Exception:
                 pass
     return out
+
+
+# ---------------------------------------------------------------- Importacoes (V2): historico, reverter sem apagar, editar valores (SQL-19)
+# Cada tipo de importacao grava numa tabela; os campos abaixo sao os que a tela deixa editar (tipo: text, num, int, date). NOT NULL = obrigatorios.
+EDIT_CFG = {
+    "FOLHA": {"tabela": "pnl_folha_recibo", "ordem": "empresa, nome, id", "nome": "Recibos da folha",
+              "campos": [("empresa", "text"), ("cadastro", "text"), ("nome", "text"), ("cargo", "text"), ("local_obra", "text"), ("departamento", "text"),
+                         ("subnivel_texto", "text"), ("admissao", "date"), ("salario", "num"), ("hora_extra", "num"), ("dsr_he", "num"),
+                         ("total_proventos", "num"), ("total_descontos", "num"), ("liquido", "num"), ("fgts_mes", "num")],
+              "obrigatorios": {"empresa", "cadastro"}},
+    "PROJECAO": {"tabela": "pnl_projecao_linha", "ordem": "linha, id", "nome": "Linhas da projeção de receitas",
+                 "campos": [("linha", "int"), ("contrato", "text"), ("cliente", "text"), ("obra", "text"), ("categoria", "text"), ("natureza", "text"),
+                            ("empresa", "text"), ("valor_mes", "num"), ("custos", "num"), ("bdi", "num")],
+                 "obrigatorios": {"linha"}},
+    "ORCAMENTO": {"tabela": "pnl_orcamento_linha", "ordem": "codigo, mes, id", "nome": "Linhas do orçamento ADM",
+                  "campos": [("codigo", "text"), ("conta", "text"), ("tipo", "text"), ("mes", "date"), ("orcado", "num"), ("realizado", "num"), ("saldo", "num")],
+                  "obrigatorios": {"codigo", "mes"}},
+    "DRE": {"tabela": "pnl_dre_valor", "ordem": "obra_cod, linha, conta NULLS FIRST, id", "nome": "Valores do DRE oficial (por obra, linha e conta)",
+            "campos": [("obra_cod", "text"), ("obra_nome", "text"), ("linha", "text"), ("conta", "text"), ("conta_nome", "text"), ("valor", "num")],
+            "obrigatorios": {"obra_cod", "linha", "valor"}},
+}
+
+
+def edicao_instalada(conn) -> bool:
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema='gdf' AND table_name='pnl_edicao'")
+            return cur.fetchone()[0] == 1
+    except Exception:
+        return False
+
+
+def _vazio(v) -> bool:
+    if v is None:
+        return True
+    if isinstance(v, str):
+        return v.strip() == ""
+    try:
+        return v != v          # NaN
+    except Exception:
+        return False
+
+
+def converter_valor_edicao(tipo: str, v):
+    """Converte o que veio da tela para o tipo do campo (None se vazio). Erro de valor levanta ValueError com mensagem em portugues."""
+    import datetime as _dt
+    from decimal import Decimal, InvalidOperation
+    if _vazio(v):
+        return None
+    try:
+        if tipo == "text":
+            return str(v).strip()
+        if tipo == "int":
+            return int(round(float(v)))
+        if tipo == "num":
+            if isinstance(v, str):
+                t = v.strip().replace("R$", "").replace(" ", "")
+                if "," in t:
+                    t = t.replace(".", "").replace(",", ".")
+                v = t
+            return Decimal(str(round(float(v), 2))).quantize(Decimal("0.01"))
+        if tipo == "date":
+            if hasattr(v, "date") and not isinstance(v, _dt.date):
+                return v.date()
+            if isinstance(v, _dt.datetime):
+                return v.date()
+            if isinstance(v, _dt.date):
+                return v
+            return _dt.date.fromisoformat(str(v)[:10])
+    except (ValueError, InvalidOperation, TypeError):
+        raise ValueError(f"Valor inválido “{v}” (esperado: {'texto' if tipo == 'text' else 'número' if tipo in ('num', 'int') else 'data AAAA-MM-DD'}).")
+    raise ValueError(f"Tipo de campo desconhecido: {tipo}")
+
+
+def importacoes_lista(conn, tipo: str | None = None) -> list[dict]:
+    """Todas as importacoes da V2 (DRE, folha, projecao, orcamento), da mais nova para a mais antiga, com o numero de edicoes de cada uma."""
+    with conn.cursor() as cur:
+        cur.execute("""SELECT id, tipo, mes, escopo, arquivo_nome, ativo, importado_por, importado_em, n_linhas
+                       FROM pnl_importacao WHERE tipo IN ('DRE','FOLHA','PROJECAO','ORCAMENTO') AND (%s IS NULL OR tipo=%s) ORDER BY id DESC""", (tipo, tipo))
+        rows = cur.fetchall()
+    n_ed: dict = {}
+    if edicao_instalada(conn):
+        with conn.cursor() as cur:
+            cur.execute("SELECT importacao_id, count(*) FROM pnl_edicao WHERE importacao_id IS NOT NULL AND acao IN ('EDITOU','ADICIONOU') GROUP BY importacao_id")
+            n_ed = {i: n for i, n in cur.fetchall()}
+    return [{"id": r[0], "tipo": r[1], "mes": r[2].strftime("%Y-%m"), "escopo": r[3], "arquivo": r[4], "ativo": r[5], "quem": r[6], "quando": r[7],
+             "linhas": r[8], "edicoes": n_ed.get(r[0], 0)} for r in rows]
+
+
+def importacao_definir_ativo(conn, imp_id: int, ativo: bool, usuario: str | None, motivo: str | None = None) -> dict:
+    """Reverter sem apagar: ativo=False tira a importacao de uso; ativo=True poe esta em uso e tira de uso a que estava ativa no mesmo tipo+mes+escopo.
+    Nada e' apagado; fica registrado em pnl_edicao (DESATIVOU/REATIVOU) e no historico do painel."""
+    with db.transacao(conn):
+        with conn.cursor() as cur:
+            cur.execute("SELECT tipo, mes, escopo, ativo FROM pnl_importacao WHERE id=%s FOR UPDATE", (imp_id,))
+            r = cur.fetchone()
+            if not r:
+                raise ValueError("Importação não encontrada.")
+            tipo, mes, escopo, ja = r
+            if ja == ativo:
+                return {"mudou": False, "tipo": tipo, "mes": mes.strftime("%Y-%m"), "substituiu": None}
+            subst = None
+            if ativo:
+                cur.execute("SELECT id FROM pnl_importacao WHERE tipo=%s AND mes=%s AND escopo=%s AND ativo AND id<>%s", (tipo, mes, escopo, imp_id))
+                x = cur.fetchone()
+                if x:
+                    subst = x[0]
+                    cur.execute("UPDATE pnl_importacao SET ativo=false WHERE id=%s", (subst,))
+                    cur.execute("INSERT INTO pnl_edicao (importacao_id, tabela, campo, acao, motivo, quem) VALUES (%s,'pnl_importacao','ativo','DESATIVOU',%s,%s)",
+                                (subst, f"substituída pela #{imp_id}" + (f" — {motivo}" if motivo else ""), usuario))
+            cur.execute("UPDATE pnl_importacao SET ativo=%s WHERE id=%s", (ativo, imp_id))
+            cur.execute("INSERT INTO pnl_edicao (importacao_id, tabela, campo, valor_antes, valor_depois, acao, motivo, quem) VALUES (%s,'pnl_importacao','ativo',%s,%s,%s,%s,%s)",
+                        (imp_id, str(ja).lower(), str(ativo).lower(), "REATIVOU" if ativo else "DESATIVOU", motivo, usuario))
+    registrar_log(conn, "IMPORTACAO_REATIVADA" if ativo else "IMPORTACAO_FORA_DE_USO", "AVISO", usuario, mes.strftime("%Y-%m"),
+                  {"importacao_id": imp_id, "tipo": tipo, "escopo": escopo, "substituiu": subst})
+    return {"mudou": True, "tipo": tipo, "mes": mes.strftime("%Y-%m"), "substituiu": subst}
+
+
+def edicao_carregar(conn, tipo: str, imp_id: int) -> list[dict]:
+    """Linhas de uma importacao para a tela editar: [{'id': ..., campo: valor, ...}] (numeros como float, datas como date)."""
+    cfg = EDIT_CFG[tipo]
+    cols = ", ".join(c for c, _ in cfg["campos"])
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT id, {cols} FROM {cfg['tabela']} WHERE importacao_id=%s ORDER BY {cfg['ordem']}", (imp_id,))
+        dados = cur.fetchall()
+    nomes = ["id"] + [c for c, _ in cfg["campos"]]
+    out = []
+    for r in dados:
+        d = dict(zip(nomes, r))
+        for c, t in cfg["campos"]:
+            if t == "num" and d[c] is not None:
+                d[c] = float(d[c])
+        out.append(d)
+    return out
+
+
+def edicao_aplicar(conn, tipo: str, imp_id: int, alteracoes: list, novos: list, usuario: str | None, motivo: str | None = None) -> dict:
+    """Grava as edicoes de uma importacao. alteracoes = [(id_da_linha, campo, valor_novo)]; novos = [{campo: valor}] (linhas novas). Valida campo e tipo,
+    nao deixa campo obrigatorio vazio, guarda ANTES e DEPOIS de cada celula em pnl_edicao e so' troca o que de fato mudou. Tudo numa transacao."""
+    import json as _json
+    cfg = EDIT_CFG[tipo]
+    tipos = dict(cfg["campos"])
+    obrig = cfg["obrigatorios"]
+    tabela = cfg["tabela"]
+    ed = nv = 0
+    with db.transacao(conn):
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pnl_importacao WHERE id=%s AND tipo=%s", (imp_id, tipo))
+            if not cur.fetchone():
+                raise ValueError("Importação não encontrada para esse tipo.")
+            for linha_id, campo, valor in alteracoes:
+                if campo not in tipos:
+                    raise ValueError(f"Campo não editável: {campo}")
+                novo = converter_valor_edicao(tipos[campo], valor)
+                if novo is None and campo in obrig:
+                    raise ValueError(f"O campo “{campo}” não pode ficar vazio (linha {linha_id}).")
+                cur.execute(f"SELECT {campo} FROM {tabela} WHERE id=%s AND importacao_id=%s FOR UPDATE", (linha_id, imp_id))
+                r = cur.fetchone()
+                if not r:
+                    raise ValueError(f"Linha {linha_id} não pertence a esta importação.")
+                if r[0] == novo:
+                    continue
+                cur.execute(f"UPDATE {tabela} SET {campo}=%s WHERE id=%s", (novo, linha_id))
+                cur.execute("""INSERT INTO pnl_edicao (importacao_id, tabela, linha_id, campo, valor_antes, valor_depois, acao, motivo, quem)
+                               VALUES (%s,%s,%s,%s,%s,%s,'EDITOU',%s,%s)""",
+                            (imp_id, tabela, linha_id, campo, None if r[0] is None else str(r[0]), None if novo is None else str(novo), motivo, usuario))
+                ed += 1
+            for nova in novos:
+                vals = {c: converter_valor_edicao(t, nova.get(c)) for c, t in cfg["campos"]}
+                if all(v is None for v in vals.values()):
+                    continue
+                faltam = [c for c in obrig if vals[c] is None]
+                if faltam:
+                    raise ValueError("Linha nova incompleta: preencha " + ", ".join(sorted(faltam)) + ".")
+                cs = list(vals)
+                cur.execute(f"INSERT INTO {tabela} (importacao_id, {', '.join(cs)}) VALUES (%s, {', '.join(['%s'] * len(cs))}) RETURNING id", (imp_id, *[vals[c] for c in cs]))
+                nid = cur.fetchone()[0]
+                cur.execute("""INSERT INTO pnl_edicao (importacao_id, tabela, linha_id, campo, valor_depois, acao, motivo, quem) VALUES (%s,%s,%s,'*',%s,'ADICIONOU',%s,%s)""",
+                            (imp_id, tabela, nid, _json.dumps({c: (None if v is None else str(v)) for c, v in vals.items()}, ensure_ascii=False), motivo, usuario))
+                nv += 1
+            if nv:
+                cur.execute("UPDATE pnl_importacao SET n_linhas = n_linhas + %s WHERE id=%s", (nv, imp_id))
+    if ed or nv:
+        registrar_log(conn, "IMPORTACAO_EDITADA", "AVISO", usuario, None, {"importacao_id": imp_id, "tipo": tipo, "celulas_editadas": ed, "linhas_novas": nv})
+    return {"editados": ed, "linhas_novas": nv}
+
+
+def edicoes_lista(conn, imp_id: int | None = None, limite: int = 500) -> list[dict]:
+    """Historico de edicoes (mais novas primeiro), de uma importacao ou de todas."""
+    if not edicao_instalada(conn):
+        return []
+    with conn.cursor() as cur:
+        cur.execute("""SELECT e.quando, e.quem, e.importacao_id, i.tipo, e.tabela, e.linha_id, e.campo, e.valor_antes, e.valor_depois, e.acao, e.motivo
+                       FROM pnl_edicao e LEFT JOIN pnl_importacao i ON i.id=e.importacao_id
+                       WHERE (%s IS NULL OR e.importacao_id=%s) ORDER BY e.id DESC LIMIT %s""", (imp_id, imp_id, limite))
+        return [dict(zip(["quando", "quem", "importacao_id", "tipo", "tabela", "linha_id", "campo", "antes", "depois", "acao", "motivo"], r)) for r in cur.fetchall()]
+
+
+def depto_obra_listar(conn) -> list[dict]:
+    with conn.cursor() as cur:
+        cur.execute("SELECT empresa, departamento, subnivel_texto, codigo_obra, obra_nome FROM pnl_folha_depto_obra ORDER BY empresa, departamento")
+        return [dict(zip(["empresa", "departamento", "subnivel_texto", "codigo_obra", "obra_nome"], r)) for r in cur.fetchall()]
+
+
+def depto_obra_salvar(conn, linhas: list[dict], usuario: str | None, motivo: str | None = None) -> dict:
+    """Cria ou altera o de-para departamento (da folha) -> obra. Nao apaga; cada mudanca fica em pnl_edicao (acao CADASTRO)."""
+    novos = alt = 0
+    with db.transacao(conn):
+        with conn.cursor() as cur:
+            for l in linhas:
+                emp, dep = (l.get("empresa") or "").strip(), (l.get("departamento") or "").strip()
+                cod = (l.get("codigo_obra") or "").strip()
+                if not emp and not dep and not cod:
+                    continue
+                if not (emp and dep and cod):
+                    raise ValueError("De-para incompleto: preencha empresa, departamento e código da obra.")
+                sub, nome = (l.get("subnivel_texto") or None), (l.get("obra_nome") or None)
+                cur.execute("SELECT subnivel_texto, codigo_obra, obra_nome FROM pnl_folha_depto_obra WHERE empresa=%s AND departamento=%s FOR UPDATE", (emp, dep))
+                ant = cur.fetchone()
+                if ant == (sub, cod, nome):
+                    continue
+                cur.execute("""INSERT INTO pnl_folha_depto_obra (empresa, departamento, subnivel_texto, codigo_obra, obra_nome) VALUES (%s,%s,%s,%s,%s)
+                               ON CONFLICT (empresa, departamento) DO UPDATE SET subnivel_texto=EXCLUDED.subnivel_texto, codigo_obra=EXCLUDED.codigo_obra, obra_nome=EXCLUDED.obra_nome""",
+                            (emp, dep, sub, cod, nome))
+                cur.execute("""INSERT INTO pnl_edicao (importacao_id, tabela, campo, valor_antes, valor_depois, acao, motivo, quem) VALUES (NULL,'pnl_folha_depto_obra',%s,%s,%s,'CADASTRO',%s,%s)""",
+                            (f"{emp}|{dep}", None if ant is None else " | ".join(str(x) for x in ant), " | ".join(str(x) for x in (sub, cod, nome)), motivo, usuario))
+                if ant is None:
+                    novos += 1
+                else:
+                    alt += 1
+    if novos or alt:
+        registrar_log(conn, "DEPARA_DEPTO_OBRA_EDITADO", "AVISO", usuario, None, {"novos": novos, "alterados": alt})
+    return {"novos": novos, "alterados": alt}

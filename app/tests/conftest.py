@@ -35,6 +35,7 @@ CREDOR_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_credor_
 IMPOSTO_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_titulo_imposto.sql"
 FOLHA_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_folha.sql"
 ORC_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_orcamento_adm.sql"
+EDICAO_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_edicao.sql"
 _estado = {"dsn": None, "tentou": False}
 
 
@@ -108,6 +109,7 @@ def pg_dsn():
         cur.execute(IMPOSTO_SQL.read_text(encoding="utf-8"))   # SQL-13: imposto do titulo de receita (DRE 02.02)
         cur.execute(FOLHA_SQL.read_text(encoding="utf-8"))     # SQL-16: recibos da folha e de-para departamento -> obra
         cur.execute(ORC_SQL.read_text(encoding="utf-8"))       # SQL-18: orcamento ADM (orcado x realizado)
+        cur.execute(EDICAO_SQL.read_text(encoding="utf-8"))    # SQL-19: edicao dos dados importados
     conn.close()
     return dsn
 
@@ -119,7 +121,7 @@ def conn(pg_dsn):
     c = psycopg2.connect(pg_dsn)
     c.autocommit = True
     with c.cursor() as cur:
-        cur.execute("TRUNCATE gdf.pnl_credor_grupo, gdf.pnl_orcamento_linha, gdf.pnl_folha_recibo, gdf.pnl_folha_depto_obra, gdf.pnl_dre_confirmacao, gdf.pnl_dre_valor, gdf.pnl_centro_grupo, gdf.pnl_log, gdf.pnl_folha_evento, gdf.pnl_projecao_linha, gdf.pnl_historico_bloco, gdf.pnl_importacao, gdf.pnl_rateio, gdf.pnl_baixa, gdf.pnl_titulo, gdf.pnl_sync, gdf.pnl_centro_custo, gdf.pnl_obra, gdf.pnl_plano_conta, gdf.pnl_tipo_negocio, gdf.pnl_empresa_sienge, gdf.evento, gdf.conferencia, gdf.balancete_linha, gdf.importacao, gdf.mapa_conta, gdf.apelido, gdf.relatorio, gdf.empresa RESTART IDENTITY CASCADE")
+        cur.execute("TRUNCATE gdf.pnl_edicao, gdf.pnl_credor_grupo, gdf.pnl_orcamento_linha, gdf.pnl_folha_recibo, gdf.pnl_folha_depto_obra, gdf.pnl_dre_confirmacao, gdf.pnl_dre_valor, gdf.pnl_centro_grupo, gdf.pnl_log, gdf.pnl_folha_evento, gdf.pnl_projecao_linha, gdf.pnl_historico_bloco, gdf.pnl_importacao, gdf.pnl_rateio, gdf.pnl_baixa, gdf.pnl_titulo, gdf.pnl_sync, gdf.pnl_centro_custo, gdf.pnl_obra, gdf.pnl_plano_conta, gdf.pnl_tipo_negocio, gdf.pnl_empresa_sienge, gdf.evento, gdf.conferencia, gdf.balancete_linha, gdf.importacao, gdf.mapa_conta, gdf.apelido, gdf.relatorio, gdf.empresa RESTART IDENTITY CASCADE")
         cur.execute("SET search_path = gdf, public")
     yield c
     c.close()

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """GDF V2 — Painel EnerMais (EM CONSTRUCAO): sincroniza o Sienge, confere com o CSV e mostra a previa da aba Despesas.
-O PDF do relatorio entra na proxima etapa."""
+O PDF do relatorio entra na proxima etapa. Todos os uploads ficam na aba Importacoes (V2)."""
 import altair as alt
 import pandas as pd
 import datetime as dt
@@ -8,26 +8,12 @@ import datetime as dt
 import streamlit as st
 
 import formatacao as F
-import importador_dre
-import importador_folha
-import importador_orcamento
-import importador_projecao
+import importacoes_ui
 import painel_db as P
 import sienge_api as S
 from auth import usuario_atual
 from conexao import get_conn, sidebar_rodape
 
-
-def _ja_salvo(conn, tipo: str, conteudo: bytes) -> bool:
-    """Se este arquivo ja esta salvo no banco, mostra o aviso (numero, mes, quem e quando) e devolve True: a tela nao oferece o botao Salvar de novo.
-    Assim, depois de salvar (a pagina recarrega), o usuario continua vendo que gravou."""
-    r = P.importacao_por_sha(conn, tipo, __import__("hashlib").sha256(conteudo).hexdigest())
-    if not r:
-        return False
-    quando = r["quando"].astimezone(dt.timezone(dt.timedelta(hours=-3))).strftime("%d/%m/%Y %H:%M") if r["quando"] else "–"
-    situacao = "em uso" if r["ativo"] else "substituída por uma importação mais nova"
-    st.success(f"✅ Já salvo no banco: importação #{r['id']} (mês {r['mes'][5:]}/{r['mes'][:4]}, {r['linhas']} linhas) por {r['quem'] or '–'} em {quando} · {situacao}.")
-    return True
 
 
 def _grafico_meses(valores: list, meses: list, nome: str, linha: bool = False):
@@ -51,8 +37,12 @@ if not P.v2_instalado(conn):
                "no Supabase (SQL Editor). Depois disso esta tela passa a funcionar.")
     st.stop()
 
-aba_sync, aba_desp, aba_res, aba_obras, aba_adm, aba_pess, aba_regras, aba_log = st.tabs(
-    ["Sincronizar com o Sienge", "Despesas (prévia)", "Resultado (prévia)", "Obras (prévia)", "Administração (prévia)", "Pessoas (prévia)", "Regras", "Histórico e logs"])
+aba_sync, aba_imp, aba_desp, aba_res, aba_obras, aba_adm, aba_pess, aba_regras, aba_log = st.tabs(
+    ["Sincronizar com o Sienge", "Importações (V2)", "Despesas (prévia)", "Resultado (prévia)", "Obras (prévia)", "Administração (prévia)", "Pessoas (prévia)", "Regras", "Histórico e logs"])
+
+# ------------------------------------------------------------------ importacoes (todos os uploads da V2, historico, reverter, editar)
+with aba_imp:
+    importacoes_ui.render(conn, usuario)
 
 # ------------------------------------------------------------------ sincronizar
 with aba_sync:
@@ -203,7 +193,7 @@ with aba_res:
     meses_dre = P.meses_com_dre(conn)
     meses_r_opts = sorted(set(meses_em) | set(meses_dre))
     if not meses_r_opts:
-        st.info("Importe o PDF do DRE gerencial do Sienge (abaixo) ou sincronize as contas por data de emissão (tipo I) na primeira aba.")
+        st.info("Importe o PDF do DRE gerencial do Sienge na aba **Importações (V2)** ou sincronize as contas por data de emissão (tipo I) na primeira aba.")
     _hj = f"{dt.date.today().year}-{dt.date.today().month:02d}"
     _fech = [m for m in meses_r_opts if m < _hj] or meses_r_opts
     r1, r2, r3, r4 = st.columns([1, 2, 2, 2])
@@ -219,46 +209,6 @@ with aba_res:
         st.info("O de-para de centros de custo ainda não está no banco; falta executar o SQL do de-para (veja o handoff do projeto). Até lá o filtro de obra fica desligado.")
 
     # ---- importar o PDF
-    with st.expander("Importar o PDF do DRE gerencial do Sienge", expanded=not P.dre_importacao_ativa(conn, mes_r)):
-        if not P.dre_instalado(conn):
-            st.warning("Falta executar o arquivo `sql/v2_dre_pdf.sql` no Supabase (SQL Editor) para o app guardar o DRE lido do PDF. Você já pode ler o PDF e ver o resultado; só não dá para salvar.")
-        pdf_arq = st.file_uploader("PDF 'DRE GERENCIAL – composição das contas' (Sienge)", type=["pdf"], key="pn2_pdf_dre")
-        if pdf_arq is not None:
-            pdf_bytes = pdf_arq.getvalue()
-            pdf_sha = P.sha256_curto(pdf_bytes)
-            chave_pdf = f"pn2_dre_lido_{pdf_sha}"
-            if chave_pdf not in st.session_state:
-                try:
-                    with st.spinner("Lendo o PDF… (cerca de 10 a 30 segundos)"):
-                        st.session_state[chave_pdf] = importador_dre.ler_dre_pdf(pdf_bytes)
-                except importador_dre.ErroDRE as exc:
-                    st.session_state[chave_pdf] = str(exc)
-                    P.registrar_log(conn, "DRE_PDF_ERRO", "ERRO", usuario, None, {"arquivo": pdf_arq.name, "sha256": pdf_sha, "erro": str(exc)[:300]})
-            lido_pdf = st.session_state[chave_pdf]
-            if isinstance(lido_pdf, str):
-                st.error(lido_pdf)
-            else:
-                per = lido_pdf["periodo"]
-                mes_pdf = (per.get("inicio") or "")[:7]
-                st.success(f"PDF lido: período {per.get('inicio')} a {per.get('fim')} · {per.get('analise')} · seleção por {per.get('selecao')} · "
-                           f"{len(lido_pdf['obras'])} obras · {len(lido_pdf['valores'])} valores.")
-                for av in lido_pdf["avisos"]:
-                    st.warning(av)
-                if not lido_pdf["avisos"]:
-                    st.caption("Conferido: a soma das contas fecha com cada linha do DRE e a soma das obras fecha com a coluna Total do PDF.")
-                if mes_pdf and mes_pdf != mes_r:
-                    st.info(f"Este PDF é de {mes_pdf}; ao salvar, ele vira o DRE oficial de {mes_pdf} (o mês escolhido acima é {mes_r}).")
-                if not _ja_salvo(conn, "DRE", pdf_bytes) and st.button(f"Salvar como DRE oficial de {mes_pdf}", type="primary", disabled=not (P.dre_instalado(conn) and mes_pdf), key="pn2_pdf_salvar"):
-                    try:
-                        res_g = P.gravar_dre(conn, lido_pdf, pdf_arq.name, __import__("hashlib").sha256(pdf_bytes).hexdigest(), usuario)
-                        if res_g["repetido"]:
-                            st.info(f"Este mesmo arquivo já foi importado antes (importação #{res_g['id']}, mês {res_g['mes']}).")
-                        else:
-                            st.success(f"DRE de {res_g['mes']} salvo (importação #{res_g['id']}).")
-                            st.rerun()
-                    except Exception as exc:
-                        st.error(f"Não consegui salvar: {exc}")
-
     imp = P.dre_importacao_ativa(conn, mes_r)
     if imp:
         st.caption(f"DRE oficial de {mes_r}: PDF “{imp['arquivo']}”, importado por {imp['quem'] or '–'} em {imp['quando']:%d/%m/%Y %H:%M} (importação #{imp['id']}).")
@@ -450,7 +400,7 @@ with aba_obras:
                 "**BDI real** = receita bruta − custos diretos; **margem de contribuição** = BDI ÷ receita. Obras sem código próprio no de-para entram juntas em *Demais obras*.")
     meses_o = P.meses_com_dre(conn)
     if not meses_o:
-        st.info("Ainda não há DRE oficial importado. Importe o PDF do Sienge na aba Resultado e volte aqui.")
+        st.info("Ainda não há DRE oficial importado. Importe o PDF do Sienge na aba **Importações (V2)** e volte aqui.")
     else:
         mes_o = st.selectbox("Mês", meses_o, index=len(meses_o) - 1, key="pn2_mes_obras")
         ob = P.obras_do_dre(conn, mes_o)
@@ -474,9 +424,9 @@ with aba_obras:
         if _folha_o:
             st.caption(f"Colaboradores CLT pelos recibos de {mes_o[5:]}/{mes_o[:4]} (obra pelo departamento do recibo e o de-para de departamentos). "
                        "Fat./colab. = receita ÷ colaboradores; Custo/colab. = custos diretos ÷ colaboradores. Ainda não entram os PJ pagos nas obras."
-                       + (f" Atenção: {sum(x['colab'] for x in _folha_o['sem_depara'])} recibo(s) sem de-para de departamento (veja a aba Pessoas)." if _folha_o["sem_depara"] else ""))
+                       + (f" Atenção: {sum(x['colab'] for x in _folha_o['sem_depara'])} recibo(s) sem de-para de departamento (veja a aba Pessoas; o cadastro de departamentos fica na aba Importações (V2))." if _folha_o["sem_depara"] else ""))
         else:
-            st.caption("Colab., Fat./colab. e Custo/colab. aparecem quando os recibos da folha do mês forem importados (aba Pessoas).")
+            st.caption("Colab., Fat./colab. e Custo/colab. aparecem quando os recibos da folha do mês forem importados (aba Importações (V2)).")
         c_l, c_p = st.columns(2)
         c_l.markdown("**5 obras com maior BDI**")
         c_l.dataframe(pd.DataFrame([{"Obra": l["obra"], "Nome": l["nome"], "BDI real": F.moeda_br(l["bdi"]), "Margem": pct(l["margem"])} for l in ob["top_lucro"]]), hide_index=True, width="stretch")
@@ -491,39 +441,8 @@ with aba_obras:
         st.divider()
         st.markdown("**Projeção de receitas × realizado**")
         _proj = P.projecao_do_mes(conn, mes_o)
-        with st.expander("Importar a planilha de projeção de receitas (xlsx)", expanded=_proj is None):
-            st.caption("Planilha 'Projeções-Receitas-Obras' (colunas CONTRATO, CLIENTE, OBRA, ..., mês da projeção, CUSTOS, BDI). O mês vem do cabeçalho da coluna (ex.: set/26). O app só lê os valores.")
-            arq_p = st.file_uploader("Planilha de projeção (xlsx)", type=["xlsx"], key="pn2_xlsx_proj")
-            if arq_p is not None and str(getattr(arq_p, "name", "")).lower().endswith(".xlsx"):
-                b_p = arq_p.getvalue()
-                sha_p = P.sha256_curto(b_p)
-                ch_p = f"pn2_proj_lida_{sha_p}"
-                if ch_p not in st.session_state:
-                    try:
-                        st.session_state[ch_p] = importador_projecao.ler_projecao_xlsx(b_p)
-                    except importador_projecao.ErroProjecao as exc:
-                        st.session_state[ch_p] = str(exc)
-                        P.registrar_log(conn, "PROJECAO_XLSX_ERRO", "ERRO", usuario, None, {"arquivo": arq_p.name, "sha256": sha_p, "erro": str(exc)[:300]})
-                lido_p = st.session_state[ch_p]
-                if isinstance(lido_p, str):
-                    st.error(lido_p)
-                else:
-                    st.success(f"Planilha lida: projeção de {lido_p['mes'][5:]}/{lido_p['mes'][:4]} · {len(lido_p['linhas'])} linhas · receita prevista {F.moeda_br(lido_p['total']['valor_mes'])} · "
-                               f"BDI previsto {F.moeda_br(lido_p['total']['bdi'])}.")
-                    for av in lido_p["avisos"]:
-                        st.warning(av)
-                    if not _ja_salvo(conn, "PROJECAO", b_p) and st.button(f"Salvar como projeção de {lido_p['mes'][5:]}/{lido_p['mes'][:4]}", type="primary", key=f"pn2_proj_salvar_{sha_p}"):
-                        try:
-                            res_p = P.gravar_projecao(conn, lido_p, arq_p.name, __import__("hashlib").sha256(b_p).hexdigest(), usuario)
-                            if res_p["repetido"]:
-                                st.info(f"Esta mesma planilha já foi importada antes (importação #{res_p['id']}, mês {res_p['mes']}).")
-                            else:
-                                st.success(f"Projeção de {res_p['mes']} salva (importação #{res_p['id']}).")
-                                st.rerun()
-                        except Exception as exc:
-                            st.error(f"Não consegui salvar: {exc}")
         if _proj is None:
-            st.info(f"Ainda não há projeção importada para {mes_o[5:]}/{mes_o[:4]}.")
+            st.info(f"Ainda não há projeção importada para {mes_o[5:]}/{mes_o[:4]}. Importe a planilha na aba **Importações (V2)**.")
         else:
             cmp_ = P.projecao_x_realizado(_proj, ob, P.nomes_obras_extra(conn))
             _pr = lambda v: (F.pct_br(v) if v is not None else "–")
@@ -629,42 +548,8 @@ with aba_adm:
     st.divider()
     st.markdown("**Orçamento ADM: orçado × realizado**")
     _orc = P.orcamento_ativo(conn)
-    with st.expander("Importar o PDF do Orçamento ADM (Comparativo Orçado × Realizado)", expanded=_orc is None):
-        if not P.orcamento_instalado(conn):
-            st.warning("Falta executar o arquivo `sql/v2_orcamento_adm.sql` (SQL-18) no Supabase para o app guardar o orçamento. Você já pode ler o PDF; só não dá para salvar.")
-        st.caption("PDF 'Comparativo Orçado X Realizado Agrupado' do Sienge (agrupamento ORÇAMENTO TOTAL | ADMINISTRATIVO), com os meses lado a lado. Pode ser o acumulado do ano.")
-        arq_o = st.file_uploader("PDF do Orçamento ADM", type=["pdf"], key="pn2_pdf_orc")
-        if arq_o is not None and str(getattr(arq_o, "name", "")).lower().endswith(".pdf"):
-            b_o = arq_o.getvalue()
-            sha_o = P.sha256_curto(b_o)
-            ch_o = f"pn2_orc_lido_{sha_o}"
-            if ch_o not in st.session_state:
-                try:
-                    with st.spinner("Lendo o PDF… (cerca de 5 a 15 segundos)"):
-                        st.session_state[ch_o] = importador_orcamento.ler_orcamento_adm_pdf(b_o)
-                except importador_orcamento.ErroOrcamento as exc:
-                    st.session_state[ch_o] = str(exc)
-                    P.registrar_log(conn, "ORCAMENTO_ADM_ERRO", "ERRO", usuario, None, {"arquivo": arq_o.name, "sha256": sha_o, "erro": str(exc)[:300]})
-            lido_o = st.session_state[ch_o]
-            if isinstance(lido_o, str):
-                st.error(lido_o)
-            else:
-                cab_o = lido_o["cabecalho"]
-                st.success(f"PDF lido: {cab_o['inicio']} a {cab_o['fim']} · {len(lido_o['meses'])} meses · {len({l['codigo'] for l in lido_o['linhas']})} contas.")
-                for av in lido_o["avisos"][:20]:
-                    st.warning(av)
-                if not lido_o["avisos"]:
-                    st.caption("Conferido: cada total fecha com a soma das contas e o saldo fecha com realizado − orçado.")
-                if not _ja_salvo(conn, "ORCAMENTO", b_o) and st.button("Salvar como Orçamento ADM", type="primary", disabled=not P.orcamento_instalado(conn), key=f"pn2_orc_salvar_{sha_o}"):
-                    try:
-                        res_o = P.gravar_orcamento(conn, lido_o, arq_o.name, __import__("hashlib").sha256(b_o).hexdigest(), usuario)
-                        if res_o["repetido"]:
-                            st.info(f"Este mesmo arquivo já foi importado antes (importação #{res_o['id']}).")
-                        else:
-                            st.success(f"Orçamento ADM salvo (importação #{res_o['id']}, {res_o['linhas']} linhas).")
-                            st.rerun()
-                    except Exception as exc:
-                        st.error(f"Não consegui salvar: {exc}")
+    if not _orc:
+        st.info("Orçado × realizado aparece depois de importar o PDF do Orçamento ADM na aba **Importações (V2)**.")
     if _orc:
         oa1, oa2 = st.columns([1, 2])
         mes_orc = oa1.selectbox("Mês", _orc["meses"], index=len(_orc["meses"]) - 1, key="pn2_mes_orc")
@@ -692,47 +577,8 @@ with aba_pess:
     st.markdown("**Folha de pagamento (CLT)** pelos recibos em PDF e a evolução do **faturamento** mês a mês.")
     _folha_ok = P.folha_instalada(conn)
     _meses_folha = P.folha_meses(conn)
-    with st.expander("Importar os recibos de pagamento (PDF)", expanded=not _meses_folha):
-        if not _folha_ok:
-            st.warning("Falta executar o arquivo `sql/v2_folha.sql` (SQL-16) no Supabase para o app guardar a folha. Você já pode ler os PDFs e ver o resultado; só não dá para salvar.")
-        st.caption("Envie o PDF 'Recibos de Pagamento' de cada empresa (Construtora e Energia). O app lê só o texto; o original não é alterado. Cada recibo vem duas vezes no PDF; conta uma só.")
-        arqs_f = st.file_uploader("PDFs dos recibos (um ou mais)", type=["pdf"], accept_multiple_files=True, key="pn2_pdf_folha")
-        arqs_f = arqs_f if isinstance(arqs_f, (list, tuple)) else ([arqs_f] if arqs_f else [])
-        for arq_f in arqs_f:
-            if not str(getattr(arq_f, "name", "")).lower().endswith(".pdf"):
-                continue
-            b_f = arq_f.getvalue()
-            sha_f = P.sha256_curto(b_f)
-            ch_f = f"pn2_folha_lida_{sha_f}"
-            if ch_f not in st.session_state:
-                try:
-                    with st.spinner(f"Lendo “{arq_f.name}”… (pode levar de 10 segundos a 1 minuto)"):
-                        st.session_state[ch_f] = importador_folha.ler_recibos_pdf(b_f)
-                except importador_folha.ErroFolha as exc:
-                    st.session_state[ch_f] = str(exc)
-                    P.registrar_log(conn, "FOLHA_PDF_ERRO", "ERRO", usuario, None, {"arquivo": arq_f.name, "sha256": sha_f, "erro": str(exc)[:300]})
-            lido_f = st.session_state[ch_f]
-            if isinstance(lido_f, str):
-                st.error(f"{arq_f.name}: {lido_f}")
-                continue
-            comp_f = lido_f["competencia"]
-            st.success(f"{arq_f.name}: {len(lido_f['recibos'])} colaboradores · competência {comp_f[5:]}/{comp_f[:4]} · empresa(s) "
-                       f"{', '.join(P.EMPRESAS_FOLHA.get(e, e) for e in lido_f['empresas'])} · {lido_f['paginas']} páginas.")
-            for av in lido_f["avisos"][:20]:
-                st.warning(av)
-            if not lido_f["avisos"]:
-                st.caption("Conferido: em todos os recibos a soma dos eventos fecha com o total de proventos e de descontos do recibo.")
-            if not _ja_salvo(conn, "FOLHA", b_f) and st.button(f"Salvar a folha de {comp_f[5:]}/{comp_f[:4]} ({', '.join(P.EMPRESAS_FOLHA.get(e, e) for e in lido_f['empresas'])})", type="primary",
-                                                               disabled=not (_folha_ok and comp_f), key=f"pn2_folha_salvar_{sha_f}"):
-                try:
-                    res_f = P.gravar_folha(conn, lido_f, arq_f.name, __import__("hashlib").sha256(b_f).hexdigest(), usuario)
-                    if res_f["repetido"]:
-                        st.info(f"Este mesmo arquivo já foi importado antes (importação #{res_f['id']}, mês {res_f['mes']}).")
-                    else:
-                        st.success(f"Folha de {res_f['mes']} ({res_f['escopo']}) salva: {res_f['recibos']} colaboradores (importação #{res_f['id']}).")
-                        st.rerun()
-                except Exception as exc:
-                    st.error(f"Não consegui salvar: {exc}")
+    if not _meses_folha:
+        st.info("Colaboradores, HE e custo da folha aparecem depois de importar os PDFs de recibos na aba **Importações (V2)**.")
     if _meses_folha:
         mes_f = st.selectbox("Mês da folha", _meses_folha, index=len(_meses_folha) - 1, key="pn2_mes_folha")
         fo = P.folha_do_mes(conn, mes_f)

@@ -188,9 +188,9 @@ def test_tela_administracao_mostra_ranking_e_outros_credores(conn):
     with patch("conexao.get_conn", return_value=conn):
         at = _tela(conn).run()
     assert not at.exception, at.exception
-    assert at.tabs[4].label == "Administração (prévia)" and at.tabs[5].label == "Pessoas (prévia)"
-    assert any("1.400,00" in m.value for m in at.tabs[4].metric)
-    cred = [df.value for df in at.tabs[4].dataframe if "Credor" in df.value.columns and "% do total" in df.value.columns]
+    assert at.tabs[5].label == "Administração (prévia)" and at.tabs[6].label == "Pessoas (prévia)"
+    assert any("1.400,00" in m.value for m in at.tabs[5].metric)
+    cred = [df.value for df in at.tabs[5].dataframe if "Credor" in df.value.columns and "% do total" in df.value.columns]
     assert cred and "Outros credores/Dir (fora do ranking)" in set(cred[0]["Credor"]) and "FORNECEDOR ALFA LTDA" in set(cred[0]["Credor"])
     assert not any("CREDOR" in str(x).upper() for x in cred[0]["Credor"])                      # saiu do ranking
 
@@ -201,7 +201,7 @@ def test_tela_administracao_sem_sql_11_avisa_e_nao_quebra(conn):
     with patch("conexao.get_conn", return_value=conn), patch("painel_db.credor_grupo_instalado", return_value=False):
         at = _tela(conn).run()
     assert not at.exception, at.exception
-    assert any("SQL-11" in w.value for w in at.tabs[4].warning)
+    assert any("SQL-11" in w.value for w in at.tabs[5].warning)
 
 
 @pytest.mark.pg
@@ -211,5 +211,5 @@ def test_tela_pessoas_mostra_serie_de_receita(conn):
     with patch("conexao.get_conn", return_value=conn):
         at = _tela(conn).run()
     assert not at.exception, at.exception
-    tab = at.tabs[5].dataframe[0].value
+    tab = at.tabs[6].dataframe[0].value
     assert list(tab.columns) == ["Mês", "Receita bruta", "Var. % s/ mês anterior", "Fonte"] and "09/2026" in set(tab["Mês"])
