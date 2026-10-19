@@ -957,3 +957,72 @@ def test_relatorio_pdf_do_painel_rascunho(conn):
         at.button(key="pn2_btn_pdf").click().run()
         assert not at.exception, at.exception
         assert any("pronto" in s.value for s in at.success)
+
+
+def test_obras_do_sienge_gravar_conferir_e_nome_so_onde_falta(conn):
+    """SQL-24: grava as obras do cadastro do Sienge, mostra a conferencia codigo x nome e usa o nome do Sienge so' onde o painel nao tem nome."""
+    import relatorio_painel_pdf as RPP
+    with conn.cursor() as cur:
+        cur.execute("""INSERT INTO pnl_centro_grupo (centro_custo_id, centro_nome, grupo, codigo_obra, obra_nome) VALUES
+                       (1,'A','OBRA','103','ANASTACIO LOTE 11'), (2,'B','OBRA','121',NULL), (3,'C','OBRA','130',NULL), (4,'D','ADM','ADM',NULL)""")
+    assert P.obras_sienge_instalado(conn)
+    obras = S.normalizar_obras([{"id": 103, "name": "NOME SIENGE 103"}, {"id": 121, "name": "ENERGISA GUAPORE", "commercialName": "Guapore"}, {"id": 999, "name": "NAO USADA"}])
+    assert P.gravar_obras_sienge(conn, obras) == {"obras": 3}
+    assert P.gravar_obras_sienge(conn, obras) == {"obras": 3}                          # repetir nao duplica
+    assert _contar(conn, "pnl_obra_sienge") == 3
+    conf = {c["codigo"]: c for c in P.obras_sienge_conferencia(conn)}
+    assert set(conf) == {"103", "121", "130"}                                          # ADM/DEM nao entram
+    assert conf["103"]["nome_sienge"] == "NOME SIENGE 103" and conf["103"]["nome_atual"] == "ANASTACIO LOTE 11"
+    assert conf["121"]["nome_sienge"] == "ENERGISA GUAPORE" and conf["121"]["nome_atual"] is None
+    assert conf["130"]["nome_sienge"] is None
+    nomes = RPP._nomes_obras(conn)
+    assert nomes["103"] == "ANASTACIO LOTE 11"                                        # nome validado do de-para tem prioridade
+    assert nomes["121"] == "ENERGISA GUAPORE" and "130" not in nomes                  # Sienge so' onde faltava
+    assert "ENERGISA GUAPORE" in P.nomes_obras_extra(conn)["121"]
+    assert P.gravar_obras_sienge(conn, []) == {"obras": 0}
+
+
+def test_obras_do_sienge_sem_a_tabela_avisa_em_vez_de_quebrar(conn):
+    with conn.cursor() as cur:
+        cur.execute("ALTER TABLE pnl_obra_sienge RENAME TO pnl_obra_sienge_x")
+    try:
+        assert not P.obras_sienge_instalado(conn)
+        assert "SQL-24" in P.gravar_obras_sienge(conn, [{"id": 1}])["erro"]
+        assert P.obras_sienge_conferencia(conn) == [] and P.nomes_obras_extra(conn) == {}
+    finally:
+        with conn.cursor() as cur:
+            cur.execute("ALTER TABLE pnl_obra_sienge_x RENAME TO pnl_obra_sienge")
+
+
+def test_botao_atualizar_cadastros_grava_obras_e_mostra_conferencia(conn):
+    """O botao atualiza empresas/centros/plano e TAMBEM as obras do Sienge; falha nas obras avisa sem desfazer o resto."""
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO pnl_centro_grupo (centro_custo_id, centro_nome, grupo, codigo_obra) VALUES (1049,'A','OBRA','103')")
+
+    class Cli:
+        def __init__(self, obras_ok=True):
+            self.obras_ok = obras_ok
+
+        def get(self, caminho, params=None):
+            if caminho == "v1/enterprises":
+                if not self.obras_ok:
+                    raise S.ErroSienge("Sienge respondeu HTTP 403 (a chave não tem permissão para este recurso) em v1/enterprises.")
+                return {"results": [{"id": 103, "name": "NOME DA OBRA 103"}]}
+            if caminho == "v1/companies":
+                return [{"id": 5, "name": "CONSTRUTORA", "cnpj": "00"}]
+            if caminho == "v1/cost-centers":
+                return [{"id": 1049, "name": "CON - X", "idCompany": 5}]
+            return []
+
+    for ok in (True, False):
+        with patch("conexao.get_conn", return_value=conn), patch("sienge_api.credenciais", return_value=("u", "p", "http://x")), patch("sienge_api.Cliente", return_value=Cli(ok)):
+            at = _tela(conn).run()
+            at.button(key="pn2_btn_cad").click().run()
+        assert not at.exception, at.exception
+        assert any("Cadastros atualizados" in s.value for s in at.success)             # empresas/centros gravados nos dois casos
+        if ok:
+            assert any("Obras do Sienge atualizadas: 1" in s.value for s in at.success)
+            assert any("batem" in e.label for e in at.expander)
+        else:
+            assert any("Não consegui ler as obras do Sienge" in w.value for w in at.warning)
+    assert _contar(conn, "pnl_empresa_sienge") == 1 and _contar(conn, "pnl_obra_sienge") == 1

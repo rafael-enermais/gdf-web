@@ -33,10 +33,12 @@ def _pc(v) -> str:
 
 
 def _nomes_obras(conn) -> dict:
-    """{codigo_obra: nome completo} do de-para de centros de custo (o mais frequente por codigo); sem a tabela devolve {}."""
+    """{codigo_obra: nome completo} do de-para de centros de custo (o mais frequente por codigo); em ultimo, o nome do cadastro de obras do Sienge; sem a tabela devolve {}."""
+    from painel_db import NOMES_OBRA_SIENGE_SQL as _NOMES_SIENGE_SQL
     out: dict = {}
     for sql in ("SELECT codigo_obra, obra_nome FROM pnl_centro_grupo WHERE codigo_obra IS NOT NULL AND obra_nome IS NOT NULL GROUP BY 1, 2 ORDER BY count(*) DESC, 2",
-                "SELECT codigo_obra, obra_nome FROM pnl_folha_depto_obra WHERE codigo_obra IS NOT NULL AND obra_nome IS NOT NULL GROUP BY 1, 2 ORDER BY count(*) DESC, 2"):
+                "SELECT codigo_obra, obra_nome FROM pnl_folha_depto_obra WHERE codigo_obra IS NOT NULL AND obra_nome IS NOT NULL GROUP BY 1, 2 ORDER BY count(*) DESC, 2",
+                _NOMES_SIENGE_SQL):                  # ultimo: cadastro de obras do Sienge (so' onde o numero bate)
         try:
             with conn.cursor() as cur:
                 cur.execute(sql)

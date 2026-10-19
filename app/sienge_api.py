@@ -179,6 +179,23 @@ def buscar_cadastros(cli: Cliente) -> dict:
     return out
 
 
+ENDPOINT_OBRAS = "v1/enterprises"
+
+
+def buscar_obras(cli: Cliente) -> list:
+    """Obras (empreendimentos) do cadastro do Sienge, em paginas de 200. Se a chave nao tiver permissao neste recurso, o Cliente levanta ErroSienge
+    (quem chama mostra o aviso e segue: o resto dos cadastros nao depende disso)."""
+    obras, off = [], 0
+    while off < 5000:
+        pag = lista(cli.get(ENDPOINT_OBRAS, {"limit": 200, "offset": off}))
+        obras += pag
+        if len(pag) < 200:
+            break
+        off += 200
+        time.sleep(0.3)
+    return obras
+
+
 # ---------------------------------------------------------------- normalizacao (funcoes puras)
 def cod_plano(i) -> str:
     """O Sienge devolve o plano financeiro as vezes sem pontos (2020212) e os relatorios com pontos (2.02.02.12)."""
@@ -329,3 +346,22 @@ def normalizar_cadastros(c: dict) -> dict:
         "tipos_negocio": [{"id": int(x["businessTypeId"]), "nome": x.get("description") or ""}
                           for x in c.get("tipos_negocio", []) if isinstance(x, dict) and x.get("businessTypeId") is not None],
     }
+
+
+def normalizar_obras(regs: list) -> list:
+    """Obras do Sienge -> [{'id','nome','nome_comercial','empresa_id','codigo','bruto'}]. Tolerante: aceita nomes de campo em ingles do Sienge
+    (name/commercialName/companyId...) e ignora registro sem id. 'bruto' guarda o registro original para conferir o de-para depois."""
+    out = []
+    for x in regs or []:
+        if not isinstance(x, dict):
+            continue
+        oid = _int(x.get("id") if x.get("id") is not None else x.get("enterpriseId"))
+        if oid is None:
+            continue
+        nome = (x.get("name") or x.get("description") or x.get("enterpriseName") or "").strip()
+        comercial = (x.get("commercialName") or x.get("tradeName") or "").strip()
+        codigo = x.get("code") if x.get("code") is not None else x.get("enterpriseCode")
+        out.append({"id": oid, "nome": nome or None, "nome_comercial": comercial or None,
+                    "empresa_id": _int(x.get("companyId") if x.get("companyId") is not None else x.get("idCompany")),
+                    "codigo": str(codigo).strip() if codigo not in (None, "") else None, "bruto": x})
+    return out

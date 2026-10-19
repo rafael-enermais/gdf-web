@@ -185,3 +185,28 @@ def test_normalizar_movimentos_so_avisos_de_saida_sem_titulo():
     assert b["liquido"] == 1000.0 and b["tipo_oper_id"] == 1002 and str(b["data_pagamento"]) == "2026-09-15"
     assert sorted(r["plano_cod"] for r in n["rateios"] if r["bill_id"] == -9002) == ["2.03.01.04", "2.03.04.09"]
     assert S.normalizar_movimentos([]) == {"titulos": [], "baixas": [], "rateios": [], "avisos": {}}
+
+
+def test_normalizar_obras_tolerante():
+    regs = [{"id": 103, "name": " ANASTACIO - LOTE 11 ", "commercialName": "Lote 11", "companyId": 5, "code": "L11"},
+            {"enterpriseId": "104", "description": "OPGW II"},
+            {"id": None, "name": "sem id"}, "lixo", {"id": "x"}]
+    n = S.normalizar_obras(regs)
+    assert [o["id"] for o in n] == [103, 104]
+    assert n[0] == {"id": 103, "nome": "ANASTACIO - LOTE 11", "nome_comercial": "Lote 11", "empresa_id": 5, "codigo": "L11", "bruto": regs[0]}
+    assert n[1]["nome"] == "OPGW II" and n[1]["codigo"] is None and n[1]["empresa_id"] is None
+    assert S.normalizar_obras(None) == [] and S.normalizar_obras([]) == []
+
+
+def test_buscar_obras_pagina_ate_acabar():
+    class Falso:
+        def __init__(self):
+            self.chamadas = []
+
+        def get(self, caminho, params=None):
+            self.chamadas.append((caminho, dict(params or {})))
+            off = (params or {}).get("offset", 0)
+            return {"results": [{"id": off + i, "name": f"O{off + i}"} for i in range(200 if off == 0 else 7)]}
+    cli = Falso()
+    obras = S.buscar_obras(cli)
+    assert len(obras) == 207 and [c[0] for c in cli.chamadas] == ["v1/enterprises", "v1/enterprises"] and cli.chamadas[1][1]["offset"] == 200

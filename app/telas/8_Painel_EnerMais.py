@@ -91,6 +91,26 @@ if aba_sync.open or _TODAS:                                   # so' a aba aberta
                 st.success("Cadastros atualizados: " + ", ".join(f"{k} {v}" for k, v in cont.items()) + ".")
             except S.ErroSienge as exc:
                 st.error(str(exc))
+            else:
+                # nomes das obras (cadastro de obras do Sienge): falha aqui nao desfaz os cadastros acima
+                try:
+                    with st.spinner("Buscando as obras do Sienge…"):
+                        r_obras = P.gravar_obras_sienge(conn, S.normalizar_obras(S.buscar_obras(cli)))
+                    if "erro" in r_obras:
+                        st.warning(r_obras["erro"])
+                    else:
+                        st.success(f"Obras do Sienge atualizadas: {r_obras['obras']}. Confira abaixo se o número de cada obra do painel bate com o do Sienge.")
+                except S.ErroSienge as exc:
+                    st.warning(f"Não consegui ler as obras do Sienge (o restante dos cadastros foi atualizado): {exc}")
+        if P.obras_sienge_instalado(conn):
+            conf_obras = P.obras_sienge_conferencia(conn)
+            if conf_obras:
+                with st.expander(f"Nomes das obras: número do painel × cadastro de obras do Sienge ({sum(1 for c in conf_obras if c['nome_sienge'])} de {len(conf_obras)} batem)"):
+                    st.dataframe(pd.DataFrame([{"Código no painel": c["codigo"], "Nome no Sienge": c["nome_sienge"] or "(sem correspondência)",
+                                                "Nome comercial": c["nome_comercial"] or "", "Nome usado hoje no painel": c["nome_atual"] or ""} for c in conf_obras]),
+                                 hide_index=True, width="stretch")
+                    st.caption("O nome do Sienge só é usado onde o painel ainda não tem nome (os nomes validados pela contabilidade têm prioridade) e só quando o número do painel é o "
+                               "mesmo id/código da obra no Sienge. Se aparecer “sem correspondência” em obras que existem, o número do painel não é o do Sienge: me avise.")
         st.markdown("**Últimas sincronizações**")
         syncs = P.ultimas_syncs(conn)
         if syncs:

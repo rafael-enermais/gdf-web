@@ -11,7 +11,7 @@ import hashlib
 import io
 import json
 
-from psycopg2.extras import execute_values
+from psycopg2.extras import Json, execute_values
 
 import db
 
@@ -111,6 +111,50 @@ def gravar_cadastros(conn, cad: dict) -> dict:
                 execute_values(cur, "INSERT INTO pnl_tipo_negocio (id,nome) VALUES %s ON CONFLICT (id) DO UPDATE SET nome=EXCLUDED.nome, atualizado_em=now()",
                                [(x["id"], x["nome"]) for x in cad["tipos_negocio"]])
     return {k: len(v) for k, v in cad.items()}
+
+
+def obras_sienge_instalado(conn) -> bool:
+    """True se a tabela das obras do Sienge (sql/v2_obra_sienge.sql, SQL-24) existe."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema='gdf' AND table_name='pnl_obra_sienge'")
+            return cur.fetchone()[0] == 1
+    except Exception:
+        return False
+
+
+def gravar_obras_sienge(conn, obras: list) -> dict:
+    """Upsert das obras do Sienge (ja normalizadas por sienge_api.normalizar_obras). Nao mexe em nenhum outro cadastro. Sem a tabela devolve {'erro': ...}."""
+    if not obras_sienge_instalado(conn):
+        return {"erro": "A tabela das obras do Sienge ainda não existe no banco (falta executar o SQL-24, arquivo sql/v2_obra_sienge.sql)."}
+    if not obras:
+        return {"obras": 0}
+    with db.transacao(conn):
+        with conn.cursor() as cur:
+            execute_values(cur, """INSERT INTO pnl_obra_sienge (id, nome, nome_comercial, empresa_id, codigo, bruto) VALUES %s
+                                   ON CONFLICT (id) DO UPDATE SET nome=EXCLUDED.nome, nome_comercial=EXCLUDED.nome_comercial, empresa_id=EXCLUDED.empresa_id,
+                                   codigo=EXCLUDED.codigo, bruto=EXCLUDED.bruto, atualizado_em=now()""",
+                           [(o["id"], o["nome"], o["nome_comercial"], o["empresa_id"], o["codigo"], Json(o["bruto"])) for o in obras])
+    return {"obras": len(obras)}
+
+
+def obras_sienge_conferencia(conn) -> list:
+    """Para cada codigo de obra do painel (de-para de centros de custo), o nome que o Sienge tem para o mesmo numero (id ou codigo da obra) ao lado do nome ja usado.
+    Serve para a contabilidade/Rafael validarem se o numero do painel e' o mesmo do Sienge ANTES de confiar nos nomes. [{'codigo','nome_sienge','nome_comercial','nome_atual'}]."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT g.codigo_obra, o.nome, o.nome_comercial,
+                                  (SELECT max(g2.obra_nome) FROM pnl_centro_grupo g2 WHERE g2.codigo_obra = g.codigo_obra AND g2.obra_nome IS NOT NULL)
+                           FROM (SELECT DISTINCT codigo_obra FROM pnl_centro_grupo WHERE COALESCE(codigo_obra,'') NOT IN ('', 'DEM', 'ADM')) g
+                           LEFT JOIN pnl_obra_sienge o ON o.id::text = g.codigo_obra OR o.codigo = g.codigo_obra
+                           ORDER BY g.codigo_obra""")
+            return [{"codigo": c, "nome_sienge": n, "nome_comercial": nc, "nome_atual": a} for c, n, nc, a in cur.fetchall()]
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:                                       # noqa: BLE001
+            pass
+        return []
 
 
 def sincronizar_mes(conn, cli, mes: str, usuario: str | None, lados=("P", "R"), tipos=("P", "I"), buscar=None, normalizar=None,
@@ -1321,12 +1365,21 @@ def importacao_por_sha(conn, tipo: str, sha256: str) -> dict | None:
     return {"id": r[0], "ativo": r[1], "mes": r[2].strftime("%Y-%m"), "quando": r[3], "quem": r[4], "linhas": r[5]}
 
 
+# Nome da obra vindo do cadastro do Sienge (SQL-24): so' onde o numero do painel e' o mesmo id/codigo da obra no Sienge; entra por ultimo (os nomes
+# do de-para e da folha, validados pela contabilidade, tem prioridade)
+NOMES_OBRA_SIENGE_SQL = """SELECT g.codigo_obra, COALESCE(NULLIF(o.nome,''), o.nome_comercial)
+                           FROM (SELECT DISTINCT codigo_obra FROM pnl_centro_grupo WHERE COALESCE(codigo_obra,'') NOT IN ('', 'DEM', 'ADM')) g
+                           JOIN pnl_obra_sienge o ON o.id::text = g.codigo_obra OR o.codigo = g.codigo_obra
+                           WHERE COALESCE(NULLIF(o.nome,''), o.nome_comercial) IS NOT NULL"""
+
+
 def nomes_obras_extra(conn) -> dict:
     """{codigo_obra: 'nome completo 1 nome completo 2 ...'} juntando os nomes do de-para de centros de custo e do de-para de departamentos da folha.
     Serve para casar o nome curto da projecao ('LOTE 03') com a obra do DRE. So leitura; sem as tabelas devolve {}."""
     out: dict = {}
     for sql in ("SELECT codigo_obra, obra_nome FROM pnl_centro_grupo WHERE codigo_obra IS NOT NULL AND obra_nome IS NOT NULL",
-                "SELECT codigo_obra, obra_nome FROM pnl_folha_depto_obra WHERE obra_nome IS NOT NULL"):
+                "SELECT codigo_obra, obra_nome FROM pnl_folha_depto_obra WHERE obra_nome IS NOT NULL",
+                NOMES_OBRA_SIENGE_SQL):
         try:
             with conn.cursor() as cur:
                 cur.execute(sql)
