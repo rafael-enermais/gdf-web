@@ -468,6 +468,21 @@ def test_tela_resultado_confirma_dre_escolhendo_fonte_por_linha(conn):
     assert c["resumo"]["lucro_liquido_pdf"] is not None
 
 
+def test_resultado_traz_imposto_do_titulo_no_dre_02_02(conn):
+    """taxAmount do titulo de receita = impostos da NF (DRE 02.02); mesmos filtros da receita (previsao e distrato)."""
+    regs = [{**income()[0], "billId": 50, "taxAmount": 150.0},
+            {**income()[0], "billId": 51, "taxAmount": 300.0, "receipts": [{"sequencialNumber": 1, "paymentDate": "2026-09-25", "netAmount": 2000.0,
+                                                                          "grossAmount": 2000.0, "operationTypeId": 7, "operationTypeName": "Distrato"}]},
+            {**income()[0], "billId": 53, "taxAmount": 50.0, "documentForecast": "S"}]
+    _ingerir(conn, regs=regs, lado="R", tipo="I")
+    imp = lambda **k: {c["plano_cod"]: c["valor"] for c in P.resultado_por_conta(conn, "2026-09", **k)}.get("1.01.02.01")  # noqa: E731
+    assert imp(sem_previsao=True) == -150.0                       # sem a previsao (53) e sem o distrato (51)
+    assert imp(sem_previsao=True, sem_distrato=False) == -450.0
+    assert imp() == -200.0                                        # com previsao, sem distrato
+    dre = P.dre_do_mes(P.resultado_por_conta(conn, "2026-09", sem_previsao=True))
+    assert dre["valores"]["02.02"] == -150.0
+
+
 def test_resultado_tira_nf_desfeita_por_distrato(conn):
     dois = income() + [{**income()[0], "billId": 51, "receipts": [{"sequencialNumber": 1, "paymentDate": "2026-09-25", "netAmount": 2000.0, "grossAmount": 2000.0,
                                                                   "operationTypeId": 7, "operationTypeName": "Distrato"}]},

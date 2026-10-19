@@ -32,6 +32,7 @@ GRUPO_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_centro_g
 DRE_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_dre_pdf.sql"
 CONF_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_dre_confirmacao.sql"
 CREDOR_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_credor_grupo.sql"
+IMPOSTO_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_titulo_imposto.sql"
 _estado = {"dsn": None, "tentou": False}
 
 
@@ -102,6 +103,7 @@ def pg_dsn():
         cur.execute(DRE_SQL.read_text(encoding="utf-8"))       # DRE oficial lido do PDF (pnl_dre_valor)
         cur.execute(CONF_SQL.read_text(encoding="utf-8"))      # confirmacao do DRE do mes (fonte por linha)
         cur.execute(CREDOR_SQL.read_text(encoding="utf-8"))    # de-para credor -> "Outros credores/Dir" (aba Administracao)
+        cur.execute(IMPOSTO_SQL.read_text(encoding="utf-8"))   # SQL-13: imposto do titulo de receita (DRE 02.02)
     conn.close()
     return dsn
 

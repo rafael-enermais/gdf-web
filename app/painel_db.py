@@ -39,16 +39,23 @@ def finalizar_sync(conn, sync_id: int, status: str, n_tit=0, n_bx=0, n_rt=0, val
                     (status, n_tit, n_bx, n_rt, valor, (erro or None) and erro[:500], sync_id))
 
 
+def _tem_coluna(cur, tabela: str, coluna: str) -> bool:
+    cur.execute("SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=%s AND column_name=%s", (tabela, coluna))
+    return cur.fetchone() is not None
+
+
 def gravar_normalizado(conn, sync_id: int, norm: dict) -> dict:
     """Grava titulos, baixas e rateios (upsert) numa unica transacao. Devolve contagens e o liquido total das baixas."""
     tit, bx, rt = norm["titulos"], norm["baixas"], norm["rateios"]
     with db.transacao(conn):
         with conn.cursor() as cur:
             if tit:
-                execute_values(cur, """
+                com_imposto = _tem_coluna(cur, "pnl_titulo", "imposto_titulo")          # SQL-13; sem ela grava como antes (nada quebra)
+                col_extra, upd_extra = (",imposto_titulo", ", imposto_titulo=EXCLUDED.imposto_titulo") if com_imposto else ("", "")
+                execute_values(cur, f"""
                     INSERT INTO pnl_titulo (lado,bill_id,installment_id,sync_id,empresa_id,empresa_nome,origem,doc_id,doc_nome,previsao,numero_doc,
                         contraparte_id,contraparte_nome,data_emissao,data_vencimento,valor_original,tipo_negocio_id,tipo_negocio_nome,
-                        area_id,area_nome,projeto_id,projeto_nome)
+                        area_id,area_nome,projeto_id,projeto_nome{col_extra})
                     VALUES %s
                     ON CONFLICT (lado,bill_id,installment_id) DO UPDATE SET
                         sync_id=EXCLUDED.sync_id, empresa_id=EXCLUDED.empresa_id, empresa_nome=EXCLUDED.empresa_nome, origem=EXCLUDED.origem,
@@ -56,11 +63,12 @@ def gravar_normalizado(conn, sync_id: int, norm: dict) -> dict:
                         contraparte_id=EXCLUDED.contraparte_id, contraparte_nome=EXCLUDED.contraparte_nome, data_emissao=EXCLUDED.data_emissao,
                         data_vencimento=EXCLUDED.data_vencimento, valor_original=EXCLUDED.valor_original, tipo_negocio_id=EXCLUDED.tipo_negocio_id,
                         tipo_negocio_nome=EXCLUDED.tipo_negocio_nome, area_id=EXCLUDED.area_id, area_nome=EXCLUDED.area_nome,
-                        projeto_id=EXCLUDED.projeto_id, projeto_nome=EXCLUDED.projeto_nome, atualizado_em=now()""",
+                        projeto_id=EXCLUDED.projeto_id, projeto_nome=EXCLUDED.projeto_nome{upd_extra}, atualizado_em=now()""",
                                [(t["lado"], t["bill_id"], t["installment_id"], sync_id, t["empresa_id"], t["empresa_nome"], t["origem"], t["doc_id"],
                                  t["doc_nome"], t["previsao"], t["numero_doc"], t["contraparte_id"], t["contraparte_nome"], t["data_emissao"],
                                  t["data_vencimento"], t["valor_original"], t["tipo_negocio_id"], t["tipo_negocio_nome"], t["area_id"],
-                                 t["area_nome"], t["projeto_id"], t["projeto_nome"]) for t in tit], page_size=500)
+                                 t["area_nome"], t["projeto_id"], t["projeto_nome"]) + ((t.get("imposto_titulo"),) if com_imposto else ()) for t in tit],
+                               page_size=500)
             if bx:
                 execute_values(cur, """
                     INSERT INTO pnl_baixa (lado,bill_id,installment_id,seq,sync_id,data_pagamento,tipo_oper_id,tipo_oper_nome,bruto,liquido,juros,multa,desconto,imposto,correcao)
@@ -461,6 +469,19 @@ def resultado_por_conta(conn, mes: str, sem_previsao: bool = False, so_obras: bo
         desc = float(cur.fetchone()[0] or 0)
     if abs(desc) > 0.004 and "1.01.03.01" not in por:
         por["1.01.03.01"] = {"plano_cod": "1.01.03.01", "plano_nome": "Descontos concedidos (descontos das baixas)", "valor": round(-desc, 2)}
+    # Impostos sobre o faturamento (02.02): a API traz no proprio titulo de receita (taxAmount = ISS/PIS/COFINS da NF; SQL-13), nao no rateio nem nas baixas.
+    # Mesmos filtros da receita (previsao e distrato). Sem a coluna ou sem valores, a linha fica de fora (como antes).
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""SELECT COALESCE(sum(t.imposto_titulo),0) FROM pnl_titulo t
+                            WHERE t.lado='R' AND t.imposto_titulo IS NOT NULL AND t.data_emissao >= %s::date AND t.data_emissao < (%s::date + interval '1 month') {filtro}""",
+                        (ini, ini))
+            imp = float(cur.fetchone()[0] or 0)
+    except Exception:
+        conn.rollback()
+        imp = 0.0
+    if abs(imp) > 0.004 and "1.01.02.01" not in por:
+        por["1.01.02.01"] = {"plano_cod": "1.01.02.01", "plano_nome": "Impostos sobre o faturamento (imposto do titulo da NF)", "valor": round(-imp, 2)}
     return sorted(por.values(), key=lambda d: d["plano_cod"])
 
 
