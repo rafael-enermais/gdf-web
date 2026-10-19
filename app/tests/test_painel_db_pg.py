@@ -187,7 +187,7 @@ def test_tela_com_dados_mostra_despesas(conn):
     with patch("conexao.get_conn", return_value=conn):
         at = _tela(conn).run()
         assert not at.exception, at.exception
-        assert len(at.tabs) == 6
+        assert len(at.tabs) == 8
         assert at.selectbox(key="pn2_mes_desp").value == "2026-09"
         valores = [m.value for m in at.metric]
         assert any("1.000,00" in v for v in valores)
@@ -256,7 +256,7 @@ def test_tela_historico_e_mes_do_csv_automatico(conn):
     with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", return_value=falso):
         at = _tela(conn).run()
         assert not at.exception, at.exception
-        assert at.tabs[5].label == "Histórico e logs"
+        assert at.tabs[7].label == "Histórico e logs"
         cmp_sel = [sb for sb in at.selectbox if sb.key and sb.key.startswith("pn2_mes_cmp_")][0]
         assert cmp_sel.value == "2026-09"                                       # mes lido do CSV
         tabelas = [df.value for df in at.tabs[1].dataframe]
@@ -266,7 +266,7 @@ def test_tela_historico_e_mes_do_csv_automatico(conn):
         at.run()                                                                # nova execucao nao duplica o log
         assert len(P.ultimos_logs(conn, acao="CONFERENCIA_DESPESAS")) == 1
         at = _tela(conn).run()
-        assert any("CONFERENCIA_DESPESAS" in set(df.value["Ação"]) for df in at.tabs[5].dataframe)
+        assert any("CONFERENCIA_DESPESAS" in set(df.value["Ação"]) for df in at.tabs[7].dataframe)
 
 
 # ------------------------------------------------------------------ Resultado (DRE comprometido por emissao)

@@ -744,3 +744,198 @@ def gravar_confirmacao(conn, mes: str, fontes: dict, valores: dict, usuario: str
     registrar_log(conn, "DRE_CONFIRMADO", "INFO", usuario, mes, {"confirmacao_id": novo, "substituiu": ant[0] if ant else None, "fontes": fontes,
                                                                   "resumo": resumo or {}, "observacao": (observacao or "")[:200]})
     return {"id": novo, "mes": mes, "substituiu": ant[0] if ant else None}
+
+
+# ---------------------------------------------------------------- Administracao (aba do painel): despesas das unidades ADM, credores e de-para "Outros credores/Dir"
+def norm_credor(s) -> str:
+    """Nome do credor para comparar: MAIUSCULAS, sem acento e com espacos simples ('Credor  Exemplo Gama' == 'CREDOR EXEMPLO GAMA')."""
+    import re
+    import unicodedata
+    t = unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode()
+    return re.sub(r"\s+", " ", t).strip().upper()
+
+
+def credor_grupo_instalado(conn) -> bool:
+    """True se o SQL-11 (sql/v2_credor_grupo.sql) ja foi executado."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema='gdf' AND table_name='pnl_credor_grupo'")
+            return cur.fetchone()[0] == 1
+    except Exception:
+        return False
+
+
+def credor_grupo_ativos(conn) -> list:
+    """Credores que estao no grupo 'Outros credores/Dir' (ativos): [{'id','chave','nome','quem','quando'}]."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, chave, COALESCE(nome_exibicao, chave), alterado_por, alterado_em FROM pnl_credor_grupo WHERE ativo AND grupo='OUTROS_DIR' ORDER BY chave")
+            return [{"id": i, "chave": c, "nome": n, "quem": q, "quando": e} for i, c, n, q, e in cur.fetchall()]
+    except Exception:
+        return []
+
+
+def credor_grupo_adicionar(conn, nome: str, usuario: str | None) -> dict:
+    """Poe um credor em 'Outros credores/Dir'. O credor casa se o nome dele COMECA com o texto informado (sem acento, sem diferenca de maiuscula).
+    Devolve {'ok': True, 'id'} ou {'ok': False, 'erro'}. O log guarda so' o id (nada de nome de pessoa)."""
+    chave = norm_credor(nome)
+    if len(chave) < 3:
+        return {"ok": False, "erro": "Escreva pelo menos 3 letras do nome do credor."}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM pnl_credor_grupo WHERE ativo AND grupo='OUTROS_DIR' AND chave=%s", (chave,))
+            if cur.fetchone():
+                return {"ok": False, "erro": "Esse credor já está no grupo."}
+            cur.execute("INSERT INTO pnl_credor_grupo (chave, nome_exibicao, grupo, alterado_por) VALUES (%s,%s,'OUTROS_DIR',%s) RETURNING id", (chave, str(nome).strip(), usuario))
+            novo = cur.fetchone()[0]
+    except Exception as exc:
+        return {"ok": False, "erro": f"Não consegui gravar: {exc}"}
+    registrar_log(conn, "CREDOR_GRUPO_ADICIONADO", "INFO", usuario, None, {"id": novo, "grupo": "OUTROS_DIR", "tamanho_do_nome": len(chave)})
+    return {"ok": True, "id": novo}
+
+
+def credor_grupo_remover(conn, id_: int, usuario: str | None) -> bool:
+    """Tira o credor do grupo (ativo = false; a linha fica no historico). Devolve True se mudou algo."""
+    with conn.cursor() as cur:
+        cur.execute("UPDATE pnl_credor_grupo SET ativo=false, alterado_por=%s, alterado_em=now() WHERE id=%s AND ativo", (usuario, int(id_)))
+        n = cur.rowcount
+    if n:
+        registrar_log(conn, "CREDOR_GRUPO_REMOVIDO", "INFO", usuario, None, {"id": int(id_), "grupo": "OUTROS_DIR"})
+    return bool(n)
+
+
+def _periodo(mes_ini: str, mes_fim: str) -> tuple:
+    return f"{mes_ini}-01", f"{mes_fim}-01"
+
+
+def adm_linhas(conn, mes_ini: str, mes_fim: str, prefixos: list, sem_previsao: bool = False) -> list:
+    """Despesas PAGAS das unidades ADM (centros de custo com grupo 'ADM' no de-para) entre os meses 'AAAA-MM' (inclusive), por conta, credor e unidade:
+    soma(liquido da baixa x % do rateio). Mesmas regras da aba Despesas (contas excluidas, previsao). Sem de-para no banco devolve [].
+    Devolve [{'plano_cod','plano_nome','credor','unidade','valor'}]."""
+    ini, fim = _periodo(mes_ini, mes_fim)
+    filtro = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""SELECT r.plano_cod, max(r.plano_nome), COALESCE(NULLIF(trim(t.contraparte_nome),''),'(sem credor)'),
+                                   COALESCE(NULLIF(trim(g.empresa_nome),''),'(sem unidade)'), sum(b.liquido * r.percentual / 100.0)
+                            FROM pnl_v_baixa b
+                            JOIN pnl_v_rateio r ON r.lado=b.lado AND r.bill_id=b.bill_id AND r.installment_id=b.installment_id
+                            JOIN pnl_titulo t ON t.lado=b.lado AND t.bill_id=b.bill_id AND t.installment_id=b.installment_id
+                            JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id AND g.grupo = 'ADM'
+                            WHERE b.lado='P' AND b.data_pagamento >= %s::date AND b.data_pagamento < (%s::date + interval '1 month') {filtro}
+                            GROUP BY r.plano_cod, 3, 4""", (ini, fim))
+            linhas = cur.fetchall()
+    except Exception:
+        return []
+    return [{"plano_cod": c, "plano_nome": n, "credor": cr, "unidade": u, "valor": round(float(v or 0), 2)}
+            for c, n, cr, u, v in linhas if not _excluido(c, prefixos)]
+
+
+def adm_evolucao(conn, mes_ini: str, mes_fim: str, prefixos: list, sem_previsao: bool = False) -> list:
+    """Total pago nas unidades ADM mes a mes (mesmas regras de adm_linhas): [{'mes','valor'}], so' meses com movimento."""
+    ini, fim = _periodo(mes_ini, mes_fim)
+    filtro = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""SELECT to_char(b.data_pagamento,'YYYY-MM'), r.plano_cod, sum(b.liquido * r.percentual / 100.0)
+                            FROM pnl_v_baixa b
+                            JOIN pnl_v_rateio r ON r.lado=b.lado AND r.bill_id=b.bill_id AND r.installment_id=b.installment_id
+                            JOIN pnl_titulo t ON t.lado=b.lado AND t.bill_id=b.bill_id AND t.installment_id=b.installment_id
+                            JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id AND g.grupo = 'ADM'
+                            WHERE b.lado='P' AND b.data_pagamento >= %s::date AND b.data_pagamento < (%s::date + interval '1 month') {filtro}
+                            GROUP BY 1, 2""", (ini, fim))
+            linhas = cur.fetchall()
+    except Exception:
+        return []
+    por = {}
+    for m, c, v in linhas:
+        if not _excluido(c, prefixos):
+            por[m] = round(por.get(m, 0.0) + float(v or 0), 2)
+    return [{"mes": m, "valor": por[m]} for m in sorted(por)]
+
+
+def nomes_plano(conn) -> dict:
+    """{codigo: nome} do plano financeiro cadastrado (para nomear os grupos de despesa); {} se nao houver."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT codigo, nome FROM pnl_plano_conta")
+            return {c: n for c, n in cur.fetchall()}
+    except Exception:
+        return {}
+
+
+def adm_resumo(linhas: list, chaves_outros: list | None = None, nomes: dict | None = None, top_contas: int = 12) -> dict:
+    """Resume as linhas de adm_linhas (sem banco): total; por grupo de despesa (2 primeiros niveis do plano, ex. '2.03'); por unidade; top contas
+    (as demais somadas numa linha); ranking de credores SEM os do grupo 'Outros credores/Dir' (que somam a parte, com a lista de quem sao)."""
+    chaves = [norm_credor(c) for c in (chaves_outros or []) if norm_credor(c)]
+    nomes = nomes or {}
+    total = round(sum(l["valor"] for l in linhas), 2)
+    pct = lambda v: round(v / total, 4) if abs(total) > 0.004 else None
+
+    def agrupar(chave_fn, nome_fn=None):
+        por = {}
+        for l in linhas:
+            k = chave_fn(l)
+            a = por.setdefault(k, {"chave": k, "nome": nome_fn(l) if nome_fn else k, "valor": 0.0})
+            a["valor"] = round(a["valor"] + l["valor"], 2)
+        out = sorted(por.values(), key=lambda a: -a["valor"])
+        for a in out:
+            a["pct"] = pct(a["valor"])
+        return out
+
+    grupo_cod = lambda l: ".".join(l["plano_cod"].split(".")[:2])
+    por_grupo = agrupar(grupo_cod, lambda l: nomes.get(grupo_cod(l)) or grupo_cod(l))
+    por_unidade = agrupar(lambda l: l["unidade"])
+    contas = agrupar(lambda l: l["plano_cod"], lambda l: l["plano_nome"] or l["plano_cod"])
+    top, resto = contas[:top_contas], contas[top_contas:]
+    if resto:
+        v = round(sum(a["valor"] for a in resto), 2)
+        top.append({"chave": "", "nome": f"Demais contas ({len(resto)})", "valor": v, "pct": pct(v)})
+    cred = {}
+    for l in linhas:
+        k = l["credor"].strip()
+        cred[k] = round(cred.get(k, 0.0) + l["valor"], 2)
+    ranking, outros = [], []
+    for nome, v in cred.items():
+        (outros if any(norm_credor(nome).startswith(c) for c in chaves) else ranking).append({"credor": nome, "valor": v})
+    ranking.sort(key=lambda a: -a["valor"])
+    outros.sort(key=lambda a: -a["valor"])
+    for a in ranking + outros:
+        a["pct"] = pct(a["valor"])
+    v_outros = round(sum(a["valor"] for a in outros), 2)
+    casadas = {c for c in chaves if any(norm_credor(n["credor"]).startswith(c) for n in outros)}
+    return {"total": total, "por_grupo": por_grupo, "por_unidade": por_unidade, "top_contas": top, "ranking": ranking,
+            "outros": {"valor": v_outros, "pct": pct(v_outros), "credores": outros}, "n_credores": len(ranking) + len(outros),
+            "chaves_sem_credor": sorted(set(chaves) - casadas)}
+
+
+# ---------------------------------------------------------------- Receita mes a mes (aba Pessoas: linha "Receita: var. % s/ mes anterior")
+def receita_mensal(conn, mes_atual: str | None = None, sem_distrato: bool = True) -> list:
+    """Receita bruta por mes, da fonte mais confiavel que existir: 1) DRE CONFIRMADO do mes (linha 01.01); 2) DRE oficial importado (PDF, linha 01);
+    3) reconstrucao pela API (titulos emitidos no mes, sem previsao e sem NF desfeita). O mes em andamento ('mes_atual') fica de fora (incompleto).
+    Devolve [{'mes','receita','fonte','var'}] em ordem; 'var' = variacao sobre o mes anterior (fracao) so' quando os dois meses vieram da lista e o anterior e' > 0."""
+    meses = set(meses_com_emissao(conn)) | set(meses_com_dre(conn)) | set(meses_confirmados(conn))
+    if mes_atual:
+        meses.discard(mes_atual)
+    out = []
+    for m in sorted(meses):
+        rec, fonte = None, None
+        conf = confirmacao_ativa(conn, m)
+        if conf and "01.01" in (conf["valores"] or {}):
+            rec, fonte = float(conf["valores"]["01.01"]), "DRE confirmado"
+        if rec is None:
+            imp = dre_importacao_ativa(conn, m)
+            if imp:
+                rec = round(sum(o["linhas"].get("01", 0.0) for o in dre_por_obra_importado(conn, imp["id"]).values()), 2)
+                fonte = "DRE oficial (PDF)"
+        if rec is None:
+            rec = float(dre_do_mes(resultado_por_conta(conn, m, sem_previsao=True, sem_distrato=sem_distrato))["valores"]["01"])
+            fonte = "API (a conferir)"
+        if abs(rec) > 0.004:
+            out.append({"mes": m, "receita": round(rec, 2), "fonte": fonte, "var": None})
+    for ant, atu in zip(out, out[1:]):
+        ya, ma = (int(x) for x in ant["mes"].split("-"))
+        yb, mb = (int(x) for x in atu["mes"].split("-"))
+        if (yb * 12 + mb) - (ya * 12 + ma) == 1 and ant["receita"] > 0:
+            atu["var"] = round(atu["receita"] / ant["receita"] - 1, 4)
+    return out

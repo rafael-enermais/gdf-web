@@ -26,7 +26,8 @@ if not P.v2_instalado(conn):
                "no Supabase (SQL Editor). Depois disso esta tela passa a funcionar.")
     st.stop()
 
-aba_sync, aba_desp, aba_res, aba_obras, aba_regras, aba_log = st.tabs(["Sincronizar com o Sienge", "Despesas (prévia)", "Resultado (prévia)", "Obras (prévia)", "Regras", "Histórico e logs"])
+aba_sync, aba_desp, aba_res, aba_obras, aba_adm, aba_pess, aba_regras, aba_log = st.tabs(
+    ["Sincronizar com o Sienge", "Despesas (prévia)", "Resultado (prévia)", "Obras (prévia)", "Administração (prévia)", "Pessoas (prévia)", "Regras", "Histórico e logs"])
 
 # ------------------------------------------------------------------ sincronizar
 with aba_sync:
@@ -448,6 +449,109 @@ with aba_obras:
         else:
             c_p.success("Nenhuma obra com BDI negativo neste mês.")
         st.caption(f"Fonte: DRE oficial importado do arquivo “{ob['arquivo']}” (importação #{ob['importacao_id']}).")
+
+with aba_adm:
+    st.markdown("Despesas **pagas** nas unidades administrativas (centros de custo do grupo **ADM** no de-para), por credor, conta e unidade. "
+                "Mesmas regras da aba Despesas: sem pessoal, encargos e transferências entre empresas, e sem documentos de previsão.")
+    meses_a = P.meses_com_dados(conn)
+    if not meses_a:
+        st.info("Sincronize primeiro as contas pagas (data P) na primeira aba.")
+    elif not P.centro_grupo_instalado(conn):
+        st.warning("Falta o de-para centro de custo → grupo (OBRA/ADM) no banco; sem ele o app não sabe quais centros são administrativos.")
+    else:
+        _hoje_a = f"{dt.date.today().year}-{dt.date.today().month:02d}"
+        _fech_a = [m for m in meses_a if m < _hoje_a] or meses_a
+        ca1, ca2 = st.columns([1, 2])
+        mes_a = ca1.selectbox("Mês", meses_a, index=meses_a.index(_fech_a[-1]), key="pn2_mes_adm")
+        visao = ca2.radio("Período", ["No mês", "Acumulado do ano (janeiro até o mês)"], horizontal=True, key="pn2_adm_visao")
+        P.garantir_regras_padrao(conn)
+        regras_a = P.regras_ativas(conn, "DESPESAS")
+        pref_a, prev_a = P.prefixos_excluidos(regras_a), P.exclui_previsao(regras_a)
+        ini_a = mes_a
+        if visao.startswith("Acumulado"):
+            ini_a = max(f"{mes_a[:4]}-01", meses_a[0])
+        grupo_ok = P.credor_grupo_instalado(conn)
+        outros_cfg = P.credor_grupo_ativos(conn) if grupo_ok else []
+        linhas_a = P.adm_linhas(conn, ini_a, mes_a, pref_a, sem_previsao=prev_a)
+        if not linhas_a:
+            st.info("Nenhum pagamento em centros de custo ADM neste período (confira o de-para de centros e se o mês foi sincronizado).")
+        else:
+            res_a = P.adm_resumo(linhas_a, [c["chave"] for c in outros_cfg], P.nomes_plano(conn))
+            if ini_a != mes_a:
+                st.caption(f"Acumulado de {ini_a[5:]}/{ini_a[:4]} a {mes_a[5:]}/{mes_a[:4]}" + (" (o banco só tem dados a partir daí)." if ini_a != f"{mes_a[:4]}-01" else "."))
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Pago nas unidades ADM", F.moeda_br(res_a["total"]), border=True)
+            m2.metric("Credores no período", res_a["n_credores"], border=True)
+            m3.metric("Outros credores/Dir (fora do ranking)", F.moeda_br(res_a["outros"]["valor"]), border=True)
+            fmt = lambda lst, rot: pd.DataFrame([{rot: a["nome"], "Valor": F.moeda_br(a["valor"]), "% do total": F.pct_br(a["pct"]) if a["pct"] is not None else "–"} for a in lst])
+            g1, g2 = st.columns(2)
+            g1.markdown("**Por grupo de despesa**")
+            g1.dataframe(fmt(res_a["por_grupo"], "Grupo"), hide_index=True, width="stretch")
+            g2.markdown("**Por unidade**")
+            g2.dataframe(fmt(res_a["por_unidade"], "Unidade"), hide_index=True, width="stretch")
+            st.markdown("**Maiores contas (12)**")
+            st.dataframe(fmt(res_a["top_contas"], "Conta"), hide_index=True, width="stretch")
+            st.markdown("**Credores (ranking)**")
+            tab_cred = [{"Credor": a["credor"], "Valor": F.moeda_br(a["valor"]), "% do total": F.pct_br(a["pct"]) if a["pct"] is not None else "–"} for a in res_a["ranking"][:15]]
+            if outros_cfg:
+                tab_cred.append({"Credor": "Outros credores/Dir (fora do ranking)", "Valor": F.moeda_br(res_a["outros"]["valor"]),
+                                 "% do total": F.pct_br(res_a["outros"]["pct"]) if res_a["outros"]["pct"] is not None else "–"})
+            st.dataframe(pd.DataFrame(tab_cred), hide_index=True, width="stretch")
+            if res_a["outros"]["credores"]:
+                with st.expander(f"Quem está em Outros credores/Dir neste período ({len(res_a['outros']['credores'])})"):
+                    st.dataframe(pd.DataFrame([{"Credor": a["credor"], "Valor": F.moeda_br(a["valor"])} for a in res_a["outros"]["credores"]]), hide_index=True, width="stretch")
+            if outros_cfg and res_a["chaves_sem_credor"]:
+                st.caption(f"{len(res_a['chaves_sem_credor'])} cadastro(s) do grupo Outros credores/Dir sem pagamento neste período "
+                           "(normal se o credor não recebeu; se o nome estiver diferente do Sienge, ajuste o texto no de-para abaixo).")
+            evo = P.adm_evolucao(conn, meses_a[0], mes_a, pref_a, sem_previsao=prev_a)
+            if len(evo) > 1:
+                st.markdown("**Evolução mensal (pago nas unidades ADM)**")
+                st.bar_chart(pd.DataFrame({"Pago (R$)": [e["valor"] for e in evo]}, index=[f"{e['mes'][5:]}/{e['mes'][:4]}" for e in evo]))
+        st.info("**Orçado × realizado** (orçamento ADM do Sienge) entra quando o relatório *Orçamento ADM* (PDF) for importado — o leitor desse arquivo é a próxima etapa desta aba.")
+    with st.expander("De-para de credores: quem fica em “Outros credores/Dir” (fora do ranking)"):
+        if not P.credor_grupo_instalado(conn):
+            st.warning("Falta executar o **SQL-11** (`sql/v2_credor_grupo.sql`) no Supabase para poder agrupar credores. Até lá o ranking mostra todos.")
+        else:
+            st.caption("O credor entra no grupo se o nome dele **começa com** o texto cadastrado (sem diferenciar acento ou maiúscula). Nada é apagado: remover só desativa.")
+            atuais = P.credor_grupo_ativos(conn)
+            if atuais:
+                st.dataframe(pd.DataFrame([{"Cadastrado como": c["nome"], "Por": c["quem"] or "", "Quando": c["quando"].strftime("%d/%m/%Y")} for c in atuais]), hide_index=True, width="stretch")
+            else:
+                st.info("Nenhum credor cadastrado ainda neste grupo.")
+            n1, n2 = st.columns([3, 1])
+            novo_nome = n1.text_input("Adicionar credor ao grupo (nome ou começo do nome)", key="pn2_cg_nome")
+            if n2.button("Adicionar", key="pn2_cg_add", disabled=not novo_nome.strip()):
+                r_add = P.credor_grupo_adicionar(conn, novo_nome, usuario)
+                st.success("Credor adicionado ao grupo.") if r_add["ok"] else st.error(r_add["erro"])
+                if r_add["ok"]:
+                    st.rerun()
+            if atuais:
+                r1, r2 = st.columns([3, 1])
+                rem = r1.selectbox("Tirar do grupo", [c["id"] for c in atuais], format_func=lambda i: next(c["nome"] for c in atuais if c["id"] == i), key="pn2_cg_rem")
+                if r2.button("Tirar", key="pn2_cg_btn_rem"):
+                    P.credor_grupo_remover(conn, rem, usuario)
+                    st.rerun()
+
+with aba_pess:
+    st.markdown("Evolução do **faturamento** mês a mês. A linha **% horas extras ÷ salários CLT** (e os colaboradores por obra) entra quando a folha de pagamento for importada.")
+    _mes_cur = f"{dt.date.today().year}-{dt.date.today().month:02d}"
+    serie = P.receita_mensal(conn, mes_atual=_mes_cur)
+    if not serie:
+        st.info("Ainda não há receita para mostrar. Sincronize o Sienge (data de emissão) ou importe o DRE oficial na aba Resultado.")
+    else:
+        rotulo = lambda m: f"{m[5:]}/{m[:4]}"
+        st.markdown("**Receita bruta por mês**")
+        st.bar_chart(pd.DataFrame({"Receita (R$)": [x["receita"] for x in serie]}, index=[rotulo(x["mes"]) for x in serie]))
+        com_var = [x for x in serie if x["var"] is not None]
+        if com_var:
+            st.markdown("**Receita: variação % sobre o mês anterior**")
+            st.line_chart(pd.DataFrame({"Variação (%)": [round(x["var"] * 100, 1) for x in com_var]}, index=[rotulo(x["mes"]) for x in com_var]))
+        st.dataframe(pd.DataFrame([{"Mês": rotulo(x["mes"]), "Receita bruta": F.moeda_br(x["receita"]),
+                                    "Var. % s/ mês anterior": (F.pct_br(x["var"]) if x["var"] is not None else "–"), "Fonte": x["fonte"]} for x in serie]),
+                     hide_index=True, width="stretch")
+        if any(x["fonte"].startswith("API") for x in serie):
+            st.caption("Meses marcados “API (a conferir)” foram reconstruídos pelo Sienge (sem previsão e sem NF desfeita) e ainda não têm DRE oficial importado/confirmado; "
+                       "para fechar o painel, importe o DRE desses meses na aba Resultado.")
 
 with aba_regras:
     st.markdown("Regras usadas para montar cada aba do painel. As marcadas como **proposta** foram deduzidas dos arquivos de setembro e "
