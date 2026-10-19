@@ -12,7 +12,7 @@ from reportlab.pdfgen import canvas
 
 import relatorio_pdf as R
 from relatorio_fmt import fnum, mm, mmn, neg, pct
-from relatorio_pdf import (ASSETS, BLUES, BORDER, CW, GREY, GREY_BG, H, MX, NAVY, NEG_TXT, ORANGE, W, WHITE, barras, caixa_nota, hline, kpi,
+from relatorio_pdf import (ASSETS, BLUES, calc_levels, cascata, BORDER, CW, GREY, GREY_BG, H, MX, NAVY, NEG_TXT, ORANGE, W, WHITE, barras, caixa_nota, hline, kpi,
                            lista_barras, para, rect, secao, tabela, titulo, txt, unidade)
 
 TOPY = H - 84
@@ -31,12 +31,30 @@ def _pc(v) -> str:
     return pct(v, 1) if v is not None else "–"
 
 
+def _nomes_obras(conn) -> dict:
+    """{codigo_obra: nome completo} do de-para de centros de custo (o mais frequente por codigo); sem a tabela devolve {}."""
+    out: dict = {}
+    for sql in ("SELECT codigo_obra, obra_nome FROM pnl_centro_grupo WHERE codigo_obra IS NOT NULL AND obra_nome IS NOT NULL GROUP BY 1, 2 ORDER BY count(*) DESC, 2",
+                "SELECT codigo_obra, obra_nome FROM pnl_folha_depto_obra WHERE codigo_obra IS NOT NULL AND obra_nome IS NOT NULL GROUP BY 1, 2 ORDER BY count(*) DESC, 2"):
+        try:
+            with conn.cursor() as cur:
+                cur.execute(sql)
+                for cod, nome in cur.fetchall():
+                    out.setdefault(cod, nome.strip())
+        except Exception:                                       # noqa: BLE001
+            try:
+                conn.rollback()
+            except Exception:                                   # noqa: BLE001
+                pass
+    return out
+
+
 # ------------------------------------------------------------------ montagem dos dados (usa so as funcoes ja existentes do painel)
 def montar_ctx(conn, mes: str, gerado_em: str = "") -> dict:
     """Junta tudo que o PDF mostra para o mes 'AAAA-MM'. Parte que nao tem dado vira None (a pagina explica o que falta)."""
     import painel_db as P
 
-    ctx = {"mes": mes, "gerado_em": gerado_em, "dre": None, "serie": [], "obras": None, "adm": None, "pessoas": None, "avisos": []}
+    ctx = {"mes": mes, "gerado_em": gerado_em, "dre": None, "serie": [], "obras": None, "proj": None, "adm": None, "desp": None, "pessoas": None, "avisos": []}
 
     # --- DRE: 1) confirmado  2) DRE oficial importado (PDF)  3) reconstrucao pela API
     conf = P.confirmacao_ativa(conn, mes) if P.confirmacao_instalada(conn) else None
@@ -57,7 +75,9 @@ def montar_ctx(conn, mes: str, gerado_em: str = "") -> dict:
         d = P.dre_do_mes(contas)
         ctx["dre"] = {"linhas": d["linhas"], "valores": d["valores"], "origem": origem, "fontes": {}, "quem": None, "quando": None,
                       "observacao": None, "manuais": []}
-    ctx["serie"] = P.receita_mensal(conn)
+    import datetime as _dt
+    _hoje = _dt.date.today()
+    ctx["serie"] = P.receita_mensal(conn, mes_atual=f"{_hoje.year}-{_hoje.month:02d}")      # mes em andamento fica de fora (incompleto)
 
     # --- Obras (DRE oficial importado)
     try:
@@ -65,7 +85,12 @@ def montar_ctx(conn, mes: str, gerado_em: str = "") -> dict:
             ob = P.obras_do_dre(conn, mes)
             folha = P.folha_do_mes(conn, mes)
             ob["colab"] = P.colab_por_linha_obras(ob["linhas"], folha) if folha else {}
+            extra = P.nomes_obras_extra(conn)
+            ob["nome_cheio"] = _nomes_obras(conn)
             ctx["obras"] = ob
+            proj = P.projecao_do_mes(conn, mes)
+            if proj:
+                ctx["proj"] = P.projecao_x_realizado(proj, ob, extra)
     except Exception as exc:                                    # noqa: BLE001
         ctx["avisos"].append(f"Obras: {type(exc).__name__}")
 
@@ -89,6 +114,16 @@ def montar_ctx(conn, mes: str, gerado_em: str = "") -> dict:
     except Exception as exc:                                    # noqa: BLE001
         ctx["avisos"].append(f"Administração: {type(exc).__name__}")
 
+    # --- Despesas pagas no mes (mesma regra da aba Despesas)
+    try:
+        if P.meses_com_dados(conn):
+            regras_d = P.regras_ativas(conn, "DESPESAS")
+            linhas_d = P.despesas_do_mes(conn, mes, P.prefixos_excluidos(regras_d), sem_previsao=P.exclui_previsao(regras_d))
+            if linhas_d:
+                ctx["desp"] = {"linhas": linhas_d, "total": round(sum(l["valor"] for l in linhas_d), 2)}
+    except Exception as exc:                                    # noqa: BLE001
+        ctx["avisos"].append(f"Despesas: {type(exc).__name__}")
+
     # --- Pessoas (recibos da folha)
     try:
         if mes in P.folha_meses(conn):
@@ -105,7 +140,7 @@ class _Estado:
 
 def _moldura(c, n, N, secao_nome, ctx):
     wm = ImageReader(str(ASSETS / "torre_watermark.png"))
-    c.drawImage(wm, W / 2 - 170, 28, width=340, height=343, mask="auto")
+    c.drawImage(wm, 6, 28, width=340, height=343, mask="auto")                      # torres alinhadas a esquerda, como no EGC
     rect(c, 0, H - 4, W * 0.62, 4, fill=NAVY); rect(c, W * 0.62, H - 4, W * 0.38, 4, fill=ORANGE)
     g = ImageReader(str(ASSETS / "GRUPO.png")); gw, gh = g.getSize(); lh = 30
     c.drawImage(g, MX, H - 50, width=lh * gw / gh, height=lh, mask="auto")
@@ -124,9 +159,9 @@ def _vazio(c, y, msg):
 
 def p_capa(c, n, N, ctx):
     c.setFillColor(NAVY); p = c.beginPath()
-    p.moveTo(W * 0.80, H); p.lineTo(W, H); p.lineTo(W, 0); p.lineTo(W * 0.60, 0); p.close(); c.drawPath(p, fill=1, stroke=0)
+    p.moveTo(W * 0.80, H); p.lineTo(W, H); p.lineTo(W, 0); p.lineTo(W * 0.72, 0); p.close(); c.drawPath(p, fill=1, stroke=0)   # faixa estreita, como no EGC
     mk = ImageReader(str(ASSETS / "capa_marca_pale.png"))
-    c.saveState(); c.setFillAlpha(0.10); c.drawImage(mk, W * 0.66, 60, width=250, height=250 * 1409 / 983, mask="auto"); c.restoreState()
+    c.saveState(); c.setFillAlpha(0.45); c.drawImage(mk, W * 0.835, 40, width=70, height=70 * 1409 / 983, mask="auto"); c.restoreState()   # marca pequena no rodape da faixa
     rect(c, 0, H - 4, W * 0.80, 4, fill=NAVY)
     g = ImageReader(str(ASSETS / "GRUPO.png")); gw, gh = g.getSize(); lw_ = 215
     c.drawImage(g, MX + 8, H - 330, width=lw_, height=lw_ * gh / gw, mask="auto")
@@ -194,6 +229,12 @@ def p_dre(c, n, N, ctx):
                      "(API do Sienge, PDF do DRE oficial ou ajuste manual com observação).")
 
 
+def _nome_obra(l, nome_cheio):
+    """Nome da obra para o PDF: o do de-para (completo) quando existe; senao o do DRE (so o cliente)."""
+    cheio = (nome_cheio or {}).get(l["obra"]) or ""
+    return cheio or (l.get("nome") or "")
+
+
 def p_obras(c, n, N, ctx):
     _moldura(c, n, N, "Obras", ctx)
     ob = ctx["obras"]
@@ -211,7 +252,8 @@ def p_obras(c, n, N, ctx):
     cols = [(38, "l"), (155, "l"), (72, "r"), (72, "r"), (72, "r"), (46, "r"), (60, "r")] if folha else [(44, "l"), (191, "l"), (80, "r"), (80, "r"), (80, "r"), (40, "r")]
     head = ["Obra", "Nome", "Receita", "Custos", "BDI real", "Margem"] + (["Colab. CLT"] if folha else [])
     linhas = ob["linhas"][:34]
-    rows = [("norm", [l["obra"], l["nome"][:34], fnum(l["receita"]), fnum(l["custo"]), (fnum(l["bdi"]), NEG_TXT) if neg(l["bdi"]) else fnum(l["bdi"]), _pc(l["margem"])]
+    nc = ob.get("nome_cheio", {})
+    rows = [("norm", [l["obra"], _nome_obra(l, nc)[:34], fnum(l["receita"]), fnum(l["custo"]), (fnum(l["bdi"]), NEG_TXT) if neg(l["bdi"]) else fnum(l["bdi"]), _pc(l["margem"])]
             + ([str(ob["colab"].get(l["obra"], 0))] if folha else [])) for l in linhas]
     rows.append(("tot", ["", "Total", fnum(t["receita"]), fnum(t["custo"]), fnum(t["bdi"]), _pc(t["margem"])] + ([str(sum(ob["colab"].values()))] if folha else [])))
     y = tabela(c, MX, y, cols, head, rows, rh=12.6, fs=6.9)
@@ -227,7 +269,7 @@ def p_obras(c, n, N, ctx):
             if not itens:
                 txt(c, x_, yy, "Nenhuma obra com BDI negativo.", "P", 7, GREY)
             for l in itens[:5]:
-                txt(c, x_, yy, f"{l['obra']} · {l['nome'][:22]}", "P", 7, GREY)
+                txt(c, x_, yy, f"{l['obra']} · {_nome_obra(l, ob.get('nome_cheio', {}))[:24]}", "P", 7, GREY)
                 txt(c, x_ + CW / 2 - 12, yy, fnum(l["bdi"]), "PB", 7, NEG_TXT if neg(l["bdi"]) else NAVY, "r")
                 yy -= 12
 
@@ -274,6 +316,103 @@ def p_adm(c, n, N, ctx):
         _vazio(c, y, "Orçamento ADM deste mês não importado: o orçado × realizado aparece depois de importar o PDF na aba Importações (V2).")
 
 
+def p_resultado(c, n, N, ctx):
+    _moldura(c, n, N, "Resultado", ctx)
+    y = titulo(c, TOPY, "Receita − Custo = BDI − Administração = Resultado", _mes_extenso(ctx["mes"]))
+    ob, a = ctx["obras"], ctx["adm"]
+    if not ob or not a or not a.get("orcamento"):
+        _vazio(c, y, "Esta página precisa do DRE oficial por obra (para receita, custo e BDI) e do Orçamento ADM (para a administração realizada) do mês. "
+                     "Importe o que falta na aba Importações (V2).")
+        return
+    rec, cus, bdi = ob["total"]["receita"], ob["total"]["custo"], ob["total"]["bdi"]
+    adm = a["orcamento"]["total"]["realizado"]
+    res = round(bdi - adm, 2)
+    kw = (CW - 4 * 10) / 5
+    for i, (r_, val, sub) in enumerate([("Receita", mm(rec), "DRE oficial"), ("Custo direto", mm(-cus if cus < 0 else cus), "obras"),
+                                        ("BDI", mm(bdi), "receita − custo"), ("Administração", mm(adm), "realizado do mês (orçamento ADM)"),
+                                        ("Resultado", mm(res), "BDI − administração")]):
+        kpi(c, MX + i * (kw + 10), y, kw, 62, r_, val, sub, dark=(i == 4), vsize=11.5)
+    y -= 84
+    y = secao(c, y, "Do faturamento ao resultado (R$ MM)")
+    et = [("Receita", rec, "total"), ("Custo direto", -abs(cus), "delta"), ("BDI", bdi, "total"), ("Administração", -abs(adm), "delta"), ("Resultado", res, "final")]
+    calc_levels(et)
+    cascata(c, MX + 30, y - 190, CW - 60, 160, et, size=7)
+    y -= 230
+    ac = a.get("acumulado")
+    if ac:
+        y = caixa_nota(c, y, f"Administração no acumulado do ano (orçamento ADM): orçado {mm(ac['total']['orcado'])}, realizado {mm(ac['total']['realizado'])}, "
+                             f"desvio {mm(ac['total']['desvio'], 2, True)} ({_pc(ac['total']['desvio_pct'])}).")
+    caixa_nota(c, y, "Receita e custo vêm do DRE oficial do Sienge (somando todas as obras); a administração é o realizado do Orçamento ADM. "
+                     "O acumulado jan–set de receita, custo e BDI aparece quando o histórico dos meses anteriores estiver carregado no painel.")
+
+
+def p_proj(c, n, N, ctx):
+    _moldura(c, n, N, "Previsto × realizado", ctx)
+    y = titulo(c, TOPY, "Previsto × realizado por obra", "Projeção de receitas × DRE oficial do mês")
+    cm = ctx.get("proj")
+    if not cm:
+        _vazio(c, y, "Falta a projeção de receitas do mês (planilha xlsx) e/ou o DRE oficial. Importe na aba Importações (V2).")
+        return
+    kw = (CW - 3 * 10) / 4
+    dv = cm["receita_real_total"] - cm["receita_proj_total"]
+    for i, (r_, val, sub) in enumerate([("Receita projetada", mm(cm["receita_proj_total"]), "planilha de projeção"), ("Receita real", mm(cm["receita_real_total"]), "DRE oficial"),
+                                        ("Desvio", mm(dv, 2, True), _pc(dv / cm["receita_proj_total"]) if abs(cm["receita_proj_total"]) > 0.005 else "–"), ("BDI previsto", mm(cm["total"]["bdi_proj"]), "receita − custo previsto")]):
+        kpi(c, MX + i * (kw + 10), y, kw, 62, r_, val, sub, dark=(i == 2))
+    y -= 78
+    cols = [(130, "l"), (62, "r"), (62, "r"), (62, "r"), (44, "r"), (60, "r"), (60, "r"), (35, "r")]
+    rows = [("norm", [x["obra_proj"][:28], fnum(x["receita_proj"], 0), fnum(x["receita_real"], 0), (fnum(x["desvio"], 0), NEG_TXT) if neg(x["desvio"]) else fnum(x["desvio"], 0),
+                      _pc(x["desvio_pct"]), fnum(x["bdi_proj"], 0), fnum(x["bdi_real"], 0), x["codigo"]]) for x in cm["linhas"][:30]]
+    y = tabela(c, MX, y, cols, ["Obra (projeção)", "Receita proj.", "Receita real", "Desvio", "Desvio %", "BDI previsto", "BDI real", "Cód."], rows, rh=12.6, fs=6.8)
+    y -= 10
+    if cm["sem_correspondencia"]:
+        y = caixa_nota(c, y, "Obras da projeção sem correspondência única no DRE: " + "; ".join(f"{o['obra']} ({fnum(o['receita'], 0)})" for o in cm["sem_correspondencia"][:6]) + ".")
+    caixa_nota(c, y, "Custo previsto e BDI previsto vêm da própria planilha de projeção; BDI real = receita bruta − custos diretos do DRE oficial.")
+
+
+def p_despesas(c, n, N, ctx):
+    _moldura(c, n, N, "Despesas", ctx)
+    y = titulo(c, TOPY, "Despesas pagas no mês", "Mesmas regras da aba Despesas: sem pessoal, encargos e transferências; sem documentos de previsão")
+    d = ctx.get("desp")
+    if not d:
+        _vazio(c, y, "Falta sincronizar as contas pagas do mês (aba Sincronizar com o Sienge).")
+        return
+    L, tot = d["linhas"], d["total"]
+    top5 = sum(l["valor"] for l in L[:5])
+    kw = (CW - 2 * 10) / 3
+    for i, (r_, val, sub) in enumerate([("Pago no mês", mm(tot), "contas de despesa"), ("Top 5 do mês", _pc(top5 / tot) if tot else "–", mm(top5)), ("Contas com movimento", str(len(L)), "no plano financeiro")]):
+        kpi(c, MX + i * (kw + 10), y, kw, 58, r_, val, sub, dark=(i == 0))
+    y -= 76
+    y = lista_barras(c, MX, y, CW, "Top 5 do mês", [(f"{l['plano_cod']} · {l['plano_nome']}"[:46], l["valor"]) for l in L[:5]], max(top5, 1), rot_w=230)
+    y -= 6
+    cols = [(60, "l"), (285, "l"), (100, "r"), (70, "r")]
+    rows = [("norm", [l["plano_cod"], (l["plano_nome"] or "")[:60], fnum(l["valor"]), _pc(l["valor"] / tot) if tot else "–"]) for l in L[:12]]
+    y = secao(c, y, "12 maiores contas do mês")
+    y = tabela(c, MX, y, cols, ["Conta", "Nome", "Valor (R$)", "% do mês"], rows, rh=13, fs=7)
+    y -= 10
+    caixa_nota(c, y, "O acumulado jan–set das contas aparece quando o histórico dos meses anteriores estiver carregado no painel. INSS e FGTS ficam na parte de Pessoas.")
+
+
+def p_adm2(c, n, N, ctx):
+    _moldura(c, n, N, "Administração — credores", ctx)
+    a = ctx["adm"]
+    y = titulo(c, TOPY, "Administração: unidades e credores", "Pagamentos do mês nos centros de custo ADM")
+    r = a["resumo"] if a else None
+    if not r:
+        _vazio(c, y, "Falta sincronizar as contas pagas do mês.")
+        return
+    un = [(g["nome"][:34], g["valor"]) for g in r["por_unidade"][:8] if g["valor"] > 0]
+    if un:
+        y = lista_barras(c, MX, y, CW, "Por unidade de negócio", un, max(sum(v for _, v in un), 1), rot_w=200)
+        y -= 6
+    rk = r["ranking"][:15]
+    cols = [(330, "l"), (110, "r"), (75, "r")]
+    rows = [("norm", [g["credor"][:60], fnum(g["valor"]), _pc(g["pct"])]) for g in rk]
+    rows.append(("sub", ["Outros credores/Dir (fora do ranking)", fnum(r["outros"]["valor"]), _pc(r["outros"]["pct"])]))
+    y = secao(c, y, "Principais credores do mês")
+    y = tabela(c, MX, y, cols, ["Credor", "Valor (R$)", "% do total"], rows, rh=13, fs=7)
+
+
+
 def p_pessoas(c, n, N, ctx):
     _moldura(c, n, N, "Pessoas", ctx)
     p = ctx["pessoas"]
@@ -315,14 +454,15 @@ def p_notas(c, n, N, ctx):
              "O DRE usa a confirmação da contabilidade quando existe; sem ela, mostra o DRE oficial importado ou a reconstrução pela API, sempre identificando a origem.",
              "Edições do painel valem para dados importados e resultados gerados; não alteram o que vem da API do Sienge.",
              "Regras marcadas como proposta (aba Regras) ainda aguardam confirmação da contabilidade; INSS/FGTS pela guia e títulos desfeitos/multas AEJ estão em validação.",
-             "Pessoas: custo da folha não inclui PJ, INSS patronal nem provisões de férias e 13º."]
+             "Pessoas: custo da folha não inclui PJ, INSS patronal nem provisões de férias e 13º. A % de horas extras usa como base os salários do evento 1 (horas normais); o painel da contabilidade usa proventos − HE, por isso os percentuais diferem (definição a confirmar).",
+             "Ainda não estão neste PDF: acumulado jan–set, desvio mensal realizado × previsto, recomposição out–dez e custos prioritários com pessoas por colaborador (dependem do histórico jan–ago e de regras a confirmar)."]
     for a in ctx["avisos"]:
         itens.append("Atenção na montagem do relatório: " + a + " (a seção correspondente pode estar incompleta).")
     for it in itens:
         y = para(c, "• " + it, MX + 6, y, CW - 12, size=8, lead=12, gap=5)
 
 
-PAGINAS = [p_capa, p_resumo, p_dre, p_obras, p_adm, p_pessoas, p_notas]
+PAGINAS = [p_capa, p_resumo, p_dre, p_resultado, p_obras, p_proj, p_despesas, p_adm, p_adm2, p_pessoas, p_notas]
 
 
 def gerar_pdf_painel(ctx: dict, status: str = "RASCUNHO", gerado_em: str = "") -> bytes:

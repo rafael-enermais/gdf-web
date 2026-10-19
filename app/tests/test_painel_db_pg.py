@@ -903,7 +903,7 @@ def test_relatorio_pdf_do_painel_rascunho(conn):
     ctx = RPP.montar_ctx(conn, "2026-09", "19/10/2026 10:00")
     assert ctx["dre"]["origem"].startswith("DRE oficial") and ctx["pessoas"] is None and ctx["obras"] is not None
     pdf = RPP.gerar_pdf_painel(ctx, gerado_em="19/10/2026 10:00")
-    assert pdf[:5] == b"%PDF-" and pdf.count(b"/Type /Page\n") + pdf.count(b"/Type /Page ") >= 7
+    assert pdf[:5] == b"%PDF-" and pdf.count(b"/Type /Page\n") + pdf.count(b"/Type /Page ") >= 10
     # mes sem nada: nenhuma pagina estoura, todas viram aviso
     vazio = RPP.gerar_pdf_painel(RPP.montar_ctx(conn, "2024-01"))
     assert vazio[:5] == b"%PDF-"
