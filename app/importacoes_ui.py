@@ -369,6 +369,8 @@ def _editor(conn, usuario):
     st.caption(f"{cfg['nome']} · {len(dados)} linhas" + ("" if imp["ativo"] else " · atenção: esta importação está fora de uso (a edição não muda os resultados até reativá-la)."))
     if imp["tipo"] == "DRE":
         st.info("No DRE, as linhas de total (coluna *conta* vazia) são valores próprios: se corrigir uma conta, corrija também o total da linha correspondente.")
+    elif imp["tipo"] == "ORCAMENTO":
+        st.info("O **saldo** é automático (realizado − orçado) e os **totais dos grupos** (linhas T) acompanham: ao editar o orçado ou o realizado de uma conta, o app acerta o saldo e soma a diferença nos grupos acima, e registra esses acertos no histórico.")
     elif imp["tipo"] == "FOLHA":
         st.info("Aqui se editam os totais do recibo (salário, HE, DSR, proventos, descontos, FGTS). O detalhe evento a evento lido do PDF não é alterado.")
     df = pd.DataFrame(dados)
@@ -377,7 +379,7 @@ def _editor(conn, usuario):
         mask = df.drop(columns=["id"]).astype(str).apply(lambda s: s.str.contains(filtro.strip(), case=False, regex=False)).any(axis=1)
         df = df[mask]
     campos = [c for c, _ in cfg["campos"]]
-    editado = st.data_editor(df, key=f"pn2_ed_{esc}_{filtro}", hide_index=True, width="stretch", column_config=_col_cfg(cfg), disabled=["id"], num_rows="fixed")
+    editado = st.data_editor(df, key=f"pn2_ed_{esc}_{filtro}", hide_index=True, width="stretch", column_config=_col_cfg(cfg), disabled=["id"] + (["saldo"] if imp["tipo"] == "ORCAMENTO" else []), num_rows="fixed")
     alteracoes = []
     if not df.empty:
         orig = df.set_index("id")
@@ -400,8 +402,11 @@ def _editor(conn, usuario):
         vazio = pd.DataFrame({c: pd.Series(dtype=("float64" if t in ("num", "int") else "object")) for c, t in cfg["campos"]})
         cc = _col_cfg(cfg)
         cc.pop("id", None)
+        if imp["tipo"] == "ORCAMENTO":
+            vazio = vazio.drop(columns=["saldo"])      # o saldo e' calculado
+            cc.pop("saldo", None)
         novos = st.data_editor(vazio, key=f"pn2_ed_novos_{esc}", hide_index=True, width="stretch", column_config=cc, num_rows="dynamic")
-        lin_novas = [{c: _norm(r[c]) for c in campos} for _, r in novos.iterrows()]
+        lin_novas = [{c: _norm(r[c]) for c in campos if c in novos.columns} for _, r in novos.iterrows()]
         lin_novas = [l for l in lin_novas if any(v is not None for v in l.values())]
         mot2 = st.text_input("Motivo (opcional)", key=f"pn2_ed_mot_novo_{esc}")
         if st.button(f"Adicionar {len(lin_novas)} linha(s)", disabled=not lin_novas, key=f"pn2_ed_add_{esc}"):

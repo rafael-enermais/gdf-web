@@ -21,3 +21,6 @@ CLAUDE.md
 
 # token do GitHub para o Claude enviar codigo: NUNCA commitar
 token-github.txt
+
+# SQL de apagar dados (zerar/limpar): ficam SO' na pasta interna do computador e no vault, nunca no GitHub publico
+sql_interno/

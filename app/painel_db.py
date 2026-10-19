@@ -1475,6 +1475,55 @@ def edicao_carregar(conn, tipo: str, imp_id: int) -> list[dict]:
     return out
 
 
+def _orcamento_recalcular(cur, imp_id: int, tocadas: dict, deltas: dict, usuario: str | None, motivo: str | None) -> int:
+    """Orcamento ADM: depois de editar orcado/realizado, o app acerta sozinho (1) o SALDO (= realizado - orcado) das linhas mexidas e (2) os TOTAIS dos grupos acima
+    (linha T do mesmo mes: soma a diferenca do que mudou). tocadas = {id_da_linha}; deltas = {(codigo, mes, campo): variacao}. Cada acerto automatico tambem vai para pnl_edicao
+    (motivo 'automatico'), entao nada muda sem registro. Devolve quantas celulas automaticas foram acertadas."""
+    auto = 0
+    mot_auto = "automático (soma do grupo)" + (f": {motivo}" if motivo else "")
+    mot_saldo = "automático (saldo = realizado − orçado)" + (f": {motivo}" if motivo else "")
+    for (cod, mes, campo), delta in sorted(deltas.items()):
+        if abs(delta) < 0.005:
+            continue
+        partes = cod.split(".")
+        for n in range(len(partes) - 1, 0, -1):               # 2.01.01 -> 2.01 -> 2
+            pai = ".".join(partes[:n])
+            cur.execute(f"SELECT id, {campo} FROM pnl_orcamento_linha WHERE importacao_id=%s AND codigo=%s AND mes=%s AND tipo='T' ORDER BY id LIMIT 1 FOR UPDATE", (imp_id, pai, mes))
+            r = cur.fetchone()
+            if not r:                                         # o grupo estava todo zerado nesse mes (o PDF nao traz linha zerada): cria a linha do total
+                cur.execute("SELECT conta FROM pnl_orcamento_linha WHERE importacao_id=%s AND codigo=%s AND tipo='T' ORDER BY id LIMIT 1", (imp_id, pai))
+                nome = cur.fetchone()
+                if not nome:                                  # grupo que nem existe no arquivo: nao inventa
+                    continue
+                cur.execute(f"INSERT INTO pnl_orcamento_linha (importacao_id, codigo, conta, tipo, mes, orcado, realizado, saldo) VALUES (%s,%s,%s,'T',%s,0,0,0) RETURNING id", (imp_id, pai, nome[0], mes))
+                r = (cur.fetchone()[0], 0)
+                cur.execute("UPDATE pnl_importacao SET n_linhas = n_linhas + 1 WHERE id=%s", (imp_id,))
+                cur.execute("""INSERT INTO pnl_edicao (importacao_id, tabela, linha_id, campo, valor_depois, acao, motivo, quem)
+                               VALUES (%s,'pnl_orcamento_linha',%s,'*',%s,'ADICIONOU',%s,%s)""",
+                            (imp_id, r[0], f"total do grupo {pai} criado (estava zerado neste mês)", mot_auto, usuario))
+                auto += 1
+            novo = round(float(r[1] or 0) + delta, 2)
+            cur.execute(f"UPDATE pnl_orcamento_linha SET {campo}=%s WHERE id=%s", (novo, r[0]))
+            cur.execute("""INSERT INTO pnl_edicao (importacao_id, tabela, linha_id, campo, valor_antes, valor_depois, acao, motivo, quem)
+                           VALUES (%s,'pnl_orcamento_linha',%s,%s,%s,%s,'EDITOU',%s,%s)""",
+                        (imp_id, r[0], campo, None if r[1] is None else str(r[1]), str(novo), mot_auto, usuario))
+            tocadas.setdefault(r[0], None)
+            auto += 1
+    for lid in list(tocadas):
+        cur.execute("SELECT orcado, realizado, saldo FROM pnl_orcamento_linha WHERE id=%s AND importacao_id=%s", (lid, imp_id))
+        r = cur.fetchone()
+        if not r:
+            continue
+        saldo = round(float(r[1] or 0) - float(r[0] or 0), 2)
+        if r[2] is None or abs(float(r[2]) - saldo) >= 0.005:
+            cur.execute("UPDATE pnl_orcamento_linha SET saldo=%s WHERE id=%s", (saldo, lid))
+            cur.execute("""INSERT INTO pnl_edicao (importacao_id, tabela, linha_id, campo, valor_antes, valor_depois, acao, motivo, quem)
+                           VALUES (%s,'pnl_orcamento_linha',%s,'saldo',%s,%s,'EDITOU',%s,%s)""",
+                        (imp_id, lid, None if r[2] is None else str(r[2]), str(saldo), mot_saldo, usuario))
+            auto += 1
+    return auto
+
+
 def edicao_aplicar(conn, tipo: str, imp_id: int, alteracoes: list, novos: list, usuario: str | None, motivo: str | None = None) -> dict:
     """Grava as edicoes de uma importacao. alteracoes = [(id_da_linha, campo, valor_novo)]; novos = [{campo: valor}] (linhas novas). Valida campo e tipo,
     nao deixa campo obrigatorio vazio, guarda ANTES e DEPOIS de cada celula em pnl_edicao e so' troca o que de fato mudou. Tudo numa transacao."""
@@ -1483,7 +1532,9 @@ def edicao_aplicar(conn, tipo: str, imp_id: int, alteracoes: list, novos: list, 
     tipos = dict(cfg["campos"])
     obrig = cfg["obrigatorios"]
     tabela = cfg["tabela"]
-    ed = nv = 0
+    ed = nv = auto = 0
+    orc_deltas: dict = {}
+    orc_tocadas: dict = {}
     with db.transacao(conn):
         with conn.cursor() as cur:
             cur.execute("SELECT 1 FROM pnl_importacao WHERE id=%s AND tipo=%s", (imp_id, tipo))
@@ -1495,12 +1546,20 @@ def edicao_aplicar(conn, tipo: str, imp_id: int, alteracoes: list, novos: list, 
                 novo = converter_valor_edicao(tipos[campo], valor)
                 if novo is None and campo in obrig:
                     raise ValueError(f"O campo “{campo}” não pode ficar vazio (linha {linha_id}).")
+                if tipo == "ORCAMENTO" and campo == "saldo":
+                    raise ValueError("O saldo é calculado sozinho (realizado − orçado): edite o orçado ou o realizado.")
                 cur.execute(f"SELECT {campo} FROM {tabela} WHERE id=%s AND importacao_id=%s FOR UPDATE", (linha_id, imp_id))
                 r = cur.fetchone()
                 if not r:
                     raise ValueError(f"Linha {linha_id} não pertence a esta importação.")
                 if r[0] == novo:
                     continue
+                if tipo == "ORCAMENTO" and campo in ("orcado", "realizado"):
+                    cur.execute("SELECT codigo, mes FROM pnl_orcamento_linha WHERE id=%s", (linha_id,))
+                    _cod, _mes = cur.fetchone()
+                    chave = (_cod, _mes, campo)
+                    orc_deltas[chave] = orc_deltas.get(chave, 0.0) + float(novo or 0) - float(r[0] or 0)
+                    orc_tocadas[linha_id] = None
                 cur.execute(f"UPDATE {tabela} SET {campo}=%s WHERE id=%s", (novo, linha_id))
                 cur.execute("""INSERT INTO pnl_edicao (importacao_id, tabela, linha_id, campo, valor_antes, valor_depois, acao, motivo, quem)
                                VALUES (%s,%s,%s,%s,%s,%s,'EDITOU',%s,%s)""",
@@ -1519,11 +1578,19 @@ def edicao_aplicar(conn, tipo: str, imp_id: int, alteracoes: list, novos: list, 
                 cur.execute("""INSERT INTO pnl_edicao (importacao_id, tabela, linha_id, campo, valor_depois, acao, motivo, quem) VALUES (%s,%s,%s,'*',%s,'ADICIONOU',%s,%s)""",
                             (imp_id, tabela, nid, _json.dumps({c: (None if v is None else str(v)) for c, v in vals.items()}, ensure_ascii=False), motivo, usuario))
                 nv += 1
+                if tipo == "ORCAMENTO":
+                    orc_tocadas[nid] = None
+                    for campo_n in ("orcado", "realizado"):
+                        if vals.get(campo_n):
+                            chave = (vals["codigo"], vals["mes"], campo_n)
+                            orc_deltas[chave] = orc_deltas.get(chave, 0.0) + float(vals[campo_n])
             if nv:
                 cur.execute("UPDATE pnl_importacao SET n_linhas = n_linhas + %s WHERE id=%s", (nv, imp_id))
+            if tipo == "ORCAMENTO" and (orc_deltas or orc_tocadas):
+                auto = _orcamento_recalcular(cur, imp_id, orc_tocadas, orc_deltas, usuario, motivo)
     if ed or nv:
-        registrar_log(conn, "IMPORTACAO_EDITADA", "AVISO", usuario, None, {"importacao_id": imp_id, "tipo": tipo, "celulas_editadas": ed, "linhas_novas": nv})
-    return {"editados": ed, "linhas_novas": nv}
+        registrar_log(conn, "IMPORTACAO_EDITADA", "AVISO", usuario, None, {"importacao_id": imp_id, "tipo": tipo, "celulas_editadas": ed, "linhas_novas": nv, "acertos_automaticos": auto})
+    return {"editados": ed, "linhas_novas": nv, "automaticos": auto}
 
 
 def edicoes_lista(conn, imp_id: int | None = None, limite: int = 500) -> list[dict]:

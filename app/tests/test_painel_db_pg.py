@@ -750,6 +750,47 @@ def test_converter_valor_edicao():
         c("date", "01/09/2026")
 
 
+def test_editar_orcamento_acerta_saldo_e_totais_dos_grupos_e_registra(conn):
+    """v0.21.3: ao editar orcado/realizado de uma conta, o saldo (realizado - orcado) e os totais dos grupos acima (2.01 e 2) acompanham, tudo em pnl_edicao."""
+    from orcamento_sintetico import pdf_orcamento_sintetico
+    import importador_orcamento as IO
+    ro = P.gravar_orcamento(conn, IO.ler_orcamento_adm_pdf(pdf_orcamento_sintetico()), "o.pdf", "2" * 64, "teste@x")
+    lin = {(l["codigo"], l["mes"].strftime("%Y-%m")): l for l in P.edicao_carregar(conn, "ORCAMENTO", ro["id"])}
+    sal = lin[("2.01.01", "2026-04")]                          # orcado 1100, realizado 1250,75, saldo 150,75
+    t201, t2 = lin[("2.01", "2026-04")], lin[("2", "2026-04")]
+    res = P.edicao_aplicar(conn, "ORCAMENTO", ro["id"], [(sal["id"], "realizado", 1300.75), (sal["id"], "orcado", 1000.0)], [], "teste@x", "ajuste")
+    assert res["editados"] == 2 and res["automaticos"] >= 5
+    dep = {(l["codigo"], l["mes"].strftime("%Y-%m")): l for l in P.edicao_carregar(conn, "ORCAMENTO", ro["id"])}
+    assert dep[("2.01.01", "2026-04")]["saldo"] == 300.75                                    # 1300,75 - 1000
+    assert dep[("2.01", "2026-04")]["realizado"] == round(t201["realizado"] + 50.0, 2)       # +50 no realizado
+    assert dep[("2.01", "2026-04")]["orcado"] == round(t201["orcado"] - 100.0, 2)            # -100 no orcado
+    assert dep[("2", "2026-04")]["realizado"] == round(t2["realizado"] + 50.0, 2) and dep[("2", "2026-04")]["orcado"] == round(t2["orcado"] - 100.0, 2)
+    assert dep[("2", "2026-04")]["saldo"] == round(dep[("2", "2026-04")]["realizado"] - dep[("2", "2026-04")]["orcado"], 2)
+    assert dep[("2.01.02", "2026-04")] == lin[("2.01.02", "2026-04")]                       # irma nao muda
+    assert dep[("2.01", "2026-05")] == lin[("2.01", "2026-05")]                             # outro mes nao muda
+    assert dep[("1.01", "2026-01")] == lin[("1.01", "2026-01")]                             # outro grupo nao muda
+    # o "Administracao" enxerga o total novo
+    assert P.orcamento_resumo(conn, ro["id"], "2026-04")["total"]["realizado"] == dep[("2", "2026-04")]["realizado"]
+    # tudo registrado: 2 celulas editadas + acertos automaticos (marcados como automatico)
+    eds = P.edicoes_lista(conn, ro["id"])
+    assert len(eds) == res["editados"] + res["automaticos"] and sum(1 for e in eds if "automático" in (e["motivo"] or "")) == res["automaticos"]
+    # o saldo nao se edita na mao
+    with pytest.raises(ValueError, match="saldo"):
+        P.edicao_aplicar(conn, "ORCAMENTO", ro["id"], [(sal["id"], "saldo", 1.0)], [], "teste@x")
+    # editar sem mudar nada nao mexe em nada
+    assert P.edicao_aplicar(conn, "ORCAMENTO", ro["id"], [(sal["id"], "realizado", 1300.75)], [], "teste@x")["automaticos"] == 0
+    # linha nova: saldo calculado e grupo acima soma
+    antes_t = dep[("2.01", "2026-06")]["realizado"]
+    P.edicao_aplicar(conn, "ORCAMENTO", ro["id"], [], [{"codigo": "2.01.99", "conta": "Nova", "tipo": "R", "mes": "2026-06-01", "orcado": 10, "realizado": 25}], "teste@x")
+    dep2 = {(l["codigo"], l["mes"].strftime("%Y-%m")): l for l in P.edicao_carregar(conn, "ORCAMENTO", ro["id"])}
+    assert dep2[("2.01.99", "2026-06")]["saldo"] == 15.0 and dep2[("2.01", "2026-06")]["realizado"] == round(antes_t + 25, 2)
+    # grupo zerado no mes (o PDF nao traz a linha): a linha do total e' criada ao lancar valor numa conta filha
+    assert ("1.01", "2026-04") not in dep2
+    P.edicao_aplicar(conn, "ORCAMENTO", ro["id"], [], [{"codigo": "1.01.01", "conta": "Receita de teste", "tipo": "R", "mes": "2026-04-01", "orcado": 0, "realizado": 40}], "teste@x")
+    dep3 = {(l["codigo"], l["mes"].strftime("%Y-%m")): l for l in P.edicao_carregar(conn, "ORCAMENTO", ro["id"])}
+    assert dep3[("1.01", "2026-04")]["realizado"] == 40.0 and dep3[("1.01", "2026-04")]["saldo"] == 40.0 and dep3[("1", "2026-04")]["realizado"] == 40.0
+
+
 def test_editar_folha_guarda_antes_e_depois_e_reflete_nos_totais(conn):
     assert P.edicao_instalada(conn)
     r = _folha_gravada(conn)
@@ -758,7 +799,7 @@ def test_editar_folha_guarda_antes_e_depois_e_reflete_nos_totais(conn):
     antes = P.folha_do_mes(conn, "2026-09")["total"]["salarios"]
     alvo = linhas[0]
     res = P.edicao_aplicar(conn, "FOLHA", r["id"], [(alvo["id"], "salario", alvo["salario"] + 100.0), (alvo["id"], "nome", alvo["nome"])], [], "teste@x", "leitura errada")
-    assert res == {"editados": 1, "linhas_novas": 0}                                         # nome igual: nao conta nem grava
+    assert res == {"editados": 1, "linhas_novas": 0, "automaticos": 0}                                         # nome igual: nao conta nem grava
     assert round(P.folha_do_mes(conn, "2026-09")["total"]["salarios"] - antes, 2) == 100.0   # a tela le da mesma tabela
     ed = P.edicoes_lista(conn, r["id"])
     assert len(ed) == 1 and ed[0]["campo"] == "salario" and ed[0]["acao"] == "EDITOU" and ed[0]["motivo"] == "leitura errada" and ed[0]["quem"] == "teste@x"
@@ -781,7 +822,7 @@ def test_adicionar_linha_nova_incrementa_n_linhas_e_valida_obrigatorios(conn):
         P.edicao_aplicar(conn, "FOLHA", r["id"], [], [{"nome": "Sem cadastro"}], "teste@x")
     res = P.edicao_aplicar(conn, "FOLHA", r["id"], [], [{"empresa": "468", "cadastro": "9999", "nome": "Manual", "departamento": "001.001", "salario": 1000, "total_proventos": 1000},
                                                        {"empresa": None}], "teste@x", "recibo que a leitura perdeu")
-    assert res == {"editados": 0, "linhas_novas": 1}
+    assert res == {"editados": 0, "linhas_novas": 1, "automaticos": 0}
     assert len(P.edicao_carregar(conn, "FOLHA", r["id"])) == 4
     assert P.importacoes_lista(conn)[0]["linhas"] == 4
     assert P.edicoes_lista(conn, r["id"])[0]["acao"] == "ADICIONOU"

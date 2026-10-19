@@ -14,7 +14,8 @@ from dados_sinteticos import csv_texto, gerar_meses
 pytestmark = pytest.mark.pg
 CNPJ = "54.800.488/0001-60"
 MESES = gerar_meses([(100_000, 5_000, 200), (80_000, 4_000, 100), (60_000, 3_000, 50)])
-ZERAR = Path(__file__).resolve().parent.parent.parent / "sql" / "zerar_dados.sql"
+ZERAR = Path(__file__).resolve().parent.parent.parent / "sql_interno" / "zerar_dados.sql"      # fora do GitHub (pasta interna, ignorada pelo git)
+_sem_zerar = pytest.mark.skipif(not ZERAR.exists(), reason="sql_interno/zerar_dados.sql so' existe no computador do Rafael (nao vai ao GitHub)")
 TABELAS = ["empresa", "importacao", "balancete_linha", "conferencia", "mapa_conta", "apelido", "relatorio", "evento"]
 
 
@@ -51,6 +52,7 @@ def _contagens(conn):
     return out
 
 
+@_sem_zerar
 def test_zerar_para_com_relatorio_assinado_e_nao_apaga_nada(conn):
     _semear_tudo(conn)
     antes = _contagens(conn)
@@ -64,6 +66,7 @@ def test_zerar_para_com_relatorio_assinado_e_nao_apaga_nada(conn):
     assert _contagens(conn) == antes                                 # nada foi apagado
 
 
+@_sem_zerar
 def test_zerar_com_liberacao_zera_tudo_recomeca_numeracao_e_o_app_recria(conn):
     _semear_tudo(conn)
     sql = ZERAR.read_text(encoding="utf-8").replace("-- SET LOCAL gdf.permitir_zerar_assinados", "SET LOCAL gdf.permitir_zerar_assinados")
@@ -84,6 +87,7 @@ def test_zerar_com_liberacao_zera_tudo_recomeca_numeracao_e_o_app_recria(conn):
         assert cur.fetchone() == (True, False)
 
 
+@_sem_zerar
 def test_zerar_sem_assinados_roda_direto(conn):
     emp = db.garantir_empresa(conn, "ANASTACIO", "Anastácio Transmissora de Energia S.A.", CNPJ)
     db.garantir_mapa(conn, emp)
@@ -135,7 +139,8 @@ def test_regras_ativas_mudam_quando_mapa_ou_apelido_mudam(conn):
 
 
 # ---------------------------------------------------------------- v0.4.7: SQL que limpa so' os residuos do teste ao vivo
-LIMPAR = Path(__file__).resolve().parent.parent.parent / "sql" / "limpar_residuos_teste.sql"
+LIMPAR = Path(__file__).resolve().parent.parent.parent / "sql_interno" / "limpar_residuos_teste.sql"
+_sem_limpar = pytest.mark.skipif(not LIMPAR.exists(), reason="sql_interno/limpar_residuos_teste.sql so' existe no computador do Rafael (nao vai ao GitHub)")
 
 
 def _semear_residuos(conn):
@@ -160,6 +165,7 @@ def _semear_residuos(conn):
     return emp
 
 
+@_sem_limpar
 def test_limpar_residuos_apaga_so_o_combinado_e_devolve_a_importacao_1(conn):
     _semear_residuos(conn)
     antes = _contagens(conn)
@@ -180,6 +186,7 @@ def test_limpar_residuos_apaga_so_o_combinado_e_devolve_a_importacao_1(conn):
     assert db.proxima_versao_relatorio(conn, emp, datetime.date(2026, 8, 1)) == 3
 
 
+@_sem_limpar
 def test_limpar_residuos_recusa_se_o_estado_for_outro(conn):
     _semear_tudo(conn)                                              # estado diferente do esperado (sem #10/#11)
     antes = _contagens(conn)
