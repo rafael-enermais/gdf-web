@@ -104,6 +104,7 @@ def montar_ctx(conn, mes: str, gerado_em: str = "") -> dict:
             if linhas:
                 outros = P.credor_grupo_ativos(conn) if P.credor_grupo_instalado(conn) else []
                 adm["resumo"] = P.adm_resumo(linhas, [c["chave"] for c in outros], P.nomes_plano(conn))
+                adm["linhas"] = linhas                                   # para o detalhe (unidade > credor > conta) do Painel da Diretoria
         orc = P.orcamento_ativo(conn) if P.orcamento_instalado(conn) else None
         if orc and mes in orc["meses"]:
             adm["orcamento"] = P.orcamento_resumo(conn, orc["id"], mes)

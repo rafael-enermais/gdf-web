@@ -8,6 +8,7 @@ st.navigation()/st.Page() e' a UNICA fonte da lista de paginas (mesma solucao do
 import streamlit as st
 
 from auth import require_login
+import acesso
 import db
 import situacao
 from conexao import NOME_APP, empresa_atual, get_conn, mostrar_flash, sidebar_rodape
@@ -54,6 +55,18 @@ def _quadro_situacao():
         st.dataframe(tab, hide_index=True, width="stretch", height=35 * 13 + 3)
 
 
+_PAGINA_DIRETORIA = st.Page("telas/9_Painel_Diretoria.py", title="Painel da Diretoria", icon="📊", url_path="diretoria")
+
+# Visualizador (diretoria): so' enxerga o Painel da Diretoria; as demais paginas nem sao registradas (nao abrem nem digitando o endereco).
+try:
+    _papel = acesso.papel(get_conn(), usuario_logado)
+except Exception:                                  # banco fora do ar: nao libera menu nenhum (nem o completo, por engano)
+    st.error("Não foi possível verificar o seu acesso agora (banco indisponível). Tente novamente em instantes.")
+    st.stop()
+if _papel == acesso.VISUALIZADOR:
+    st.navigation([st.Page("telas/9_Painel_Diretoria.py", title="Painel da Diretoria", icon="📊", default=True, url_path="diretoria")]).run()
+    st.stop()
+
 paginas = [
     st.Page(pagina_inicio, title="Início", icon="🏠", default=True, url_path="inicio"),
     st.Page("telas/1_Importar_Balancete.py", title="Importar balancete", icon="📥", url_path="importar"),
@@ -61,6 +74,7 @@ paginas = [
     st.Page("telas/5_Relatorio_PDF.py", title="Relatório PDF", icon="📄", url_path="relatorio"),
     st.Page("telas/6_Painel.py", title="Painel", icon="📈", url_path="painel"),
     st.Page("telas/8_Painel_EnerMais.py", title="Painel EnerMais (em construção)", icon="🏗️", url_path="painel-enermais"),
+    _PAGINA_DIRETORIA,
     st.Page("telas/3_Historico.py", title="Histórico", icon="🗂️", url_path="historico"),
     st.Page("telas/4_Mapa_de_Contas.py", title="Mapa de contas", icon="🧭", url_path="mapa"),
     st.Page("telas/7_Ajuda.py", title="Ajuda", icon="❓", url_path="ajuda"),

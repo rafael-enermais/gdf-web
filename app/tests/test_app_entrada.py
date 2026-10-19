@@ -34,7 +34,12 @@ def test_login_form_e_credencial_invalida():
         assert any("Informe o e-mail" in e.value for e in at.error)
 
 
-def test_login_ok_abre_inicio():
+def test_login_ok_abre_inicio(monkeypatch):
+    # sem banco neste teste: a consulta do papel (acesso) devolve EDITOR
+    import acesso
+    import conexao
+    monkeypatch.setattr(acesso, "papel", lambda conn, email: "EDITOR")
+    monkeypatch.setattr(conexao, "get_conn", lambda: MagicMock())
     at = AppTest.from_file(str(APP), default_timeout=30)
     at.session_state["auth_session"] = SimpleNamespace(user=SimpleNamespace(email="usuaria@teste"))
     at.run()

@@ -642,6 +642,32 @@ with aba_regras:
     else:
         st.success("Todas as regras estão confirmadas.")
 
+    # ---- acessos: quem e' visualizador (so' o Painel da Diretoria) -- SQL-20
+    st.divider()
+    st.markdown("**Acessos: quem só visualiza o Painel da Diretoria**")
+    import acesso
+    if not acesso.instalado(conn):
+        st.warning("Falta executar o arquivo `sql/v2_acesso.sql` (SQL-20) no Supabase para cadastrar visualizadores. Até lá todos os usuários têm acesso completo, como hoje.")
+    else:
+        st.caption("O login continua no Supabase (Authentication → Users): crie o usuário lá e cadastre o e-mail aqui como VISUALIZADOR. "
+                   "Quem não estiver na lista continua com acesso completo. Para tirar o acesso: desative aqui e/ou exclua o usuário no Authentication.")
+        ac = acesso.listar(conn)
+        if ac:
+            st.dataframe(pd.DataFrame([{"E-mail": a["email"], "Papel": a["papel"].lower(), "Ativo": "sim" if a["ativo"] else "não", "Por": a["alterado_por"] or "",
+                                        "Em": a["alterado_em"].strftime("%d/%m/%Y %H:%M")} for a in ac]), hide_index=True, width="stretch")
+        c_a1, c_a2, c_a3 = st.columns([3, 1.4, 1])
+        em_ac = c_a1.text_input("E-mail do usuário", key="pn2_ac_email")
+        pa_ac = c_a2.selectbox("Papel", ["VISUALIZADOR", "EDITOR"], key="pn2_ac_papel")
+        at_ac = c_a3.checkbox("Ativo", value=True, key="pn2_ac_ativo")
+        if st.button("Salvar acesso", key="pn2_ac_btn", disabled=not em_ac.strip()):
+            try:
+                r_ac = acesso.definir(conn, em_ac, pa_ac, at_ac, usuario)
+                P.registrar_log(conn, "ACESSO_DEFINIDO", "INFO", usuario, None, {"papel": r_ac["papel"], "ativo": r_ac["ativo"], "novo": r_ac["novo"]})
+                st.success(f"{r_ac['email']}: {r_ac['papel'].lower()} ({'ativo' if r_ac['ativo'] else 'inativo'}).")
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
+
 # ------------------------------------------------------------------ historico e logs
 with aba_log:
     st.markdown("Tudo o que o painel faz fica registrado aqui: conferências com o CSV, sincronizações, regras confirmadas e erros. "
