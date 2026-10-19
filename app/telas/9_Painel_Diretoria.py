@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 import formatacao as F
+import historico as HIST
 import painel_db as P
 import relatorio_painel_pdf as RPP
 from auth import usuario_atual
@@ -136,7 +137,48 @@ with g2:
             st.caption("Meses cinza-claros com fonte “API (a conferir)” ainda não têm DRE oficial confirmado.")
 
 # ------------------------------------------------------------------ 2) abas (cada uma desce em detalhe ao clicar)
-t_ob, t_adm, t_desp, t_pes, t_dre = st.tabs(["Obras", "Administração", "Despesas", "Pessoas", "Resultado (DRE)"])
+t_ano, t_ob, t_adm, t_desp, t_pes, t_dre = st.tabs(["Ano", "Obras", "Administração", "Despesas", "Pessoas", "Resultado (DRE)"])
+
+hist = ctx.get("hist")
+with t_ano:
+    if not hist:
+        st.info("O acumulado do ano aparece quando o histórico do painel da contabilidade é importado (Importações (V2) → Histórico do painel).")
+    else:
+        ac = hist["acumulado"]
+        ate = hist["ate"]
+        st.markdown(f"**Acumulado do ano até {_rot(ate)}**")
+        ka = st.columns(5)
+        for col_, (rot_, val_) in zip(ka, [("Receita", ac["rec"]), ("Custo direto", ac["cus"]), ("BDI", ac["bdi"]), ("Administração", ac["adm"]), ("Resultado", ac["res"])]):
+            col_.metric(rot_, _mi(val_), border=True)
+        st.markdown("**Desvio mensal: realizado − previsto**")
+        linhas_h = list(hist["desvio_linhas"])
+        sel_h = st.selectbox("Linha", linhas_h, index=len(linhas_h) - 1, key="dir_ano_linha")
+        ml = [m["rotulo"] for m in hist["desvio_meses"]]
+        vals_h = hist["desvio_linhas"][sel_h]
+        dfd = pd.DataFrame({"Mês": ml, "Desvio (R$ mi)": [x / 1e6 for x in vals_h]})
+        dfd["cor"] = ["acima" if x > 0 else "abaixo" for x in vals_h]
+        estouro = sel_h in ("Custos", "Despesas ADM")        # nessas linhas, positivo = gastou mais que o previsto (ruim)
+        dom, rng = (["acima", "abaixo"], [ORANGE, AZUL]) if estouro else (["acima", "abaixo"], [AZUL, ORANGE])
+        st.altair_chart(alt.Chart(dfd).mark_bar().encode(
+            x=alt.X("Mês:N", sort=ml, axis=alt.Axis(labelAngle=0, title=None)), y=alt.Y("Desvio (R$ mi):Q", title="R$ milhões"),
+            color=alt.Color("cor:N", scale=alt.Scale(domain=dom, range=rng), legend=None), tooltip=["Mês", alt.Tooltip("Desvio (R$ mi):Q", format=",.2f")]), width="stretch")
+        st.caption("Para custos e despesas ADM, valor positivo indica estouro. Janeiro = desvio acumulado menos a soma de fevereiro em diante.")
+        st.dataframe(pd.DataFrame([{"Linha": nome, **{r: _m(x) for r, x in zip(ml, vs)}} for nome, vs in hist["desvio_linhas"].items()]), hide_index=True, width="stretch")
+        if hist["recomposicao"]:
+            st.markdown("**Recomposição out–dez**")
+            rc = hist["recomposicao"]
+            st.dataframe(pd.DataFrame([{"Mês": r["rotulo"], "Projeção": _m(r["projecao"]), "Para cobrir o déficit": _m(r["para_cobrir"])} for r in rc]
+                                      + [{"Mês": "Out–Dez", "Projeção": _m(sum(r["projecao"] for r in rc)), "Para cobrir o déficit": _m(sum(r["para_cobrir"] for r in rc))}]),
+                         hide_index=True, width="stretch")
+            st.caption("Faturamento necessário para cobrir o déficit acumulado de base-line, distribuído proporcionalmente à projeção.")
+        if hist["pessoas"]:
+            st.markdown("**Custos prioritários com pessoas**")
+            pp = pd.DataFrame(hist["pessoas"][:14])
+            pp["Acumulado (R$ mi)"] = pp["acumulado"] / 1e6
+            st.altair_chart(alt.Chart(pp).mark_bar(color=NAVY).encode(
+                y=alt.Y("nome:N", sort="-x", title=None, axis=alt.Axis(labelLimit=260)), x=alt.X("Acumulado (R$ mi):Q", title="R$ milhões no ano"),
+                tooltip=[alt.Tooltip("nome:N", title="Custo"), alt.Tooltip("mes:Q", title="No mês (R$)", format=",.0f"), alt.Tooltip("acumulado:Q", title="Acumulado (R$)", format=",.0f")]), width="stretch")
+        st.caption(f"Histórico do painel da contabilidade (arquivo “{hist.get('arquivo') or 'importado'}”), até {_rot(ate)}.")
 
 with t_ob:
     if not ob:
@@ -261,20 +303,20 @@ with t_pes:
         t = fo["total"]
         a, b, c, d = st.columns(4)
         a.metric("Colaboradores CLT", t["colab"], border=True)
-        b.metric("Salários (horas normais)", _mi(t["salarios"]), border=True)
+        b.metric("Remuneração (base da HE)", _mi(t["base_he"]), border=True)
         c.metric("Horas extras + DSR", _mi(t["hora_extra"] + t["dsr_he"]), border=True)
-        d.metric("HE + DSR ÷ salários", F.pct_br(t["he_pct"]) if t["he_pct"] is not None else "–", border=True)
-        st.caption("A base de salários desta razão (só horas normais) está em validação com a contabilidade; o percentual pode mudar.")
-        st.dataframe(pd.DataFrame([{"Empresa": e["empresa"], "Colab.": e["colab"], "Salários": _m(e["salarios"]), "HE + DSR": _m(e["hora_extra"] + e["dsr_he"]),
-                                    "HE ÷ salários": F.pct_br(e["he_pct"]) if e["he_pct"] is not None else "–", "Custo (proventos + FGTS)": _m(e["custo"])} for e in fo["por_empresa"]]),
+        d.metric("HE + DSR ÷ remuneração", F.pct_br(t["he_pct"]) if t["he_pct"] is not None else "–", border=True)
+        st.caption("Horas extras + DSR sobre a remuneração (proventos que não são hora extra, menos faltas), definição da contabilidade.")
+        st.dataframe(pd.DataFrame([{"Empresa": e["empresa"], "Colab.": e["colab"], "Remuneração": _m(e["base_he"]), "HE + DSR": _m(e["hora_extra"] + e["dsr_he"]),
+                                    "HE ÷ remuneração": F.pct_br(e["he_pct"]) if e["he_pct"] is not None else "–", "Custo (proventos + FGTS)": _m(e["custo"])} for e in fo["por_empresa"]]),
                      hide_index=True, width="stretch")
         st.markdown("**Colaboradores por obra**")
         po = sorted(fo["por_obra"].values(), key=lambda x: -x["colab"])
-        st.dataframe(pd.DataFrame([{"Obra": x["codigo"], "Nome": x["nome"], "Colab.": x["colab"], "Salários": _m(x["salarios"]), "HE + DSR": _m(x["hora_extra"] + x["dsr_he"]),
-                                    "HE ÷ salários": F.pct_br(x["he_pct"]) if x["he_pct"] is not None else "–"} for x in po]), hide_index=True, width="stretch")
-        sf = pes["serie"]
+        st.dataframe(pd.DataFrame([{"Obra": x["codigo"], "Nome": x["nome"], "Colab.": x["colab"], "Remuneração": _m(x["base_he"]), "HE + DSR": _m(x["hora_extra"] + x["dsr_he"]),
+                                    "HE ÷ remuneração": F.pct_br(x["he_pct"]) if x["he_pct"] is not None else "–"} for x in po]), hide_index=True, width="stretch")
+        sf = HIST.serie_he_combinada(hist, pes["serie"])
         if len(sf) >= 2:
-            st.markdown("**HE + DSR ÷ salários, mês a mês**")
+            st.markdown("**HE + DSR ÷ remuneração, mês a mês**")
             dfh = pd.DataFrame({"Mês": [_rot(x["mes"]) for x in sf], "%": [round(x["he_pct"] * 100, 1) for x in sf]})
             st.altair_chart(alt.Chart(dfh).mark_line(point=True, color=NAVY).encode(x=alt.X("Mês:N", sort=list(dfh["Mês"]), axis=alt.Axis(labelAngle=-45, title=None)), y="%:Q",
                                                                                  tooltip=["Mês", "%"]), width="stretch")

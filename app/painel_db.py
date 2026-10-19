@@ -15,6 +15,8 @@ from psycopg2.extras import execute_values
 
 import db
 
+EVENTOS_DESCONTO_REMUNERACAO = (23,)    # 23 = Horas Faltas Diurnas: desconto que reduz a remuneracao (entra na base da HE; INSS/IRRF etc. nao)
+
 TABELAS_V2 = ("pnl_sync", "pnl_titulo", "pnl_baixa", "pnl_rateio", "pnl_regra", "pnl_obra", "pnl_centro_custo")
 
 
@@ -431,9 +433,9 @@ def _filtro_distrato(sem_distrato: bool) -> str:
 
 
 def _filtro_desfeitos(sem_desfeitos: bool) -> str:
-    """PROPOSTA (conferida em set/2026, aguarda a contabilidade): o DRE gerencial do Sienge NAO conta (a) titulos a PAGAR cujas baixas dos tipos Cancelamento (3),
+    """REGRA CONFIRMADA pela contabilidade em 19/10/2026 (ligada por padrao): o DRE gerencial do Sienge NAO conta (a) titulos a PAGAR cujas baixas dos tipos Cancelamento (3),
     Substituicao (5) ou Abatimento de adiantamento (8) somam o valor todo, nem (b) documentos do tipo AEJ (multas). Aplicar isso reduz a diferenca de
-    custo API x PDF em ~R$ 200 mil (de R$ 272 mil para R$ 69 mil, fora INSS/FGTS em guia). Desligado por padrao ate a confirmacao."""
+    custo API x PDF em ~R$ 200 mil (de R$ 272 mil para R$ 69 mil, fora INSS/FGTS em guia, que a contabilidade disse que entra depois do PDF)."""
     if not sem_desfeitos:
         return ""
     return """AND NOT (t.lado='P' AND (upper(trim(COALESCE(t.doc_id,''))) = 'AEJ'
@@ -451,7 +453,7 @@ def centro_grupo_instalado(conn) -> bool:
         return False
 
 
-def resultado_por_conta(conn, mes: str, sem_previsao: bool = False, so_obras: bool = False, sem_distrato: bool = True, sem_desfeitos: bool = False) -> list:
+def resultado_por_conta(conn, mes: str, sem_previsao: bool = False, so_obras: bool = False, sem_distrato: bool = True, sem_desfeitos: bool = True) -> list:
     """Valor COMPROMETIDO do mes por conta do plano: soma(valor do titulo x % do rateio) dos titulos EMITIDOS no mes, com sinal de DRE
     (receita +, custo -). `so_obras` tira os centros de custo do grupo ADM (de-para pnl_centro_grupo); centro sem de-para fica dentro.
     Devolve [{'plano_cod','plano_nome','valor'}]. Mesmo criterio do DRE gerencial 'Comprometido, selecao por data de emissao'."""
@@ -496,7 +498,7 @@ def resultado_por_conta(conn, mes: str, sem_previsao: bool = False, so_obras: bo
     return sorted(por.values(), key=lambda d: d["plano_cod"])
 
 
-def resultado_por_centro(conn, mes: str, sem_previsao: bool = False, sem_distrato: bool = True, sem_desfeitos: bool = False) -> list:
+def resultado_por_centro(conn, mes: str, sem_previsao: bool = False, sem_distrato: bool = True, sem_desfeitos: bool = True) -> list:
     """Diagnostico: receita e custo (so contas do DRE de obras: 1.01.01 e 2.01.*) por centro de custo, com o grupo do de-para (ou 'sem de-para')."""
     ini = f"{mes}-01"
     filtro = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
@@ -699,7 +701,7 @@ def obras_do_dre(conn, mes: str) -> dict | None:
             "top_lucro": sorted(proprias, key=lambda l: -l["bdi"])[:5], "top_prejuizo": sorted((l for l in proprias if l["bdi"] < 0), key=lambda l: l["bdi"])[:5]}
 
 
-def resultado_por_obra_api(conn, mes: str, sem_previsao: bool = False, sem_distrato: bool = True, sem_desfeitos: bool = False) -> dict:
+def resultado_por_obra_api(conn, mes: str, sem_previsao: bool = False, sem_distrato: bool = True, sem_desfeitos: bool = True) -> dict:
     """Mesmo calculo do resultado_por_conta, agrupado pelo codigo da obra do de-para: {codigo_obra: {linha_dre: valor}} (+ 'sem de-para')."""
     ini = f"{mes}-01"
     filtro = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
@@ -1079,28 +1081,38 @@ def folha_do_mes(conn, mes: str) -> dict | None:
                            WHERE i.tipo='FOLHA' AND i.mes=%s::date AND i.ativo
                            GROUP BY r.empresa, r.departamento, d.codigo_obra""", (f"{mes}-01",))
             linhas = cur.fetchall()
+            # descontos de REMUNERACAO (faltas/atrasos: evento 23) por departamento: entram na base da HE (contabilidade 19/10: remuneracao liquida)
+            cur.execute("""SELECT e.empresa, e.departamento, COALESCE(sum(e.desconto),0)
+                           FROM pnl_folha_evento e JOIN pnl_importacao i ON i.id = e.importacao_id
+                           WHERE i.tipo='FOLHA' AND i.mes=%s::date AND i.ativo AND e.ev = ANY(%s)
+                           GROUP BY e.empresa, e.departamento""", (f"{mes}-01", list(EVENTOS_DESCONTO_REMUNERACAO)))
+            faltas = {(a, b): float(v) for a, b, v in cur.fetchall()}
     except Exception:
         return None
-    tot = {"colab": 0, "salarios": 0.0, "hora_extra": 0.0, "dsr_he": 0.0, "proventos": 0.0, "fgts": 0.0}
+    tot = {"colab": 0, "salarios": 0.0, "hora_extra": 0.0, "dsr_he": 0.0, "proventos": 0.0, "fgts": 0.0, "faltas": 0.0}
     por_emp, por_obra, sem = {}, {}, []
     for emp, dep, sub, cod, onome, n, sal, he, dsr, prov, fgts in linhas:
-        vals = {"colab": int(n), "salarios": float(sal), "hora_extra": float(he), "dsr_he": float(dsr), "proventos": float(prov), "fgts": float(fgts)}
+        vals = {"colab": int(n), "salarios": float(sal), "hora_extra": float(he), "dsr_he": float(dsr), "proventos": float(prov), "fgts": float(fgts),
+                "faltas": faltas.get((emp, dep), 0.0)}
         for k, v in vals.items():
             tot[k] += v
-        e = por_emp.setdefault(emp, {"empresa": EMPRESAS_FOLHA.get(emp, emp), "colab": 0, "salarios": 0.0, "hora_extra": 0.0, "dsr_he": 0.0, "proventos": 0.0, "fgts": 0.0})
+        e = por_emp.setdefault(emp, {"empresa": EMPRESAS_FOLHA.get(emp, emp), "colab": 0, "salarios": 0.0, "hora_extra": 0.0, "dsr_he": 0.0, "proventos": 0.0, "fgts": 0.0, "faltas": 0.0})
         for k, v in vals.items():
             e[k] += v
         if cod is None:
             sem.append({"empresa": EMPRESAS_FOLHA.get(emp, emp), "departamento": dep, "subnivel": sub, "colab": int(n)})
             cod = "sem de-para"
-        o = por_obra.setdefault(cod, {"codigo": cod, "nome": onome or (sub if cod == "sem de-para" else ""), "colab": 0, "salarios": 0.0, "hora_extra": 0.0, "dsr_he": 0.0, "proventos": 0.0, "fgts": 0.0})
+        o = por_obra.setdefault(cod, {"codigo": cod, "nome": onome or (sub if cod == "sem de-para" else ""), "colab": 0, "salarios": 0.0, "hora_extra": 0.0, "dsr_he": 0.0, "proventos": 0.0, "fgts": 0.0, "faltas": 0.0})
         for k, v in vals.items():
             o[k] += v
-    pct = lambda d: round((d["hora_extra"] + d["dsr_he"]) / d["salarios"], 4) if d["salarios"] > 0.005 else None
+    # Base da HE (contabilidade, 19/10/2026): remuneracao liquida = proventos que nao sao HE nem DSR s/ HE, menos os descontos de remuneracao (faltas)
+    for d in [tot, *por_emp.values(), *por_obra.values()]:
+        d["base_he"] = d["proventos"] - d["hora_extra"] - d["dsr_he"] - d["faltas"]
+    pct = lambda d: round((d["hora_extra"] + d["dsr_he"]) / d["base_he"], 4) if d["base_he"] > 0.005 else None
     for d in [tot, *por_emp.values(), *por_obra.values()]:
         d["custo"] = round(d["proventos"] + d["fgts"], 2)
         d["he_pct"] = pct(d)
-        for k in ("salarios", "hora_extra", "dsr_he", "proventos", "fgts"):
+        for k in ("salarios", "hora_extra", "dsr_he", "proventos", "fgts", "faltas", "base_he"):
             d[k] = round(d[k], 2)
     return {"mes": mes, "importacoes": [{"id": i[0], "escopo": i[1], "arquivo": i[2], "quem": i[3], "quando": i[4]} for i in imps], "total": tot,
             "por_empresa": sorted(por_emp.values(), key=lambda d: d["empresa"]), "por_obra": por_obra, "sem_depara": sem}
@@ -1405,7 +1417,7 @@ def importacoes_lista(conn, tipo: str | None = None) -> list[dict]:
     """Todas as importacoes da V2 (DRE, folha, projecao, orcamento), da mais nova para a mais antiga, com o numero de edicoes de cada uma."""
     with conn.cursor() as cur:
         cur.execute("""SELECT id, tipo, mes, escopo, arquivo_nome, ativo, importado_por, importado_em, n_linhas
-                       FROM pnl_importacao WHERE tipo IN ('DRE','FOLHA','PROJECAO','ORCAMENTO') AND (%s IS NULL OR tipo=%s) ORDER BY id DESC""", (tipo, tipo))
+                       FROM pnl_importacao WHERE tipo IN ('DRE','FOLHA','PROJECAO','ORCAMENTO','HISTORICO') AND (%s IS NULL OR tipo=%s) ORDER BY id DESC""", (tipo, tipo))
         rows = cur.fetchall()
     n_ed: dict = {}
     if edicao_instalada(conn):

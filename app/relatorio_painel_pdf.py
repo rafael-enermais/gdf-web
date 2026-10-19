@@ -10,6 +10,7 @@ import io
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
+import historico as HIST
 import relatorio_pdf as R
 from relatorio_fmt import fnum, mm, mmn, neg, pct
 from relatorio_pdf import (ASSETS, BLUES, calc_levels, cascata, BORDER, CW, GREY, GREY_BG, H, MX, NAVY, NEG_TXT, ORANGE, W, WHITE, barras, caixa_nota, hline, kpi,
@@ -54,7 +55,7 @@ def montar_ctx(conn, mes: str, gerado_em: str = "") -> dict:
     """Junta tudo que o PDF mostra para o mes 'AAAA-MM'. Parte que nao tem dado vira None (a pagina explica o que falta)."""
     import painel_db as P
 
-    ctx = {"mes": mes, "gerado_em": gerado_em, "dre": None, "serie": [], "obras": None, "proj": None, "adm": None, "desp": None, "pessoas": None, "avisos": []}
+    ctx = {"mes": mes, "gerado_em": gerado_em, "dre": None, "serie": [], "obras": None, "proj": None, "adm": None, "desp": None, "pessoas": None, "hist": None, "avisos": []}
 
     # --- DRE: 1) confirmado  2) DRE oficial importado (PDF)  3) reconstrucao pela API
     conf = P.confirmacao_ativa(conn, mes) if P.confirmacao_instalada(conn) else None
@@ -131,6 +132,15 @@ def montar_ctx(conn, mes: str, gerado_em: str = "") -> dict:
             ctx["pessoas"] = {"folha": P.folha_do_mes(conn, mes), "serie": [x for x in P.folha_serie(conn) if x["he_pct"] is not None]}
     except Exception as exc:                                    # noqa: BLE001
         ctx["avisos"].append(f"Pessoas: {type(exc).__name__}")
+
+    # --- Historico do ano (painel da contabilidade importado em Importacoes (V2)): acumulado, desvio mensal, recomposicao, HE e custos com pessoas
+    try:
+        h = HIST.ativo(conn)
+        if h:
+            ctx["hist"] = HIST.resumo(h)
+            ctx["hist"]["arquivo"] = h["arquivo"]
+    except Exception as exc:                                    # noqa: BLE001
+        ctx["avisos"].append(f"Histórico: {type(exc).__name__}")
     return ctx
 
 
@@ -344,7 +354,7 @@ def p_resultado(c, n, N, ctx):
         y = caixa_nota(c, y, f"Administração no acumulado do ano (orçamento ADM): orçado {mm(ac['total']['orcado'])}, realizado {mm(ac['total']['realizado'])}, "
                              f"desvio {mm(ac['total']['desvio'], 2, True)} ({_pc(ac['total']['desvio_pct'])}).")
     caixa_nota(c, y, "Receita e custo vêm do DRE oficial do Sienge (somando todas as obras); a administração é o realizado do Orçamento ADM. "
-                     "O acumulado jan–set de receita, custo e BDI aparece quando o histórico dos meses anteriores estiver carregado no painel.")
+                     "O acumulado do ano e o desvio mensal estão na página seguinte ao Resultado do mês, quando o histórico do painel da contabilidade está importado.")
 
 
 def p_proj(c, n, N, ctx):
@@ -423,29 +433,101 @@ def p_pessoas(c, n, N, ctx):
         return
     fo = p["folha"]; t = fo["total"]
     kw = (CW - 3 * 10) / 4
-    for i, (r_, val, sub) in enumerate([("Colaboradores CLT", str(t["colab"]), "nos recibos"), ("Salários", mm(t["salarios"]), "horas normais"),
-                                        ("Horas extras + DSR", mm(t["hora_extra"] + t["dsr_he"]), "HE 50 a 110% + DSR"), ("HE + DSR ÷ salários", _pc(t["he_pct"]), "peso das horas extras")]):
+    for i, (r_, val, sub) in enumerate([("Colaboradores CLT", str(t["colab"]), "nos recibos"), ("Remuneração", mm(t["base_he"]), "base da hora extra"),
+                                        ("Horas extras + DSR", mm(t["hora_extra"] + t["dsr_he"]), "HE 50 a 110% + DSR"), ("HE + DSR ÷ remuneração", _pc(t["he_pct"]), "peso das horas extras")]):
         kpi(c, MX + i * (kw + 10), y, kw, 62, r_, val, sub, dark=(i == 3))
     y -= 78
     cols = [(120, "l"), (50, "r"), (90, "r"), (90, "r"), (65, "r"), (100, "r")]
-    rows = [("norm", [e["empresa"], str(e["colab"]), fnum(e["salarios"]), fnum(e["hora_extra"] + e["dsr_he"]), _pc(e["he_pct"]), fnum(e["custo"])]) for e in fo["por_empresa"]]
-    y = tabela(c, MX, y, cols, ["Empresa", "Colab.", "Salários", "HE + DSR", "HE ÷ sal.", "Custo (proventos + FGTS)"], rows, rh=13)
+    rows = [("norm", [e["empresa"], str(e["colab"]), fnum(e["base_he"]), fnum(e["hora_extra"] + e["dsr_he"]), _pc(e["he_pct"]), fnum(e["custo"])]) for e in fo["por_empresa"]]
+    y = tabela(c, MX, y, cols, ["Empresa", "Colab.", "Remuneração", "HE + DSR", "HE ÷ rem.", "Custo (proventos + FGTS)"], rows, rh=13)
     y -= 24
     obras = sorted(fo["por_obra"].values(), key=lambda o: -o["colab"])[:12]
     if obras:
         y = secao(c, y, "Colaboradores por obra (12 maiores)")
         cols = [(44, "l"), (170, "l"), (45, "r"), (85, "r"), (85, "r"), (86, "r")]
-        rows = [("norm", [o["codigo"], o["nome"][:36], str(o["colab"]), fnum(o["salarios"]), fnum(o["hora_extra"] + o["dsr_he"]), _pc(o["he_pct"])]) for o in obras]
-        y = tabela(c, MX, y, cols, ["Obra", "Nome", "Colab.", "Salários", "HE + DSR", "HE ÷ sal."], rows, rh=12.6, fs=6.9)
+        rows = [("norm", [o["codigo"], o["nome"][:36], str(o["colab"]), fnum(o["base_he"]), fnum(o["hora_extra"] + o["dsr_he"]), _pc(o["he_pct"])]) for o in obras]
+        y = tabela(c, MX, y, cols, ["Obra", "Nome", "Colab.", "Remuneração", "HE + DSR", "HE ÷ rem."], rows, rh=12.6, fs=6.9)
         y -= 14
-    sf = p["serie"]
+    sf = HIST.serie_he_combinada(ctx.get("hist"), p["serie"])             # meses do histórico da contabilidade + meses com folha no app
     if len(sf) >= 2 and y > 170:
-        y = secao(c, y, "HE + DSR ÷ salários, mês a mês (%)")
+        y = secao(c, y, "HE + DSR ÷ remuneração, mês a mês (%)")
         barras(c, MX + 6, y - 100, CW - 12, 84, [_rot_mes(x["mes"]) for x in sf], [round(x["he_pct"] * 100, 1) for x in sf], fmt=lambda v_: fnum(v_, 1), size=6)
         y -= 124
     if y > 90:
-        caixa_nota(c, y, "Salários = evento 1 (horas normais). Horas extras = eventos de HE 50/60/80/100/110% mais DSR sobre HE. Custo = proventos + FGTS do mês "
+        caixa_nota(c, y, "Remuneração (base da HE, definição da contabilidade) = proventos que não são HE nem DSR s/ HE, menos faltas. Horas extras = eventos de HE 50/60/80/100/110% mais DSR sobre HE. Custo = proventos + FGTS do mês "
                          "(não inclui INSS patronal, férias/13º provisionados nem PJ).")
+
+
+def _fk(v) -> str:
+    """Valor em R$ mil (sem decimais) para as tabelas largas do historico."""
+    return fnum(v / 1000.0, 0)
+
+
+def p_ano(c, n, N, ctx):
+    _moldura(c, n, N, "Acumulado do ano", ctx)
+    h = ctx.get("hist")
+    y = titulo(c, TOPY, "Acumulado do ano e desvio mensal", "Realizado × previsto, de janeiro ao mês do painel")
+    if not h:
+        _vazio(c, y, "Falta importar o histórico do painel da contabilidade (HTML) na aba Importações (V2): dele vêm o acumulado jan–set e o desvio mensal.")
+        return
+    a = h["acumulado"]
+    kw = (CW - 4 * 10) / 5
+    for i, (r_, val, sub) in enumerate([("Receita", mm(a["rec"]), "acumulado do ano"), ("Custo direto", mm(a["cus"]), "obras"), ("BDI", mm(a["bdi"]), "receita − custo"),
+                                        ("Administração", mm(a["adm"]), "acumulado do ano"), ("Resultado", mm(a["res"]), "BDI − administração")]):
+        kpi(c, MX + i * (kw + 10), y, kw, 62, r_, val, sub, dark=(i == 4), vsize=11.5)
+    y -= 84
+    et = [("Receita", a["rec"], "total"), ("Custo direto", -abs(a["cus"]), "delta"), ("BDI", a["bdi"], "total"), ("Administração", -abs(a["adm"]), "delta"), ("Resultado", a["res"], "final")]
+    calc_levels(et)
+    y = secao(c, y, "Do faturamento ao resultado, acumulado do ano (R$ MM)")
+    cascata(c, MX + 30, y - 150, CW - 60, 124, et, size=7)
+    y -= 176
+    ml = [m["rotulo"] for m in h["desvio_meses"]]
+    y = secao(c, y, "Desvio mensal: realizado − previsto (R$ mil)")
+    wl = 100
+    wc = (CW - wl) / (len(ml) + 1)
+    cols = [(wl, "l")] + [(wc, "r")] * (len(ml) + 1)
+    rows = []
+    for nome, vals in h["desvio_linhas"].items():
+        acu = h["desvio_acumulado"].get({"Base-line (Receita)": "rec", "Custos": "cus", "BDI - Resultado": "bdi", "Despesas ADM": "adm", "Lucro do Período": "res"}.get(nome, ""), sum(vals))
+        rows.append(("sub" if nome.startswith("Lucro") else "norm", [nome] + [_fk(v) for v in vals] + [_fk(acu)]))
+    y = tabela(c, MX, y, cols, ["Linha"] + ml + ["Acum."], rows, rh=13, fs=6.4)
+    y -= 22
+    luc = h["desvio_linhas"].get("Lucro do Período")
+    if luc and y > 150:
+        y = secao(c, y, "Desvio do lucro do período, mês a mês (R$ MM)")
+        barras(c, MX + 6, y - 86, CW - 12, 70, ml, [round(v / 1e6, 2) for v in luc], fmt=lambda v_: fnum(v_, 2), size=6)
+        y -= 108
+    caixa_nota(c, y, "Para custos e despesas ADM, valor positivo indica estouro (gasto acima do previsto); para receita e BDI, valor negativo indica abaixo do previsto. "
+                     "Janeiro = desvio acumulado menos a soma de fevereiro ao mês do painel. Valores do histórico do painel da contabilidade (arquivo " + (h.get("arquivo") or "importado") + ").")
+
+
+def p_recomp(c, n, N, ctx):
+    _moldura(c, n, N, "Recomposição e custos com pessoas", ctx)
+    h = ctx.get("hist")
+    y = titulo(c, TOPY, "Recomposição out–dez e custos com pessoas", "Faturamento necessário e principais custos de pessoal")
+    if not h:
+        _vazio(c, y, "Falta importar o histórico do painel da contabilidade (HTML) na aba Importações (V2).")
+        return
+    rc = h["recomposicao"]
+    if rc:
+        y = secao(c, y, "Recomposição out–dez: faturamento necessário para cobrir o déficit acumulado de base-line")
+        cols = [(120, "l"), (190, "r"), (205, "r")]
+        rows = [("norm", [r["rotulo"], fnum(r["projecao"]), fnum(r["para_cobrir"])]) for r in rc]
+        rows.append(("sub", ["Out–Dez", fnum(sum(r["projecao"] for r in rc)), fnum(sum(r["para_cobrir"] for r in rc))]))
+        y = tabela(c, MX, y, cols, ["Mês", "Projeção (R$)", "Para cobrir o déficit (R$)"], rows, rh=13, fs=7.2)
+        tp, tc = sum(r["projecao"] for r in rc), sum(r["para_cobrir"] for r in rc)
+        if tp > 0:
+            y = caixa_nota(c, y - 8, f"Distribuído proporcionalmente à projeção: o faturamento precisa ficar {_pc(tc / tp - 1)} acima da projeção em out–dez.")
+        y -= 10
+    pe = h["pessoas"]
+    if pe:
+        y = secao(c, y, "Custos prioritários com pessoas (valores pagos)")
+        cols = [(255, "l"), (130, "r"), (130, "r")]
+        rows = [("norm", [r["nome"][:52], fnum(r["mes"]), fnum(r["acumulado"])]) for r in pe[:14]]
+        y = tabela(c, MX, y, cols, ["Custo", "No mês (R$)", "Acumulado do ano (R$)"], rows, rh=12.6, fs=7)
+        y -= 8
+    if y > 80:
+        caixa_nota(c, y, "Valores do histórico do painel da contabilidade" + (f" (arquivo {h['arquivo']})" if h.get("arquivo") else "") + ". O detalhe por colaborador não é guardado no app.")
 
 
 def p_notas(c, n, N, ctx):
@@ -454,16 +536,16 @@ def p_notas(c, n, N, ctx):
     itens = ["Este PDF é um RASCUNHO: o layout está sendo validado e pode mudar. Os números são os mesmos das abas do painel (nenhum cálculo novo).",
              "O DRE usa a confirmação da contabilidade quando existe; sem ela, mostra o DRE oficial importado ou a reconstrução pela API, sempre identificando a origem.",
              "Edições do painel valem para dados importados e resultados gerados; não alteram o que vem da API do Sienge.",
-             "Regras marcadas como proposta (aba Regras) ainda aguardam confirmação da contabilidade; INSS/FGTS pela guia e títulos desfeitos/multas AEJ estão em validação.",
-             "Pessoas: custo da folha não inclui PJ, INSS patronal nem provisões de férias e 13º. A % de horas extras usa como base os salários do evento 1 (horas normais); o painel da contabilidade usa proventos − HE, por isso os percentuais diferem (definição a confirmar).",
-             "Ainda não estão neste PDF: acumulado jan–set, desvio mensal realizado × previsto, recomposição out–dez e custos prioritários com pessoas por colaborador (dependem do histórico jan–ago e de regras a confirmar)."]
+             "Regras confirmadas pela contabilidade em 19/10/2026: previsões fora das despesas, distrato e títulos desfeitos/multas AEJ fora; INSS/FGTS pela guia fica (a guia entra depois da emissão do PDF).",
+             "Pessoas: custo da folha não inclui PJ, INSS patronal nem provisões de férias e 13º. A % de horas extras usa como base a remuneração (proventos que não são HE nem DSR s/ HE, menos faltas), definição confirmada pela contabilidade em 19/10/2026; a diferença para o painel dela (~R$ 139 mil de proventos) vem dos recibos, que prevalecem.",
+             "Histórico do ano (acumulado, desvio mensal, recomposição out–dez e custos com pessoas): vem do painel da contabilidade importado em Importações (V2); sem essa importação, as páginas explicam o que falta."]
     for a in ctx["avisos"]:
         itens.append("Atenção na montagem do relatório: " + a + " (a seção correspondente pode estar incompleta).")
     for it in itens:
         y = para(c, "• " + it, MX + 6, y, CW - 12, size=8, lead=12, gap=5)
 
 
-PAGINAS = [p_capa, p_resumo, p_dre, p_resultado, p_obras, p_proj, p_despesas, p_adm, p_adm2, p_pessoas, p_notas]
+PAGINAS = [p_capa, p_resumo, p_dre, p_resultado, p_obras, p_proj, p_despesas, p_adm, p_adm2, p_pessoas, p_ano, p_recomp, p_notas]
 
 
 def gerar_pdf_painel(ctx: dict, status: str = "RASCUNHO", gerado_em: str = "") -> bytes:

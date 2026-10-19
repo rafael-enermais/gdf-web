@@ -554,7 +554,8 @@ def test_resultado_tira_titulos_a_pagar_desfeitos_e_multas_aej(conn):
             {**base, "billId": 65, "originalAmount": 150.0, "payments": [_pg(1, "2026-09-30", 150.0)]}]                                      # 150: fica
     _ingerir(conn, regs=regs, lado="P", tipo="I")
     custo = lambda **k: {c["plano_cod"]: c["valor"] for c in P.resultado_por_conta(conn, "2026-09", **k)}["2.01.01.04"]  # noqa: E731
-    assert custo() == -(100 + 700 + 400 + 400 + 250 + 150)                               # padrao: desligado, tudo conta
+    assert custo() == -(100 + 400 + 150)                                                 # padrao: ligado (regra confirmada pela contabilidade em 19/10)
+    assert custo(sem_desfeitos=False) == -(100 + 700 + 400 + 400 + 250 + 150)           # desligado: tudo conta
     assert custo(sem_desfeitos=True) == -(100 + 400 + 150)                              # tira AEJ, abatido e cancelado
     with conn.cursor() as cur:
         cur.execute("INSERT INTO pnl_centro_grupo (centro_custo_id, centro_nome, grupo, codigo_obra) VALUES (1049,'A','OBRA','121')")

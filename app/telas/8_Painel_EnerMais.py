@@ -203,10 +203,10 @@ with aba_res:
                              help="Mesma regra das Despesas (confirmada pela contabilidade). Vale para a conferência pela API.")
     sem_dist_r = r4.checkbox("Tirar NFs desfeitas (distrato)", value=True, key="pn2_res_distrato",
                              help="Título a receber cujas baixas do tipo Distrato somam o valor todo: o Sienge ainda o lista na API, mas o DRE dele não conta. Conferido em set/2026.")
-    sem_desf_r = st.checkbox("Tirar títulos a pagar desfeitos e multas (cancelados, substituídos, abatidos com adiantamento e tipo AEJ) — PROPOSTA, aguarda a contabilidade",
-                             value=False, key="pn2_res_desfeitos",
+    sem_desf_r = st.checkbox("Tirar títulos a pagar desfeitos e multas (cancelados, substituídos, abatidos com adiantamento e tipo AEJ) — regra confirmada pela contabilidade",
+                             value=True, key="pn2_res_desfeitos",
                              help="O DRE do Sienge não conta título a pagar cujas baixas de Cancelamento, Substituição ou Abatimento de adiantamento somam o valor todo, nem multas (documento AEJ). "
-                                  "Em set/2026 isso reduz a diferença de custo entre a API e o PDF em cerca de R$ 200 mil (sem contar INSS/FGTS em guia). Fica desligado até a confirmação.")
+                                  "Em set/2026 isso reduz a diferença de custo entre a API e o PDF em cerca de R$ 200 mil (sem contar INSS/FGTS em guia). Regra confirmada pela contabilidade em 19/10/2026 (a guia de INSS/FGTS entra depois da emissão do PDF e fica).")
     _cg = P.centro_grupo_instalado(conn)
     so_obras = r3.checkbox("Só centros de custo de obra (sem ADM)", value=_cg, disabled=not _cg, key="pn2_res_obras",
                            help="O DRE gerencial 'por obra' do Sienge não traz os centros de custo da Administração. Usa o de-para centro de custo → obra validado pela contabilidade.")
@@ -582,26 +582,26 @@ with aba_pess:
         tt = fo["total"]
         q1, q2, q3, q4 = st.columns(4)
         q1.metric("Colaboradores CLT", f"{tt['colab']}", border=True)
-        q2.metric("Salários (horas normais)", F.moeda_br(tt["salarios"]), border=True)
+        q2.metric("Remuneração (base da HE)", F.moeda_br(tt["base_he"]), border=True)
         q3.metric("Horas extras + DSR", F.moeda_br(tt["hora_extra"] + tt["dsr_he"]), border=True)
-        q4.metric("HE + DSR ÷ salários", F.pct_br(tt["he_pct"]) if tt["he_pct"] is not None else "–", border=True)
-        st.dataframe(pd.DataFrame([{"Empresa": e["empresa"], "Colab.": e["colab"], "Salários": F.moeda_br(e["salarios"]), "HE + DSR": F.moeda_br(e["hora_extra"] + e["dsr_he"]),
-                                    "HE ÷ salários": F.pct_br(e["he_pct"]) if e["he_pct"] is not None else "–", "Custo (proventos + FGTS)": F.moeda_br(e["custo"])} for e in fo["por_empresa"]]),
+        q4.metric("HE + DSR ÷ remuneração", F.pct_br(tt["he_pct"]) if tt["he_pct"] is not None else "–", border=True)
+        st.dataframe(pd.DataFrame([{"Empresa": e["empresa"], "Colab.": e["colab"], "Remuneração": F.moeda_br(e["base_he"]), "HE + DSR": F.moeda_br(e["hora_extra"] + e["dsr_he"]),
+                                    "HE ÷ remuneração": F.pct_br(e["he_pct"]) if e["he_pct"] is not None else "–", "Custo (proventos + FGTS)": F.moeda_br(e["custo"])} for e in fo["por_empresa"]]),
                      hide_index=True, width="stretch")
         st.markdown("**Colaboradores por obra**")
-        st.dataframe(pd.DataFrame([{"Obra": o["codigo"], "Nome": o["nome"], "Colab.": o["colab"], "Salários": F.moeda_br(o["salarios"]), "HE + DSR": F.moeda_br(o["hora_extra"] + o["dsr_he"]),
-                                    "HE ÷ salários": F.pct_br(o["he_pct"]) if o["he_pct"] is not None else "–", "Custo (proventos + FGTS)": F.moeda_br(o["custo"])}
+        st.dataframe(pd.DataFrame([{"Obra": o["codigo"], "Nome": o["nome"], "Colab.": o["colab"], "Remuneração": F.moeda_br(o["base_he"]), "HE + DSR": F.moeda_br(o["hora_extra"] + o["dsr_he"]),
+                                    "HE ÷ remuneração": F.pct_br(o["he_pct"]) if o["he_pct"] is not None else "–", "Custo (proventos + FGTS)": F.moeda_br(o["custo"])}
                                    for o in sorted(fo["por_obra"].values(), key=lambda o: -o["colab"])]), hide_index=True, width="stretch")
         if fo["sem_depara"]:
             st.warning("Departamentos da folha sem de-para com obra (cadastre em `pnl_folha_depto_obra`): "
                        + "; ".join(f"{x['empresa']} {x['departamento']} ({x['subnivel'] or '–'}, {x['colab']} colab.)" for x in fo["sem_depara"]))
-        st.caption("Salários = evento 1 (Horas Normais) dos recibos. Horas extras = eventos de HE 50/60/80/100/110% (inclui HE de mês anterior) + DSR s/ HE, como a contabilidade pediu. "
+        st.caption("Remuneração (base da HE, definição da contabilidade) = proventos que não são HE nem DSR s/ HE, menos descontos de faltas; “Salários” = só o evento 1 (horas normais). Horas extras = eventos de HE 50/60/80/100/110% (inclui HE de mês anterior) + DSR s/ HE, como a contabilidade pediu. "
                    "Custo = total de proventos + FGTS do mês (não inclui INSS patronal, férias/13º provisionados nem os PJ). Fonte: "
                    + "; ".join(f"“{i['arquivo']}” ({i['escopo']}, importação #{i['id']})" for i in fo["importacoes"]) + ".")
         _sf = [x for x in P.folha_serie(conn) if x["he_pct"] is not None]
         if len(_sf) >= 2:
-            st.markdown("**HE + DSR ÷ salários CLT por mês**")
-            _grafico_meses([round(x["he_pct"] * 100, 1) for x in _sf], [x["mes"] for x in _sf], "HE ÷ salários (%)", linha=True)
+            st.markdown("**HE + DSR ÷ remuneração CLT por mês**")
+            _grafico_meses([round(x["he_pct"] * 100, 1) for x in _sf], [x["mes"] for x in _sf], "HE ÷ remuneração (%)", linha=True)
     st.divider()
     st.markdown("Evolução do **faturamento** mês a mês.")
     _mes_cur = f"{dt.date.today().year}-{dt.date.today().month:02d}"

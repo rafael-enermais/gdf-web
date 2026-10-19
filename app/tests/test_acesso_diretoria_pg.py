@@ -72,7 +72,7 @@ def test_painel_da_diretoria_com_dados_e_abas(conn):
     with patch("conexao.get_conn", return_value=conn):
         at = _app_como(conn, "diretor@empresa.com").run()
         assert not at.exception, at.exception
-        assert [t.label for t in at.tabs] == ["Obras", "Administração", "Despesas", "Pessoas", "Resultado (DRE)"]
+        assert [t.label for t in at.tabs] == ["Ano", "Obras", "Administração", "Despesas", "Pessoas", "Resultado (DRE)"]
         assert any("Receita" == m.label for m in at.metric)
         at.text_input(key="dir_ob_busca").input("zzz-inexistente").run()                 # busca sem resultado nao quebra
         assert not at.exception, at.exception

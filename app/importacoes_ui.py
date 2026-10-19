@@ -8,13 +8,14 @@ import pandas as pd
 import streamlit as st
 
 import formatacao as F
+import historico
 import importador_dre
 import importador_folha
 import importador_orcamento
 import importador_projecao
 import painel_db as P
 
-TIPOS = {"DRE": "DRE oficial (PDF)", "FOLHA": "Folha (PDF)", "PROJECAO": "Projeção (xlsx)", "ORCAMENTO": "Orçamento ADM (PDF)"}
+TIPOS = {"DRE": "DRE oficial (PDF)", "FOLHA": "Folha (PDF)", "PROJECAO": "Projeção (xlsx)", "ORCAMENTO": "Orçamento ADM (PDF)", "HISTORICO": "Histórico do painel (HTML)"}
 _BR = dt.timezone(dt.timedelta(hours=-3))
 
 
@@ -197,6 +198,59 @@ def up_folha(conn, usuario):
 
 
 
+def up_historico(conn, usuario):
+    """Upload do HTML (ou JSON) do painel da contabilidade: guarda o historico do ano (acumulado, desvio mensal, recomposicao, HE, custos com pessoas) so' no banco."""
+    atual = historico.ativo(conn) if historico.instalado(conn) else None
+    with st.expander("Importar o histórico do painel da contabilidade (HTML)", expanded=atual is None):
+        if not historico.instalado(conn):
+            st.warning("Falta executar o arquivo `sql/v2_historico.sql` (SQL-21) no Supabase para o app guardar o histórico. Você já pode ler o arquivo e ver o resultado; só não dá para salvar.")
+        st.caption("Envie o HTML do painel (ex.: “Painel EnerMais Setembro_2026.html”). O app lê só os números do ano (acumulado, desvio mensal, recomposição, horas extras e custos com pessoas); "
+                   "nomes de colaboradores e credores do arquivo são descartados. Os números ficam só no banco, nunca no GitHub.")
+        if atual:
+            st.info(f"Em uso: histórico até {atual['mes'][5:]}/{atual['mes'][:4]} — “{atual['arquivo']}” (importação #{atual['id']}).")
+        arq = st.file_uploader("HTML do painel (ou JSON do histórico)", type=["html", "htm", "json"], key="pn2_up_hist")
+        if arq is not None:
+            b = arq.getvalue()
+            sha = P.sha256_curto(b)
+            ch = f"pn2_hist_lido_{sha}"
+            if ch not in st.session_state:
+                try:
+                    st.session_state[ch] = historico.ler_historico(b, arq.name)
+                except historico.ErroHistorico as exc:
+                    st.session_state[ch] = str(exc)
+                    P.registrar_log(conn, "HISTORICO_ERRO", "ERRO", usuario, None, {"arquivo": arq.name, "sha256": sha, "erro": str(exc)[:300]})
+            lido = st.session_state[ch]
+            if isinstance(lido, str):
+                st.error(lido)
+                return
+            ano_pad = dt.date.today().year
+            ult = historico.MESES.index(lido["meses"][-1]) + 1 if lido["meses"] and lido["meses"][-1] in historico.MESES else 1
+            c1, c2 = st.columns(2)
+            ano = c1.number_input("Ano do painel", min_value=2024, max_value=2100, value=ano_pad, step=1, key=f"pn2_hist_ano_{sha}")
+            mes_n = c2.selectbox("Último mês do painel", list(range(1, 13)), index=ult - 1, format_func=lambda i: historico.MESES[i - 1], key=f"pn2_hist_mes_{sha}")
+            mes = f"{int(ano)}-{mes_n:02d}"
+            h = {"mes": mes, "dados": lido["dados"]}
+            r = historico.resumo(h)
+            st.success(f"Painel lido: meses de desvio {', '.join(m['rotulo'] for m in r['desvio_meses'])} · acumulado do ano: receita {F.moeda_br(r['acumulado']['rec'])}, "
+                       f"resultado {F.moeda_br(r['acumulado']['res'])} · recomposição out–dez: {len(r['recomposicao'])} meses · {len(r['serie_he'])} meses de horas extras.")
+            for av in lido["avisos"]:
+                st.warning(av)
+            if not lido["avisos"]:
+                st.caption("Conferido: receita − custo = BDI e BDI − administração = resultado, no mês e no acumulado.")
+            if not _ja_salvo(conn, "HISTORICO", b) and st.button(f"Salvar como histórico até {mes_n:02d}/{int(ano)}", type="primary", disabled=not historico.instalado(conn),
+                                                                 key=f"pn2_hist_salvar_{sha}"):
+                try:
+                    res = historico.gravar(conn, lido, mes, arq.name, usuario)
+                    if res["repetido"]:
+                        st.info(f"Este mesmo arquivo já foi importado antes (importação #{res['id']}, mês {res['mes']}).")
+                    else:
+                        P.registrar_log(conn, "HISTORICO_IMPORTADO", "INFO", usuario, mes, {"arquivo": arq.name, "sha256": lido["sha256"][:16], "importacao_id": res["id"], "meses": len(lido["meses"])})
+                        st.success(f"Histórico até {mes_n:02d}/{int(ano)} salvo (importação #{res['id']}).")
+                        st.rerun()
+                except Exception as exc:
+                    st.error(f"Não consegui salvar: {exc}")
+
+
 # ---------------------------------------------------------------- situacao, historico, reverter
 def _situacao(conn):
     """Lista de conferencia do mes: o que ja foi importado (em uso) e o que falta."""
@@ -302,7 +356,7 @@ def _editor(conn, usuario):
     if not P.edicao_instalada(conn):
         st.warning("Falta executar o **SQL-19** (`sql/v2_edicao.sql`) no Supabase para poder editar.")
         return
-    lista = P.importacoes_lista(conn)
+    lista = [i for i in P.importacoes_lista(conn) if i["tipo"] in P.EDIT_CFG]   # o histórico do painel (HTML) não tem grade de edição: reverte-se pelo histórico de importações
     if not lista:
         st.info("Nenhuma importação para editar.")
         return
@@ -441,6 +495,7 @@ def render(conn, usuario):
     up_folha(conn, usuario)
     up_projecao(conn, usuario)
     up_orcamento(conn, usuario)
+    up_historico(conn, usuario)
     st.divider()
     _historico(conn, usuario)
     st.divider()
