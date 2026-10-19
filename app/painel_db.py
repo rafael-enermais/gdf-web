@@ -913,10 +913,15 @@ def adm_resumo(linhas: list, chaves_outros: list | None = None, nomes: dict | No
 def receita_mensal(conn, mes_atual: str | None = None, sem_distrato: bool = True) -> list:
     """Receita bruta por mes, da fonte mais confiavel que existir: 1) DRE CONFIRMADO do mes (linha 01.01); 2) DRE oficial importado (PDF, linha 01);
     3) reconstrucao pela API (titulos emitidos no mes, sem previsao e sem NF desfeita). O mes em andamento ('mes_atual') fica de fora (incompleto).
-    Devolve [{'mes','receita','fonte','var'}] em ordem; 'var' = variacao sobre o mes anterior (fracao) so' quando os dois meses vieram da lista e o anterior e' > 0."""
+    Meses so' com API (sem DRE importado/confirmado) ANTES da primeira sincronizacao de emissao ficam de fora: la a base tem so' residuos de titulos
+    antigos (receita parcial, variacao % absurda). Devolve [{'mes','receita','fonte','var'}] em ordem; 'var' = variacao sobre o mes anterior (fracao)
+    so' quando os dois meses vieram da lista e o anterior e' > 0."""
     meses = set(meses_com_emissao(conn)) | set(meses_com_dre(conn)) | set(meses_confirmados(conn))
     if mes_atual:
         meses.discard(mes_atual)
+    with conn.cursor() as cur:
+        cur.execute("SELECT to_char(min(mes), 'YYYY-MM') FROM pnl_sync WHERE lado='R' AND tipo_data='I' AND status <> 'ERRO'")
+        cobertura_ini = cur.fetchone()[0]
     out = []
     for m in sorted(meses):
         rec, fonte = None, None
@@ -929,6 +934,8 @@ def receita_mensal(conn, mes_atual: str | None = None, sem_distrato: bool = True
                 rec = round(sum(o["linhas"].get("01", 0.0) for o in dre_por_obra_importado(conn, imp["id"]).values()), 2)
                 fonte = "DRE oficial (PDF)"
         if rec is None:
+            if cobertura_ini and m < cobertura_ini:
+                continue
             rec = float(dre_do_mes(resultado_por_conta(conn, m, sem_previsao=True, sem_distrato=sem_distrato))["valores"]["01"])
             fonte = "API (a conferir)"
         if abs(rec) > 0.004:

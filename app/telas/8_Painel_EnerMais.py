@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """GDF V2 — Painel EnerMais (EM CONSTRUCAO): sincroniza o Sienge, confere com o CSV e mostra a previa da aba Despesas.
 As demais abas (Resultado, Obras, Administracao, Pessoas) e o PDF entram nas proximas etapas."""
+import altair as alt
 import pandas as pd
 import datetime as dt
 
@@ -12,6 +13,15 @@ import painel_db as P
 import sienge_api as S
 from auth import usuario_atual
 from conexao import get_conn, sidebar_rodape
+
+
+def _grafico_meses(valores: list, meses: list, nome: str, linha: bool = False):
+    """Grafico por mes na ORDEM CRONOLOGICA (o st.bar_chart ordena o texto 'MM/AAAA' em ordem alfabetica e embaralha os anos). Rotulo MM/AAAA."""
+    rot = [f"{m[5:]}/{m[:4]}" for m in meses]
+    df = pd.DataFrame({"Mês": rot, nome: valores})
+    base = alt.Chart(df).encode(x=alt.X("Mês:N", sort=rot, axis=alt.Axis(labelAngle=-90)), y=alt.Y(f"{nome}:Q", title=nome),
+                                tooltip=["Mês", alt.Tooltip(f"{nome}:Q", format=",.2f")])
+    st.altair_chart((base.mark_line(point=True) if linha else base.mark_bar()), width="stretch")
 
 usuario = usuario_atual()
 conn = get_conn()
@@ -506,7 +516,7 @@ with aba_adm:
             evo = P.adm_evolucao(conn, meses_a[0], mes_a, pref_a, sem_previsao=prev_a)
             if len(evo) > 1:
                 st.markdown("**Evolução mensal (pago nas unidades ADM)**")
-                st.bar_chart(pd.DataFrame({"Pago (R$)": [e["valor"] for e in evo]}, index=[f"{e['mes'][5:]}/{e['mes'][:4]}" for e in evo]))
+                _grafico_meses([e["valor"] for e in evo], [e["mes"] for e in evo], "Pago (R$)")
         st.info("**Orçado × realizado** (orçamento ADM do Sienge) entra quando o relatório *Orçamento ADM* (PDF) for importado — o leitor desse arquivo é a próxima etapa desta aba.")
     with st.expander("De-para de credores: quem fica em “Outros credores/Dir” (fora do ranking)"):
         if not P.credor_grupo_instalado(conn):
@@ -541,17 +551,17 @@ with aba_pess:
     else:
         rotulo = lambda m: f"{m[5:]}/{m[:4]}"
         st.markdown("**Receita bruta por mês**")
-        st.bar_chart(pd.DataFrame({"Receita (R$)": [x["receita"] for x in serie]}, index=[rotulo(x["mes"]) for x in serie]))
+        _grafico_meses([x["receita"] for x in serie], [x["mes"] for x in serie], "Receita (R$)")
         com_var = [x for x in serie if x["var"] is not None]
         if com_var:
             st.markdown("**Receita: variação % sobre o mês anterior**")
-            st.line_chart(pd.DataFrame({"Variação (%)": [round(x["var"] * 100, 1) for x in com_var]}, index=[rotulo(x["mes"]) for x in com_var]))
+            _grafico_meses([round(x["var"] * 100, 1) for x in com_var], [x["mes"] for x in com_var], "Variação (%)", linha=True)
         st.dataframe(pd.DataFrame([{"Mês": rotulo(x["mes"]), "Receita bruta": F.moeda_br(x["receita"]),
                                     "Var. % s/ mês anterior": (F.pct_br(x["var"]) if x["var"] is not None else "–"), "Fonte": x["fonte"]} for x in serie]),
                      hide_index=True, width="stretch")
         if any(x["fonte"].startswith("API") for x in serie):
             st.caption("Meses marcados “API (a conferir)” foram reconstruídos pelo Sienge (sem previsão e sem NF desfeita) e ainda não têm DRE oficial importado/confirmado; "
-                       "para fechar o painel, importe o DRE desses meses na aba Resultado.")
+                       "para fechar o painel, importe o DRE desses meses na aba Resultado. Meses anteriores à primeira sincronização do Sienge só aparecem quando têm DRE importado/confirmado.")
 
 with aba_regras:
     st.markdown("Regras usadas para montar cada aba do painel. As marcadas como **proposta** foram deduzidas dos arquivos de setembro e "

@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import json
 import pytest
 from streamlit.testing.v1 import AppTest
 
@@ -145,6 +146,33 @@ def test_receita_mensal_pula_variacao_quando_falta_mes(conn):
         sid = P.criar_sync(conn, iss[:7], "R", "I", "teste@x")
         P.gravar_normalizado(conn, sid, S.normalizar_titulos("R", [dict(income()[0], billId=bid, issueDate=iss, originalAmount=1000.0)]))
     assert [x["var"] for x in P.receita_mensal(conn)] == [None, None]                           # jun -> set nao e' "mes anterior"
+
+
+@pytest.mark.pg
+def test_receita_mensal_ignora_meses_de_api_antes_da_primeira_sincronizacao(conn):
+    """Mes antigo so' com residuo da API (ex.: titulo emitido em 2025-05 e sincronizado depois) nao entra; com DRE confirmado entra."""
+    sid = P.criar_sync(conn, "2026-08", "R", "I", "teste@x")
+    P.gravar_normalizado(conn, sid, S.normalizar_titulos("R", [
+        dict(income()[0], billId=70, issueDate="2026-05-10", originalAmount=300.0),
+        dict(income()[0], billId=71, issueDate="2026-08-10", originalAmount=1000.0)]))
+    assert [x["mes"] for x in P.receita_mensal(conn)] == ["2026-08"]
+    P.gravar_confirmacao(conn, "2026-05", {"01.01": "PDF"}, {"01.01": 900.0}, "teste@x")
+    assert [x["mes"] for x in P.receita_mensal(conn)] == ["2026-05", "2026-08"]
+
+
+@pytest.mark.pg
+def test_graficos_da_aba_pessoas_em_ordem_cronologica(conn):
+    """A ordem do eixo X e' a da lista (cronologica), nao a alfabetica de 'MM/AAAA' (que poria 01/2026 antes de 12/2025)."""
+    for iss, bid in (("2025-12-10", 80), ("2026-01-10", 81)):
+        sid = P.criar_sync(conn, iss[:7], "R", "I", "teste@x")
+        P.gravar_normalizado(conn, sid, S.normalizar_titulos("R", [dict(income()[0], billId=bid, issueDate=iss, originalAmount=1000.0)]))
+    with patch("conexao.get_conn", return_value=conn):
+        at = _tela(conn).run()
+    assert not at.exception, at.exception
+    graficos = [json.loads(c.proto.spec) for c in at.get("vega_lite_chart")]
+    assert graficos
+    ordens = [g["encoding"]["x"]["sort"] for g in graficos]
+    assert ["12/2025", "01/2026"] in ordens
 
 
 def _tela(conn):
