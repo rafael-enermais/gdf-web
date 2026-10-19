@@ -36,3 +36,10 @@ def test_resumo_nao_imprime_valores_em_reais_nem_nomes():
 
 def test_resumo_lista_vazia_nao_quebra():
     assert D.resumir([])["titulos"] == 0
+
+
+def test_resumo_por_documento_e_taxas():
+    res = D.resumir(_regs())
+    assert res["titulos_sem_previsao"] == 2 and res["taxas_do_titulo_contagem"] == {7.75: 1}          # 155 / 2000
+    assert res["por_documento"]["NFS"]["titulos"] == 2 and res["por_documento"]["NFS"]["taxAmount_pct_do_original_do_documento"] == 3.1
+    assert res["taxAmount_do_titulo_pct_do_original_sem_previsao"] == 3.1

@@ -59,8 +59,28 @@ def resumir(regs: list) -> dict:
                     for k, v in c.items():
                         if "categoryid" in k.lower().replace("_", "") and v not in (None, ""):
                             cats[S.cod_plano(v)] += 1
+    # taxa de imposto do titulo (taxAmount / originalAmount, em %, 2 casas): so' contagem por taxa; e por tipo de documento (codigos genericos: NFS, FAT...)
+    taxas = Counter()
+    por_doc: dict = {}
+    for r in regs:
+        orig, tx = _num(r.get("originalAmount")) or 0.0, _num(r.get("taxAmount")) or 0.0
+        if orig > 0 and tx > 0.004:
+            taxas[round(100.0 * tx / orig, 2)] += 1
+        d = por_doc.setdefault(str(r.get("documentIdentificationId") or "").strip() or "?", {"titulos": 0, "orig": 0.0, "tax": 0.0, "previsao_S": 0})
+        d["titulos"] += 1
+        d["orig"] += orig
+        d["tax"] += tx
+        d["previsao_S"] += 1 if str(r.get("documentForecast") or "").upper() == "S" else 0
+    sem_prev = [r for r in regs if str(r.get("documentForecast") or "").upper() != "S"]
+    base_sp = sum(_num(r.get("originalAmount")) or 0.0 for r in sem_prev)
+    tax_sp = sum(_num(r.get("taxAmount")) or 0.0 for r in sem_prev)
     return {
         "titulos": len(regs),
+        "titulos_sem_previsao": len(sem_prev),
+        "taxAmount_do_titulo_pct_do_original_sem_previsao": round(100.0 * tax_sp / base_sp, 4) if base_sp else None,
+        "taxas_do_titulo_contagem": dict(sorted(taxas.items(), key=lambda kv: -kv[1])[:20]),
+        "por_documento": {k: {"titulos": v["titulos"], "previsao_S": v["previsao_S"], "pct_do_original": round(100.0 * v["orig"] / base, 2) if base else None,
+                              "taxAmount_pct_do_original_do_documento": round(100.0 * v["tax"] / v["orig"], 4) if v["orig"] else None} for k, v in sorted(por_doc.items())},
         "campos_do_titulo": sorted({k for r in regs for k in r.keys()}),
         "campos_do_titulo_preenchidos": {k: sum(1 for r in regs if r.get(k) not in (None, "", [], {})) for k in sorted({k for r in regs for k in r.keys()})},
         "numericos_do_titulo_pct_do_original": {k: (pct(s), q) for k, (s, q) in sorted(topo.items()) if not k.lower().endswith("id")},
