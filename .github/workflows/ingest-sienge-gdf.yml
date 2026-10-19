@@ -25,6 +25,12 @@ on:
         required: false
         default: false
 
+      impostos:
+        description: "Só procurar onde estão os impostos sobre o faturamento (contas a receber de um mês, sem gravar nada)? (usa o campo meses = AAAA-MM; vazio = 2026-09)"
+        type: boolean
+        required: false
+        default: false
+
 permissions:
   contents: read
 
@@ -44,7 +50,7 @@ jobs:
       - name: Instalar dependencia
         run: pip install psycopg2-binary==2.9.13
       - name: Buscar no Sienge e gravar no Supabase
-        if: ${{ github.event.inputs.diagnostico != 'true' && github.event.inputs.banco != 'true' }}
+        if: ${{ github.event.inputs.diagnostico != 'true' && github.event.inputs.banco != 'true' && github.event.inputs.impostos != 'true' }}
         env:
           SIENGE_USER: ${{ secrets.SIENGE_USER }}
           SIENGE_PASSWORD: ${{ secrets.SIENGE_PASSWORD }}
@@ -74,3 +80,12 @@ jobs:
           GDF_BANCO_MES: ${{ github.event.inputs.meses }}
           PYTHONUNBUFFERED: "1"
         run: python scripts/diagnostico_banco_sienge_gdf.py
+      - name: Impostos sobre o faturamento (somente leitura, nao grava)
+        if: ${{ github.event.inputs.impostos == 'true' }}
+        env:
+          SIENGE_USER: ${{ secrets.SIENGE_USER }}
+          SIENGE_PASSWORD: ${{ secrets.SIENGE_PASSWORD }}
+          SIENGE_BASE_URL: ${{ secrets.SIENGE_BASE_URL }}
+          GDF_IMPOSTOS_MES: ${{ github.event.inputs.meses }}
+          PYTHONUNBUFFERED: "1"
+        run: python scripts/diagnostico_receita_impostos_gdf.py
