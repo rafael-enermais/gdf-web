@@ -61,3 +61,40 @@ GUIA_CONFERENCIAS = {
 
 QUANDO_PEDIR_AJUDA = ("Antes de pedir ajuda, anote: o **mês**, a **tela** em que aconteceu e a **mensagem** que apareceu (pode tirar um print). "
                       "Não envie senhas. O **Histórico → Log de eventos** mostra o que foi feito e por quem.")
+
+
+# ------------------------------------------------------------------ Painel EnerMais (V2): fluxo, o que fazer quando algo nao bate
+FLUXO_V2 = [
+    ("Para que serve", "O **Painel EnerMais** (menu à esquerda) monta o resultado do Grupo EnerMais: o que vem do Sienge o app busca sozinho; o que não vem do Sienge (PDFs e planilha) você envia na aba **Importações (V2)**. É separado do balancete (V1): uma coisa não mexe na outra."),
+    ("Sincronizar com o Sienge", "Aba **Sincronizar com o Sienge**: o app já busca sozinho todo dia os últimos 365 dias de contas a pagar e a receber. O botão **Buscar no Sienge** serve para atualizar na hora. O app só **lê** o Sienge, nunca grava lá."),
+    ("Enviar os arquivos", "Aba **Importações (V2)**: envie o **DRE gerencial** (PDF por obra), a **folha** (PDF de recibos da Construtora e da Energia), a **projeção de receita** (xlsx) e o **Orçamento ADM** (PDF). Depois de ler, o app mostra o que entendeu; confira e clique em **Salvar**. Depois de salvo aparece **Já salvo no banco** com número, mês, linhas, quem e quando."),
+    ("Conferir o que está em uso", "No topo de **Importações (V2)** o quadro mostra, mês a mês, o que está em uso (DRE, folha de cada empresa, projeção e orçamento). Enviar de novo o **mesmo arquivo** não duplica nada; enviar um **novo do mesmo mês** substitui o anterior (o antigo fica guardado)."),
+    ("Corrigir ou desfazer", "Ainda em **Importações (V2)**: no **histórico** dá para marcar uma importação como **fora de uso** e depois **reativar** (nada é apagado). Se a leitura errou um valor, edite na grade: escolha a importação, corrija, escreva o motivo e salve; o **antes e o depois** ficam no histórico de edições. Dá para **adicionar linhas** que a leitura perdeu. Os dados que vêm direto da API do Sienge **não** são editados."),
+    ("Cadastros", "No fim de **Importações (V2)**: **departamento da folha → obra** e **credores em “Outros credores/Dir”**. Pode corrigir ou acrescentar; nada é apagado."),
+    ("Resultado: confirmar o DRE do mês", "Aba **Resultado**: compara o DRE do PDF com o recalculado pela API. Em **Confirmar o DRE do mês** escolha, linha a linha, a fonte: **API**, **PDF** ou **MANUAL** (você digita o valor, útil se a leitura do PDF falhou). Ajuste manual exige uma **observação** e fica registrado com o valor da API e do PDF. Confirmar de novo não apaga a anterior."),
+    ("Despesas, Obras, Administração e Pessoas", "**Despesas**: pago por conta, com as regras da aba **Regras**. **Obras**: resultado por obra e projeção × realizado. **Administração**: despesas das unidades ADM, credores, orçado × realizado e desvio mês a mês. **Pessoas**: série de receita, colaboradores e folha por obra, horas extras ÷ salários."),
+    ("Regras e Histórico e logs", "**Regras**: o que entra e o que sai de cada aba; proposta vira confirmada quando a contabilidade confirma. **Histórico e logs**: tudo que foi sincronizado, importado, editado ou deu erro."),
+]
+
+# situacao do Painel EnerMais -> (o que significa, causas provaveis, o que fazer)
+GUIA_V2 = {
+    "A receita da API não bate com o PDF": ("O DRE recalculado pela API tem receita diferente da do PDF do Sienge.",
+                                            "NF desfeita por distrato (o Sienge ainda lista na API mas o DRE não conta) ou documento de previsão.",
+                                            "Na aba **Resultado**, deixe marcados **Tirar NFs desfeitas (distrato)** e **Tirar documentos de previsão**. Se ainda houver diferença, a tabela de conferência mostra a conta e a obra."),
+    "O custo da API é maior que o do PDF": ("Em Mão de obra, Materiais ou Frota a API soma mais que o PDF.",
+                                           "(1) INSS e FGTS pagos em guia entram na API e o PDF só leva a parte já apropriada (regra aguardando a contabilidade); (2) títulos desfeitos (cancelados, substituídos ou abatidos com adiantamento) e multas (tipo AEJ), que o Sienge não conta no DRE; (3) diferenças pequenas e redondas de lançamento.",
+                                           "Na aba **Resultado** use **Tirar títulos a pagar desfeitos e multas** (proposta, aguarda a contabilidade) para ver o efeito. Enquanto a regra não for confirmada, escolha a fonte **PDF** na linha ao confirmar o DRE."),
+    "A leitura de um PDF errou um valor": ("O app leu um número diferente do que está no PDF, ou perdeu uma linha.",
+                                          "Layout diferente do habitual, página cortada ou texto ilegível.",
+                                          "Em **Importações (V2)**, edite o valor na grade (com motivo) ou adicione a linha. No DRE do mês use **MANUAL** na linha. Nada é apagado e o antes/depois fica no histórico."),
+    "Subi o arquivo errado": ("Foi salvo um arquivo que não era o certo.",
+                              "Arquivo do mês errado ou versão antiga.",
+                              "Em **Importações (V2) → histórico**, marque a importação como **fora de uso** (e reative a anterior, se quiser). Depois envie o arquivo certo."),
+    "A projeção não casa com as obras": ("Alguma obra da planilha de projeção aparece em “sem correspondência”.",
+                                        "O nome da obra na planilha é diferente do nome no DRE ou no cadastro de obras.",
+                                        "Ajuste o nome em **Cadastros** (departamento → obra) ou corrija a planilha e envie de novo."),
+    "Um credor não aparece em Outros credores/Dir": ("O credor foi cadastrado mas o valor continua no ranking.",
+                                                    "O nome no Sienge é diferente do que foi cadastrado (o app reconhece o credor pelo **começo** do nome).",
+                                                    "Em **Importações (V2) → credores**, ajuste o texto para o começo exato do nome no Sienge."),
+}
+

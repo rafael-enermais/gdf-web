@@ -15,7 +15,7 @@ sidebar_rodape()
 st.title("Ajuda")
 st.caption("Guia rápido do fluxo, o que fazer quando algo não bate e o significado dos indicadores.")
 
-aba_fluxo, aba_conf, aba_gloss = st.tabs(["Fluxo do mês", "Quando algo não bate", "Glossário"])
+aba_fluxo, aba_conf, aba_gloss, aba_v2 = st.tabs(["Fluxo do mês", "Quando algo não bate", "Glossário", "Painel EnerMais (V2)"])
 with aba_fluxo:
     for n, (titulo, texto) in enumerate(ajuda.FLUXO, 1):
         st.markdown(f"**{n}. {titulo}** — {texto}")
@@ -38,3 +38,15 @@ with aba_gloss:
               for rot, chave, _k, formula in tabelas.INDICADORES_LINHAS if chave]
     st.dataframe(pd.DataFrame(linhas), hide_index=True, width="stretch", height=35 * (len(linhas) + 1) + 3)
     st.caption("Resultados são acumulados no ano. A receita de construção e a remuneração do ativo de contrato só entram ao final do exercício e/ou na entrada em operação da obra.")
+with aba_v2:
+    st.caption("O Painel EnerMais é separado do balancete: aqui valem os dados do Sienge e os arquivos enviados na aba Importações (V2).")
+    for n, (titulo, texto) in enumerate(ajuda.FLUXO_V2, 1):
+        st.markdown(f"**{n}. {titulo}** — {texto}")
+    st.divider()
+    st.markdown("**Quando algo não bate no Painel EnerMais**")
+    situ = st.selectbox("O que aconteceu", list(ajuda.GUIA_V2), key="ajuda_v2_situ")
+    sig2, causa2, fazer2 = ajuda.GUIA_V2[situ]
+    st.markdown(f"**O que significa:** {sig2}")
+    st.markdown(f"**Causas prováveis:** {causa2}")
+    st.markdown(f"**O que fazer:** {fazer2}")
+    st.info("Nada é apagado: importações desfeitas ficam guardadas, edições ficam registradas (antes, depois, quem, quando) e confirmações antigas do DRE continuam no histórico.")

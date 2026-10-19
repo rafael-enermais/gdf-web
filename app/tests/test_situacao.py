@@ -74,3 +74,10 @@ def test_textos_nao_dizem_passou_de_x_para_x_nem_caixa_repetido():
     assert "aumento de" in t["dest_2"] and "menor saldo" not in t["evo_1"]
     assert "AFAC de R$ 0,00" not in t["dest_3"] and "dez/25 para R$ 1.000.000,00 em dez/25" not in t["evo_1"]
     assert "O único fornecedor" in t["comp_2"]
+
+
+def test_ajuda_painel_v2_completa():
+    assert len(ajuda.FLUXO_V2) >= 8 and all(t and x for t, x in ajuda.FLUXO_V2)
+    assert all(len(v) == 3 and all(v) for v in ajuda.GUIA_V2.values())
+    assert any("MANUAL" in x for _, x in ajuda.FLUXO_V2)
+

@@ -430,6 +430,17 @@ def _filtro_distrato(sem_distrato: bool) -> str:
                                             AND dx.tipo_oper_id=7 HAVING COALESCE(sum(dx.bruto),0) >= COALESCE(t.valor_original,0) - 0.01))"""
 
 
+def _filtro_desfeitos(sem_desfeitos: bool) -> str:
+    """PROPOSTA (conferida em set/2026, aguarda a contabilidade): o DRE gerencial do Sienge NAO conta (a) titulos a PAGAR cujas baixas dos tipos Cancelamento (3),
+    Substituicao (5) ou Abatimento de adiantamento (8) somam o valor todo, nem (b) documentos do tipo AEJ (multas). Aplicar isso reduz a diferenca de
+    custo API x PDF em ~R$ 200 mil (de R$ 272 mil para R$ 69 mil, fora INSS/FGTS em guia). Desligado por padrao ate a confirmacao."""
+    if not sem_desfeitos:
+        return ""
+    return """AND NOT (t.lado='P' AND (upper(trim(COALESCE(t.doc_id,''))) = 'AEJ'
+                   OR (SELECT COALESCE(sum(dx.bruto),0) FROM pnl_baixa dx WHERE dx.lado=t.lado AND dx.bill_id=t.bill_id AND dx.installment_id=t.installment_id
+                       AND dx.tipo_oper_id IN (3,5,8)) >= GREATEST(COALESCE(t.valor_original,0) - 0.01, 0.01)))"""
+
+
 def centro_grupo_instalado(conn) -> bool:
     """True se a tabela do de-para (sql/v2_centro_grupo.sql) existe E ja tem linhas (os dados vem do vault)."""
     try:
@@ -440,14 +451,14 @@ def centro_grupo_instalado(conn) -> bool:
         return False
 
 
-def resultado_por_conta(conn, mes: str, sem_previsao: bool = False, so_obras: bool = False, sem_distrato: bool = True) -> list:
+def resultado_por_conta(conn, mes: str, sem_previsao: bool = False, so_obras: bool = False, sem_distrato: bool = True, sem_desfeitos: bool = False) -> list:
     """Valor COMPROMETIDO do mes por conta do plano: soma(valor do titulo x % do rateio) dos titulos EMITIDOS no mes, com sinal de DRE
     (receita +, custo -). `so_obras` tira os centros de custo do grupo ADM (de-para pnl_centro_grupo); centro sem de-para fica dentro.
     Devolve [{'plano_cod','plano_nome','valor'}]. Mesmo criterio do DRE gerencial 'Comprometido, selecao por data de emissao'."""
     ini = f"{mes}-01"
     filtro = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
     filtro_prev = filtro                                    # descontos das baixas: so previsao (nao distrato; conferido sem esse filtro)
-    filtro += " " + _filtro_distrato(sem_distrato)
+    filtro += " " + _filtro_distrato(sem_distrato) + " " + _filtro_desfeitos(sem_desfeitos)
     juncao = "LEFT JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id" if so_obras else ""
     filtro_cc = "AND COALESCE(g.grupo,'') <> 'ADM'" if so_obras else ""
     with conn.cursor() as cur:
@@ -485,11 +496,11 @@ def resultado_por_conta(conn, mes: str, sem_previsao: bool = False, so_obras: bo
     return sorted(por.values(), key=lambda d: d["plano_cod"])
 
 
-def resultado_por_centro(conn, mes: str, sem_previsao: bool = False, sem_distrato: bool = True) -> list:
+def resultado_por_centro(conn, mes: str, sem_previsao: bool = False, sem_distrato: bool = True, sem_desfeitos: bool = False) -> list:
     """Diagnostico: receita e custo (so contas do DRE de obras: 1.01.01 e 2.01.*) por centro de custo, com o grupo do de-para (ou 'sem de-para')."""
     ini = f"{mes}-01"
     filtro = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
-    filtro += " " + _filtro_distrato(sem_distrato)
+    filtro += " " + _filtro_distrato(sem_distrato) + " " + _filtro_desfeitos(sem_desfeitos)
     with conn.cursor() as cur:
         try:
             cur.execute(f"""SELECT r.centro_custo_id, max(r.centro_custo_nome), max(g.grupo), max(g.codigo_obra), t.lado, sum(t.valor_original * r.percentual / 100.0)
@@ -688,11 +699,11 @@ def obras_do_dre(conn, mes: str) -> dict | None:
             "top_lucro": sorted(proprias, key=lambda l: -l["bdi"])[:5], "top_prejuizo": sorted((l for l in proprias if l["bdi"] < 0), key=lambda l: l["bdi"])[:5]}
 
 
-def resultado_por_obra_api(conn, mes: str, sem_previsao: bool = False, sem_distrato: bool = True) -> dict:
+def resultado_por_obra_api(conn, mes: str, sem_previsao: bool = False, sem_distrato: bool = True, sem_desfeitos: bool = False) -> dict:
     """Mesmo calculo do resultado_por_conta, agrupado pelo codigo da obra do de-para: {codigo_obra: {linha_dre: valor}} (+ 'sem de-para')."""
     ini = f"{mes}-01"
     filtro = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
-    filtro += " " + _filtro_distrato(sem_distrato)
+    filtro += " " + _filtro_distrato(sem_distrato) + " " + _filtro_desfeitos(sem_desfeitos)
     with conn.cursor() as cur:
         try:
             cur.execute(f"""SELECT COALESCE(g.codigo_obra,'sem de-para'), t.lado, r.plano_cod, sum(t.valor_original * r.percentual / 100.0)

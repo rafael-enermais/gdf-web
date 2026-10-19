@@ -410,7 +410,9 @@ def test_ids_das_importacoes_usadas(patch_conn):
 def test_ajuda_e_inicio(patch_conn):
     at = _app("7_Ajuda.py", patch_conn).run()
     assert not at.exception, at.exception
-    assert [t.label for t in at.tabs] == ["Fluxo do mês", "Quando algo não bate", "Glossário"]
+    assert [t.label for t in at.tabs] == ["Fluxo do mês", "Quando algo não bate", "Glossário", "Painel EnerMais (V2)"]
+    at.selectbox(key="ajuda_v2_situ").select("O custo da API é maior que o do PDF").run()
+    assert not at.exception and any("INSS" in m.value for m in at.markdown)
     at.selectbox(key="ajuda_grupo").select("Mapa de contas").run()
     assert not at.exception and any("sem chave" in m.value or "Mapa de contas" in m.value for m in at.markdown)
     _semear_ate(patch_conn, 2)

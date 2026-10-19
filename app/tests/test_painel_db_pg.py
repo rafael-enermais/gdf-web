@@ -541,6 +541,27 @@ def test_resultado_tira_nf_desfeita_por_distrato(conn):
     assert [a["receita"] for a in P.resultado_por_centro(conn, "2026-09")] == [4000.0]
 
 
+def test_resultado_tira_titulos_a_pagar_desfeitos_e_multas_aej(conn):
+    from dados_sienge import _c, _pg
+    base = {"billId": 60, "installmentId": 1, "companyId": 5, "companyName": "CONSTRUTORA", "originId": "CP", "documentIdentificationId": "NFS ",
+            "forecastDocument": "N", "creditorId": 77, "creditorName": "FORNECEDOR TESTE", "issueDate": "2026-09-10", "dueDate": "2026-09-30",
+            "originalAmount": 100.0, "payments": [_pg(1, "2026-09-30", 100.0)], "paymentsCategories": [_c("2010104", "Material de Consumo | Obra", 100, 1049)]}
+    regs = [base,                                                                                                                       # 100: fica
+            {**base, "billId": 61, "documentIdentificationId": "AEJ ", "originalAmount": 700.0, "payments": [_pg(1, "2026-09-30", 700.0)]},   # multa: sai
+            {**base, "billId": 62, "originalAmount": 400.0, "payments": [_pg(1, "2026-09-12", 400.0, 8, "Abatimento de adiantamento")]},      # abatido total: sai
+            {**base, "billId": 63, "originalAmount": 400.0, "payments": [_pg(1, "2026-09-12", 100.0, 5, "Substituicao")]},                    # substituido so' em parte: fica
+            {**base, "billId": 64, "originalAmount": 250.0, "payments": [_pg(1, "2026-09-12", 250.0, 3, "Cancelamento")]},                    # cancelado total: sai
+            {**base, "billId": 65, "originalAmount": 150.0, "payments": [_pg(1, "2026-09-30", 150.0)]}]                                      # 150: fica
+    _ingerir(conn, regs=regs, lado="P", tipo="I")
+    custo = lambda **k: {c["plano_cod"]: c["valor"] for c in P.resultado_por_conta(conn, "2026-09", **k)}["2.01.01.04"]  # noqa: E731
+    assert custo() == -(100 + 700 + 400 + 400 + 250 + 150)                               # padrao: desligado, tudo conta
+    assert custo(sem_desfeitos=True) == -(100 + 400 + 150)                              # tira AEJ, abatido e cancelado
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO pnl_centro_grupo (centro_custo_id, centro_nome, grupo, codigo_obra) VALUES (1049,'A','OBRA','121')")
+    assert sum(a["custo"] for a in P.resultado_por_centro(conn, "2026-09", sem_desfeitos=True)) == -650.0
+    assert P.resultado_por_obra_api(conn, "2026-09", sem_desfeitos=True)["121"]["04.02"] == -650.0
+
+
 def test_obras_do_dre_calcula_bdi_margem_dem_e_top(conn):
     import hashlib
     assert P.obras_do_dre(conn, "2026-09") is None                                   # sem PDF importado
