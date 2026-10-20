@@ -54,9 +54,12 @@ def gravar_normalizado(conn, sync_id: int, norm: dict) -> dict:
             if tit:
                 com_imposto = _tem_coluna(cur, "pnl_titulo", "imposto_titulo")          # SQL-13; sem ela grava como antes (nada quebra)
                 col_extra, upd_extra = (",imposto_titulo", ", imposto_titulo=EXCLUDED.imposto_titulo") if com_imposto else ("", "")
-                com_base = _tem_coluna(cur, "pnl_titulo", "data_base_parcela")          # SQL-25; sem ela grava como antes
+                # SQL-27: "vencimento original" = o PRIMEIRO vencimento que o app viu para o titulo (o Sienge nao expõe o original por API);
+                # na primeira gravacao copia o vencimento; nas seguintes NAO sobrescreve (prorrogacao nao esconde a divida).
+                com_base = _tem_coluna(cur, "pnl_titulo", "data_vencimento_original")
                 if com_base:
-                    col_extra, upd_extra = col_extra + ",data_base_parcela", upd_extra + ", data_base_parcela=EXCLUDED.data_base_parcela"
+                    col_extra = col_extra + ",data_vencimento_original"
+                    upd_extra = upd_extra + ", data_vencimento_original=COALESCE(pnl_titulo.data_vencimento_original, EXCLUDED.data_vencimento_original)"
                 execute_values(cur, f"""
                     INSERT INTO pnl_titulo (lado,bill_id,installment_id,sync_id,empresa_id,empresa_nome,origem,doc_id,doc_nome,previsao,numero_doc,
                         contraparte_id,contraparte_nome,data_emissao,data_vencimento,valor_original,tipo_negocio_id,tipo_negocio_nome,
@@ -73,7 +76,7 @@ def gravar_normalizado(conn, sync_id: int, norm: dict) -> dict:
                                  t["doc_nome"], t["previsao"], t["numero_doc"], t["contraparte_id"], t["contraparte_nome"], t["data_emissao"],
                                  t["data_vencimento"], t["valor_original"], t["tipo_negocio_id"], t["tipo_negocio_nome"], t["area_id"],
                                  t["area_nome"], t["projeto_id"], t["projeto_nome"]) + ((t.get("imposto_titulo"),) if com_imposto else ())
-                                + ((t.get("data_base_parcela"),) if com_base else ()) for t in tit],
+                                + ((t["data_vencimento"],) if com_base else ()) for t in tit],
                                page_size=500)
             if bx:
                 execute_values(cur, """

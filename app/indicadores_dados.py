@@ -45,15 +45,12 @@ def _tem_coluna(conn, tabela: str, coluna: str) -> bool:
         return cur.fetchone() is not None
 
 
-# So' vira True depois de validar com os dados reais que a data-base da parcela (installmentBaseDate) e' o vencimento ORIGINAL do Sienge
-# (diagnostico: SELECT count(*) FILTER (WHERE data_base_parcela <> data_vencimento) ... em gdf.pnl_titulo). Ate la a inadimplencia usa o vencimento atual.
-USAR_DATA_BASE_COMO_ORIGINAL = False
-
-
 def coluna_vencimento(conn) -> str:
-    """Expressao SQL do vencimento para inadimplencia: o ORIGINAL (data-base da parcela) quando validado e a coluna existe, senao o vencimento atual."""
-    if USAR_DATA_BASE_COMO_ORIGINAL and _tem_coluna(conn, "pnl_titulo", "data_base_parcela"):
-        return "COALESCE(t.data_base_parcela, t.data_vencimento)"
+    """Expressao SQL do vencimento para inadimplencia: o ORIGINAL quando a coluna existe (SQL-27), senao o vencimento atual.
+    O Sienge nao expoe o vencimento original por API (testado: bulk-data, bills/installments e receivable-bills/installments so' trazem dueDate e baseDate);
+    por isso o app guarda o PRIMEIRO vencimento que viu para cada titulo e nunca o sobrescreve."""
+    if _tem_coluna(conn, "pnl_titulo", "data_vencimento_original"):
+        return "COALESCE(t.data_vencimento_original, t.data_vencimento)"
     return "t.data_vencimento"
 
 

@@ -127,7 +127,7 @@ def aba_indicadores(conn, mes, carimbo):
     k[0].metric("Vencido a receber", _mi(ina["receber"]["total"]), f"{ina['receber']['n']} títulos", delta_color="off", border=True)
     k[1].metric("Vencido a pagar", _mi(ina["pagar"]["total"]), f"{ina['pagar']['n']} títulos", delta_color="off", border=True)
     st.caption(f"Posição: vencidos até {_data(venc_ate)} e não pagos até {_data(pago_ate)}. "
-               + ("Vencimento ORIGINAL do Sienge." if ina["usa_vencimento_original"] else "Vencimento atual do título (o vencimento original ainda não está no banco)."))
+               + ("Vencimento ORIGINAL (o primeiro vencimento registrado; prorrogação não esconde a dívida)." if ina["usa_vencimento_original"] else "Vencimento atual do título (o vencimento original ainda não foi ativado no banco)."))
     d1, d2 = st.columns(2)
     for col, chave, rot, quem in ((d1, "receber", "a receber", "Cliente"), (d2, "pagar", "a pagar", "Credor")):
         with col:

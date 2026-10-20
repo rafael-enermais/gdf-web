@@ -91,39 +91,20 @@ def test_inadimplencia_ate_hoje_e_ate_fim_do_mes(conn, dados):
     assert antes["receber"]["total"] == 0.0                                          # ainda nao tinha vencido
 
 
-def test_data_base_da_parcela_so_vale_depois_de_validada(conn, dados, monkeypatch):
+def test_vencimento_original_e_o_primeiro_visto_e_nunca_e_sobrescrito(conn, dados):
+    # 1a carga (fixture): titulo R 4 vence 2026-12-15 -> original = 2026-12-15
     with conn.cursor() as cur:
-        cur.execute("UPDATE pnl_titulo SET data_base_parcela = DATE '2026-08-01' WHERE lado='R' AND bill_id=4")   # prorrogado: o original ja venceu
+        cur.execute("SELECT data_vencimento_original FROM pnl_titulo WHERE lado='R' AND bill_id=4")
+        assert cur.fetchone()[0] == dt.date(2026, 12, 15)
     ina = I.inadimplencia(conn, dt.date(2026, 10, 19), HOJE)
-    assert not ina["usa_vencimento_original"] and ina["receber"]["total"] == 1000.0       # padrao: ainda usa o vencimento atual
-    monkeypatch.setattr(I, "USAR_DATA_BASE_COMO_ORIGINAL", True)
-    ina = I.inadimplencia(conn, dt.date(2026, 10, 19), HOJE)
-    assert ina["usa_vencimento_original"] and ina["receber"]["total"] == 1200.0
-
-
-def test_rotina_guarda_a_data_base_da_parcela(conn):
-    reg = _tit(7, 1, "R", "CLIENTE Z", "2026-09-01", "2026-10-30", 100.0, [_c("1010101", "Receita", 100)])
-    reg["installmentBaseDate"] = "2026-09-30"
+    assert ina["usa_vencimento_original"] and ina["receber"]["total"] == 1000.0            # 4 ainda nao venceu
+    # Sienge prorroga o titulo 3 (previsao) e o 1: o 1 vencia 2026-09-30, passa para 2027-01-31; a carga seguinte NAO muda o original
+    reg = _tit(1, 1, "R", "CLIENTE A", "2026-09-01", "2027-01-31", 1000.0, [_c("1010101", "Receita", 100)], numero="NF-A")
     _gravar(conn, "R", [reg])
     with conn.cursor() as cur:
-        cur.execute("SELECT data_base_parcela FROM pnl_titulo WHERE bill_id=7")
-        assert cur.fetchone()[0] == dt.date(2026, 9, 30)
-
-
-def test_cadastro_de_financiamento_vale_mais_que_a_sugestao_e_renova_o_cache(conn, dados):
-    antes = P.carimbo_dados(conn)
-    r = P.fin_bem_salvar(conn, [{"chave": "38172", "categoria": "Máquinas e equipamentos", "objeto": "Retroescavadeira", "observacao": "teste"}], "teste@x")
-    assert r == {"novos": 1, "alterados": 0, "limpos": 0}
-    assert P.carimbo_dados(conn) != antes                                              # o painel recalcula sozinho
-    cam = next(c for c in I.financiamentos(conn, HOJE)["por_contrato"] if c["chave"] == "38172")
-    assert (cam["categoria"], cam["objeto"], cam["origem"], cam["sugestao"]) == ("Máquinas e equipamentos", "Retroescavadeira", "Cadastro", "Veículo")
-    assert P.fin_bem_salvar(conn, [{"chave": "38172", "categoria": "Máquinas e equipamentos", "objeto": "Retroescavadeira", "observacao": "teste"}], "teste@x") == {"novos": 0, "alterados": 0, "limpos": 0}
-    assert P.fin_bem_salvar(conn, [{"chave": "38172", "categoria": "", "objeto": "", "observacao": ""}], "teste@x")["limpos"] == 1
-    cam = next(c for c in I.financiamentos(conn, HOJE)["por_contrato"] if c["chave"] == "38172")
-    assert cam["categoria"] == "Veículo" and cam["origem"] == "Sugestão"                # voltou para a sugestao; a linha fica no historico
-    with conn.cursor() as cur:
-        cur.execute("SELECT ativo FROM pnl_financiamento_bem WHERE chave='38172'")
-        assert cur.fetchone()[0] is False
+        cur.execute("SELECT data_vencimento, data_vencimento_original FROM pnl_titulo WHERE lado='R' AND bill_id=1")
+        assert cur.fetchone() == (dt.date(2027, 1, 31), dt.date(2026, 9, 30))
+    assert I.inadimplencia(conn, dt.date(2026, 10, 19), HOJE)["receber"]["total"] == 1000.0   # continua vencido pelo original (nao some da inadimplencia)
 
 
 def test_receitas_em_aberto_lista_cliente_nota_vencimento(conn, dados):

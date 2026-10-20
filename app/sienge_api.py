@@ -291,7 +291,6 @@ def normalizar_titulos(lado: str, regs: list) -> dict:
                     "numero_doc": str(b.get("documentNumber") or "").strip() or None,
                     "contraparte_id": _int(b.get(contra_id)), "contraparte_nome": b.get(contra_nome),
                     "data_emissao": _data(b.get("issueDate")), "data_vencimento": _data(b.get("dueDate")),
-                    "data_base_parcela": _data(b.get("installmentBaseDate")),                  # candidata a "vencimento original" (a validar com os dados)
                     "valor_original": _num(b.get("originalAmount")),
                     "imposto_titulo": _num(b.get("taxAmount")) if lado == "R" else None,       # impostos da NF (ISS/PIS/COFINS): base do DRE 02.02
                     "tipo_negocio_id": _int(b.get("businessTypeId")), "tipo_negocio_nome": b.get("businessTypeName"),
