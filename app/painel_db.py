@@ -456,7 +456,12 @@ def sha256_curto(conteudo: bytes) -> str:
 def meses_com_emissao(conn) -> list:
     """Meses ('AAAA-MM') que tem titulos emitidos no banco (base da aba Resultado)."""
     with conn.cursor() as cur:
-        cur.execute("SELECT DISTINCT to_char(data_emissao,'YYYY-MM') FROM pnl_titulo WHERE data_emissao IS NOT NULL ORDER BY 1")
+        # So' meses a partir da janela da rotina diaria (data de emissao): a rotina semanal de titulos em aberto traz titulos mais antigos
+        # (inadimplencia / financiamentos) que NAO formam um mes completo de emissao.
+        cur.execute("""SELECT DISTINCT to_char(data_emissao,'YYYY-MM') FROM pnl_titulo
+                       WHERE data_emissao IS NOT NULL
+                         AND data_emissao >= COALESCE((SELECT min(mes) FROM pnl_sync WHERE status='OK' AND tipo_data='I'), DATE '0001-01-01')
+                       ORDER BY 1""")
         return [r[0] for r in cur.fetchall()]
 
 

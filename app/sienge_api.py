@@ -150,6 +150,38 @@ def buscar_bulk(cli: Cliente, lado: str, mes: str, tipo_data: str, mes_fim: str 
     return lista(cli.get(ENDPOINT[lado], params))
 
 
+# ---- titulos EM ABERTO por data de vencimento (alem da janela de 365 dias da rotina diaria) --------------------------------------------------
+# A rotina diaria busca por pagamento (P) e por emissao (I). Isso nao traz (a) titulos emitidos antes da janela e ainda nao pagos (inadimplencia antiga) nem
+# (b) parcelas futuras de contratos antigos (financiamentos). Esta busca por VENCIMENTO (D), so' dos titulos ainda em aberto, completa o quadro.
+def janelas_abertos(ini: str, fim: str) -> list:
+    """Divide 'AAAA-MM'..'AAAA-MM' em janelas de 6 meses (ate dez/2026, onde ha muito titulo) e de 12 meses depois (poucos titulos). [(mes_ini, mes_fim)]."""
+    a, b = (int(ini[:4]), int(ini[5:7])), (int(fim[:4]), int(fim[5:7]))
+    out = []
+    while a <= b:
+        passo = 6 if a < (2027, 1) else 12
+        z = a[0] * 12 + (a[1] - 1) + passo - 1
+        fim_j = (z // 12, z % 12 + 1)
+        if fim_j > b:
+            fim_j = b
+        out.append((f"{a[0]:04d}-{a[1]:02d}", f"{fim_j[0]:04d}-{fim_j[1]:02d}"))
+        z2 = fim_j[0] * 12 + fim_j[1]
+        a = (z2 // 12, z2 % 12 + 1)
+    return out
+
+
+def somente_abertos(regs: list, lado: str) -> list:
+    """Fica so' o titulo cujo valor ainda nao foi todo baixado (soma das baixas < valor original). Funcao pura."""
+    campo = "payments" if lado == "P" else "receipts"
+    out = []
+    for r in regs:
+        if not isinstance(r, dict) or r.get("billId") is None:
+            continue
+        pago = sum(_num(x.get("grossAmount")) or 0.0 for x in (r.get(campo) or []))
+        if (_num(r.get("originalAmount")) or 0.0) - pago > 0.01:
+            out.append(r)
+    return out
+
+
 ENDPOINT_BANCO = "bulk-data/v1/bank-movement"
 DOC_AVISO = ("AV", "AVISO DE LANÇAMENTO")
 

@@ -274,8 +274,8 @@ def test_tela_historico_e_mes_do_csv_automatico(conn):
 def test_resultado_por_emissao_e_dre(conn):
     regs = outcome()
     regs[3]["forecastDocument"] = "S"                      # o titulo de agosto vira documento de previsao
-    _ingerir(conn, regs=regs, lado="P", tipo="I")
-    _ingerir(conn, regs=income(), lado="R", tipo="I")
+    _ingerir(conn, regs=regs, lado="P", tipo="I", mes="2026-08")   # a janela da carga comeca em agosto
+    _ingerir(conn, regs=income(), lado="R", tipo="I", mes="2026-08")
     assert P.meses_com_emissao(conn) == ["2026-08", "2026-09"]
     contas = {c["plano_cod"]: c["valor"] for c in P.resultado_por_conta(conn, "2026-09")}
     assert contas == {"1.01.01.01": 2000.0, "2.01.02.01": -500.0, "1.03.02.02": -300.0}       # agosto fora; custo negativo; receita positiva
