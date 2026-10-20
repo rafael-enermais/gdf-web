@@ -110,6 +110,46 @@ def executar(conn, cli, ini: str, fim: str, gravar: bool, buscar=None, log=print
     return 1 if falhas else 0
 
 
+def _nomes_campos(obj, prefixo="") -> list:
+    """So' os NOMES dos campos (nunca valores), descendo 1 nivel em dicts e na 1a posicao de listas. Para descobrir onde esta o 'vencimento original'."""
+    out = []
+    if isinstance(obj, dict):
+        for k, v in sorted(obj.items()):
+            out.append(prefixo + str(k))
+            if isinstance(v, (dict, list)) and not prefixo:
+                out += _nomes_campos(v, prefixo=f"{k}.")
+    elif isinstance(obj, list) and obj:
+        out += _nomes_campos(obj[0], prefixo)
+    return out
+
+
+def diagnosticar(cli, ini: str, fim: str, log=print) -> int:
+    """Modo gravar='diagnostico': pega 1 titulo em aberto de cada lado e testa endpoints candidatos do Sienge, imprimindo SO nomes de campos."""
+    for lado, caminhos in (("P", ("v1/bills/{b}", "v1/bills/{b}/installments", "v1/bills/{b}/installments/{i}", "v1/payable-bills/{b}/installments")),
+                           ("R", ("v1/accounts-receivable/receivable-bills/{b}", "v1/accounts-receivable/receivable-bills/{b}/installments",
+                                  "v1/accounts-receivable/receivable-bills/{b}/installments/{i}"))):
+        try:
+            regs = S.somente_abertos(S.buscar_bulk(cli, lado, ini, "D", mes_fim=fim), lado)
+        except Exception as exc:
+            log(f"{lado} nao consegui buscar titulo de exemplo: {exc}")
+            continue
+        if not regs:
+            log(f"{lado} sem titulo em aberto na janela {ini}..{fim}")
+            continue
+        b, i = regs[0].get("billId"), regs[0].get("installmentId")
+        for cam in caminhos:
+            url = cam.format(b=b, i=i)
+            try:
+                dados = cli.get(url)
+                nomes = _nomes_campos(dados)
+                marc = [n for n in nomes if any(t in n.lower() for t in ("original", "due", "venc", "base", "prorrog", "postpone"))]
+                log(f"{lado} {cam}: OK, {len(nomes)} campos. Parecidos com vencimento: {', '.join(marc) or '(nenhum)'}")
+                log(f"{lado} {cam}: campos: {', '.join(nomes)[:1500]}")
+            except Exception as exc:
+                log(f"{lado} {cam}: ERRO {str(exc)[:160]}")
+    return 0
+
+
 def main(env=None) -> int:
     env = os.environ if env is None else env
     try:
@@ -118,13 +158,16 @@ def main(env=None) -> int:
         pass
     ini = (env.get("GDF_ABERTOS_INI") or "2023-01").strip()
     fim = (env.get("GDF_ABERTOS_FIM") or "2032-12").strip()
-    gravar = (env.get("GDF_ABERTOS_GRAVAR") or "").strip().lower() in ("sim", "true", "1")
+    modo = (env.get("GDF_ABERTOS_GRAVAR") or "").strip().lower()
+    gravar = modo in ("sim", "true", "1")
     try:
         user, pwd, base = S.credenciais(None, env)
     except S.ErroSienge as exc:
         print(f"ERRO de configuração: {exc}")
         return 1
     cli = S.Cliente(user, pwd, base, pausa=PAUSA_ENTRE_CHAMADAS, esperas_429=ESPERAS_429)
+    if modo == "diagnostico":
+        return diagnosticar(cli, ini, fim)
     if not gravar:
         return executar(None, cli, ini, fim, False, limite_s=LIMITE_POR_JANELA_S)
     import psycopg2
