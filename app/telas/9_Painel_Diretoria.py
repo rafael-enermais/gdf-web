@@ -321,7 +321,8 @@ if aba_ob.open or _TODAS:
             cfg["Margem"] = st.column_config.NumberColumn("Margem", format="percent")
             ev = st.dataframe(mostra, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="dir_ob_df", column_config=cfg)
             sel = _selecionada(ev, vis)
-            _cap(f"Total: receita {_mi(tr)} · custos {_mi(tc)} · BDI {_mi(tb)} · {int(base['Colab.'].sum())} colaboradores nas obras.")
+            _pj_unicos = set().union(*[cr for c, cr in pj_obra.items() if c not in ("ADM", "99", "sem de-para")]) if pj_obra else set()
+            _cap(f"Total: receita {_mi(tr)} · custos {_mi(tc)} · BDI {_mi(tb)} · {int(base['CLT'].sum()) + len(_pj_unicos)} colaboradores nas obras (cada PJ contado uma vez, mesmo atendendo várias obras).")
             if sel:
                 _md(f"#### {sel['Obra']} · {sel['Nome']}")
                 a, b, c, d = st.columns(4)
