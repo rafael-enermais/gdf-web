@@ -154,3 +154,49 @@ def test_custo_medio_usa_a_taxa_do_contrato_quando_cadastrada(conn, dados):
     assert next(c for c in f["por_credor"] if c["credor"] == "TRATON")["taxa_mensal"] == 0.02
     with pytest.raises(ValueError):
         P.fin_bem_salvar(conn, [{"chave": "38172", "taxa_mensal": 150}], "teste@x")
+
+
+def test_grupo_do_plano_planos_da_contabilidade():
+    for cod in ("2.05.01.01", "2.05.01.01.03", "2.05.01.03.02", "2.05.01.03.04", "2.05.01.03.06", "2.05.01.03.07", "2.03.04.05"):
+        assert I.grupo_do_plano(cod) == "financiamentos", cod
+    for cod in ("2.05.01.02", "2.05.01.03", "2.05.01.03.03", "2.05.01.03.05", "2.05.03.01", "2.05.02", "2.05.01.010"):
+        assert I.grupo_do_plano(cod) == "investimentos", cod
+    assert I.grupo_do_plano("2.03.02.01") is None                                     # juros seguem o contrato
+    with pytest.raises(ValueError):
+        I.financiamentos(None, HOJE, grupo="outro")
+
+
+def test_investimentos_separados_dos_financiamentos(conn, dados):
+    rec = lambda cod, nome: [{"financialCategoryId": cod, "financialCategoryName": nome, "financialCategoryRate": 100, "costCenterId": 1, "costCenterName": "CC"}]  # noqa: E731
+    extra = []
+    for i, venc in enumerate(("2026-11-10", "2026-12-10"), start=1):                  # sala (2.05.01.02): NAO esta na lista da contabilidade -> Investimentos
+        extra.append(_tit(200, i, "P", "IMOBILIARIA", "2026-02-01", venc, 400.0, rec("2.05.01.02", "Aquisição Sala Aruna - Ct 777"), numero="CT7"))
+    extra.append(_tit(201, 1, "P", "IMOBILIARIA", "2026-02-01", "2026-11-10", 50.0, rec("2.03.02.01", "Juros s/ Aquisição Sala Aruna - Ct 777"), numero="CT7J"))   # juros seguem o contrato
+    extra.append(_tit(202, 1, "P", "MAQUINAS SA", "2026-02-01", "2026-12-20", 900.0, rec("2.05.01.03", "Imobilizado - Maquinário Ct 888"), numero="CT8"))          # 2.05.01.03 sem sufixo: Investimentos
+    extra.append(_tit(203, 1, "P", "MAQUINAS SA", "2026-02-01", "2026-12-20", 600.0, rec("2.05.01.03.04", "Retroescavadeira Ct 889"), numero="CT9"))                 # 2.05.01.03.04: Financiamentos
+    _gravar(conn, "P", extra)
+    fin = I.financiamentos(conn, HOJE)
+    inv = I.financiamentos(conn, HOJE, grupo="investimentos")
+    assert inv["grupo"] == "investimentos" and fin["grupo"] == "financiamentos"
+    assert {c["chave"] for c in inv["por_contrato"]} == {"777", "888"}
+    assert inv["saldo_devedor"] == 800.0 + 900.0 and inv["juros_totais"] == 50.0
+    assert [(c["mes"], c["principal"], c["juros"]) for c in inv["curva"]] == [("2026-11", 400.0, 50.0), ("2026-12", 1300.0, 0.0)]
+    assert "777" not in {c["chave"] for c in fin["por_contrato"]} and "889" in {c["chave"] for c in fin["por_contrato"]}
+    assert fin["saldo_devedor"] == 2000.0 + 5000.0 + 600.0 and fin["juros_totais"] == 200.0          # nada do investimento vazou para o financiamento
+    assert all(c["grupo"] == "investimentos" for c in inv["por_contrato"])
+
+
+def test_historico_de_alteracao_do_vencimento(conn, dados):
+    """SQL-28: o trigger registra antes/depois quando a carga muda o vencimento; o vencimento ATUAL e' atualizado e o ORIGINAL fica intacto."""
+    reg = _tit(1, 1, "R", "CLIENTE A", "2026-09-01", "2027-01-31", 1000.0, [_c("1010101", "Receita", 100)], numero="NF-A")      # era 2026-09-30
+    _gravar(conn, "R", [reg])
+    _gravar(conn, "R", [reg])                                                                                                    # mesma data de novo: nao duplica
+    reg2 = _tit(1, 1, "R", "CLIENTE A", "2026-09-01", "2027-03-31", 1000.0, [_c("1010101", "Receita", 100)], numero="NF-A")
+    _gravar(conn, "R", [reg2])
+    with conn.cursor() as cur:
+        cur.execute("SELECT vencimento_anterior, vencimento_novo FROM pnl_vencimento_alteracao WHERE lado='R' AND bill_id=1 AND installment_id=1 ORDER BY id")
+        assert cur.fetchall() == [(dt.date(2026, 9, 30), dt.date(2027, 1, 31)), (dt.date(2027, 1, 31), dt.date(2027, 3, 31))]
+        cur.execute("SELECT data_vencimento, data_vencimento_original FROM pnl_titulo WHERE lado='R' AND bill_id=1")
+        assert cur.fetchone() == (dt.date(2027, 3, 31), dt.date(2026, 9, 30))
+        cur.execute("SELECT count(*) FROM pnl_vencimento_alteracao WHERE bill_id=2")
+        assert cur.fetchone()[0] == 0                                                                                            # titulos sem mudanca nao geram linha

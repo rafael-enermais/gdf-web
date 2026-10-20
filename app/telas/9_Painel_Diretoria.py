@@ -9,6 +9,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+import acesso
 import diretoria_dados as DD
 import diretoria_indicadores_ui as DI
 import formatacao as F
@@ -166,7 +167,15 @@ adm_orc = orc_mes["total"]["orcado"] if orc_mes else None
 resultado = round(bdi - adm_real, 2) if adm_real is not None else None
 
 _TODAS = bool(st.session_state.get("dir_todas_abas"))        # so' os testes ligam: renderiza todas as abas de uma vez
-aba_res, aba_ob, aba_adm, aba_desp, aba_pes, aba_ind, aba_fin = st.tabs(["Resultado", "Obras", "Administração", "Despesas", "Pessoas", "Indicadores financeiros", "Financiamentos"], key="dir_abas", on_change="rerun")
+try:                                                         # editor ve tudo; visualizador so' ve Investimentos se o editor liberou (SQL-29). Na duvida (erro), esconde.
+    _eh_editor = acesso.papel(conn, usuario) != acesso.VISUALIZADOR
+    _mostra_inv = _eh_editor or acesso.investimentos_para_visualizador(conn)
+except Exception:
+    _eh_editor, _mostra_inv = False, False
+_rotulos = ["Resultado", "Obras", "Administração", "Despesas", "Pessoas", "Indicadores financeiros", "Financiamentos"] + (["Investimentos"] if _mostra_inv else [])
+_abas = st.tabs(_rotulos, key="dir_abas", on_change="rerun")
+aba_res, aba_ob, aba_adm, aba_desp, aba_pes, aba_ind, aba_fin = _abas[:7]
+aba_inv = _abas[7] if _mostra_inv else None
 
 
 # ------------------------------------------------------------------ dados compartilhados entre abas (PJ e colaboradores)
@@ -711,3 +720,27 @@ if aba_ind.open or _TODAS:
 if aba_fin.open or _TODAS:
     with aba_fin:
         DI.aba_financiamentos(conn, CARIMBO)
+
+# ------------------------------------------------------------------ 8) INVESTIMENTOS (o restante do 2.05; separado dos financiamentos, o editor decide se o visualizador ve)
+def _controle_investimentos():
+    """So' o editor: checkbox que libera (ou esconde) esta aba para o login de visualizacao. Efeito na proxima vez que o visualizador abrir o painel."""
+    if not _eh_editor:
+        return
+    if not acesso.config_instalada(conn):
+        _warn("Falta executar o **SQL-29** (`sql/v2_config.sql`) no Supabase para poder liberar esta aba ao visualizador. Até lá, só o editor vê.")
+        return
+    atual = acesso.investimentos_para_visualizador(conn)
+    novo = st.checkbox("Mostrar a aba Investimentos para quem entra com login de visualização", value=atual, key="dir_inv_visu",
+                       help="Desmarcado (padrão): só quem edita vê esta aba. Marque para liberar ao visualizador. Dá para desmarcar de novo quando quiser.")
+    if novo != atual:
+        try:
+            acesso.definir_investimentos_para_visualizador(conn, novo, usuario)
+            st.toast("Aba Investimentos " + ("liberada para o visualizador." if novo else "escondida do visualizador."), icon="✅")
+        except Exception as exc:
+            st.error(f"Não consegui salvar a escolha: {exc}")
+    _cap("Quem edita sempre vê esta aba. " + ("Hoje o visualizador **vê**." if novo else "Hoje o visualizador **não vê**."))
+
+
+if aba_inv is not None and (aba_inv.open or _TODAS):
+    with aba_inv:
+        DI.aba_financiamentos(conn, CARIMBO, "investimentos", _controle_investimentos)

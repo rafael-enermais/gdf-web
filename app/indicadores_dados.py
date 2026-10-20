@@ -6,7 +6,8 @@ Sem streamlit: so' SQL + contas simples (testavel). Regras (combinadas com a con
   - Capital de giro: gasto = baixas a pagar em dinheiro do mes (pagamento, adiantamento, pagamento via movimento bancario), sem previsao.
   - Inadimplencia: titulos vencidos e ainda nao pagos NA DATA DE POSICAO (hoje, ou fim do mes escolhido), sem previsao. O vencimento usado e' o
     ORIGINAL do Sienge quando a coluna existe (renegociacao nao esconde a divida); senao o vencimento do titulo.
-  - Financiamentos: planos 2.03.02 (juros), 2.03.04 (capital de giro bancario) e 2.05 (imobilizado / financiamentos de bens). Saldo = parcelas ainda nao pagas.
+  - Financiamentos: planos 2.03.02 (juros), 2.03.04 (capital de giro bancario) e os planos 2.05 que a contabilidade separou (PLANOS_2_05_FINANCIAMENTO). Saldo = parcelas ainda nao pagas.
+  - Investimentos (aba a parte, 13/10/2026 -> 20/10/2026): o restante do 2.05 ja' puxado. O contrato vai para o grupo do seu principal; os juros (2.03.02) seguem o contrato.
 """
 from __future__ import annotations
 
@@ -19,8 +20,24 @@ import painel_db as P
 # baixas a pagar que sao saida de caixa: 1 Pagamento, 10 Adiantamento, 1002 Movimento bancario: Pagamento (cancelamento/substituicao/abatimento nao sao dinheiro; 1030 e' transferencia)
 TIPOS_CAIXA_PAGAR = (1, 10, 1002)
 PLANO_JUROS = "2.03.02"
+PLANOS_2_05_FINANCIAMENTO = ("2.05.01.01", "2.05.01.03.02", "2.05.01.03.04", "2.05.01.03.06", "2.05.01.03.07")   # contabilidade: so' estes do 2.05 sao financiamentos
 PLANOS_PRINCIPAL = ("2.03.04", "2.05")
 PLANOS_FINANCIAMENTO = (PLANO_JUROS,) + PLANOS_PRINCIPAL
+GRUPOS = ("financiamentos", "investimentos")
+
+
+def _sob_plano(cod: str, base: str) -> bool:
+    return cod == base or cod.startswith(base + ".")
+
+
+def grupo_do_plano(cod: str | None) -> str | None:
+    """'financiamentos' ou 'investimentos' para uma linha de PRINCIPAL; None para os juros (2.03.02), que seguem o contrato."""
+    cod = cod or ""
+    if _sob_plano(cod, PLANO_JUROS):
+        return None
+    if _sob_plano(cod, "2.03.04") or any(_sob_plano(cod, p) for p in PLANOS_2_05_FINANCIAMENTO):
+        return "financiamentos"
+    return "investimentos"
 PREFIXOS_SQL = " OR ".join(f"r.plano_cod LIKE '{p}%%'" for p in PLANOS_FINANCIAMENTO)
 
 
@@ -208,8 +225,12 @@ def _meses_ate(hoje: dt.date, venc: dt.date) -> int:
     return max(1, (venc.year - hoje.year) * 12 + (venc.month - hoje.month))
 
 
-def financiamentos(conn, hoje: dt.date | None = None, incluir_previsao: bool = False) -> dict:
-    """Carteira de financiamentos na data: KPIs, por credor, por contrato e curva mensal de desembolso. Valores = parcelas ainda nao pagas ate `hoje`."""
+def financiamentos(conn, hoje: dt.date | None = None, incluir_previsao: bool = False, grupo: str = "financiamentos") -> dict:
+    """Carteira na data: KPIs, por credor, por contrato e curva mensal de desembolso. Valores = parcelas ainda nao pagas ate `hoje`.
+    grupo: 'financiamentos' (padrao) ou 'investimentos' (o 2.05 que nao foi separado como financiamento). O contrato fica no grupo do seu principal;
+    com principal nos dois, prevalece financiamentos; contrato so' de juros fica em financiamentos."""
+    if grupo not in GRUPOS:
+        raise ValueError("grupo deve ser financiamentos ou investimentos")
     hoje = hoje or dt.date.today()
     sql = f"""WITH pg AS (SELECT lado, bill_id, installment_id, sum(bruto) AS v FROM pnl_v_baixa WHERE data_pagamento <= %s GROUP BY 1,2,3)
               SELECT t.bill_id, t.installment_id, t.contraparte_nome, t.data_vencimento, t.valor_original, COALESCE(pg.v, 0), r.plano_cod, r.plano_nome, r.percentual
@@ -219,7 +240,7 @@ def financiamentos(conn, hoje: dt.date | None = None, incluir_previsao: bool = F
     with conn.cursor() as cur:
         cur.execute(sql, (hoje,))
         linhas = cur.fetchall()
-    contratos, curva = {}, {}
+    contratos = {}
     for bill, inst, credor, venc, valor, pago, cod, nome, pct in linhas:
         valor, pago, pct = float(valor or 0), float(pago or 0), float(pct or 0)
         rateio = valor * pct / 100.0
@@ -227,10 +248,11 @@ def financiamentos(conn, hoje: dt.date | None = None, incluir_previsao: bool = F
         eh_juros = (cod or "").startswith(PLANO_JUROS)
         chave = chave_contrato(nome, cod)
         c = contratos.setdefault(chave, {"chave": chave, "credores": {}, "docs": set(), "principal_total": 0.0, "principal_aberto": 0.0, "juros_aberto": 0.0,
-                                         "parcelas_abertas": set(), "venc_abertos": [], "base": 0.0, "categoria": None, "objeto": None})
+                                         "parcelas_abertas": set(), "venc_abertos": [], "base": 0.0, "categoria": None, "objeto": None, "grupos": set(), "curva": {}})
         if credor:
             c["credores"][credor] = c["credores"].get(credor, 0.0) + max(rateio, 0.0)
         if not eh_juros:
+            c["grupos"].add(grupo_do_plano(cod))
             c["principal_total"] += rateio
             if c["categoria"] is None or c["categoria"] == "Juros de financiamento":
                 c["categoria"], c["objeto"] = classificar(cod, nome)
@@ -249,19 +271,26 @@ def financiamentos(conn, hoje: dt.date | None = None, incluir_previsao: bool = F
                     c["base"] += aberto * _meses_ate(hoje, venc)
             if venc:
                 mes = f"{venc.year:04d}-{venc.month:02d}"
-                d = curva.setdefault(mes, {"mes": mes, "principal": 0.0, "juros": 0.0})
+                d = c["curva"].setdefault(mes, {"principal": 0.0, "juros": 0.0})
                 d["juros" if eh_juros else "principal"] += aberto
     lista = []
     manual = P.fin_bem_listar(conn)                  # "o que e" definido por uma pessoa (SQL-26); vale mais que a sugestao automatica
+    curva = {}
     for c in contratos.values():
         if c["principal_aberto"] + c["juros_aberto"] <= 0.004:
             continue
+        if ("investimentos" if c["grupos"] == {"investimentos"} else "financiamentos") != grupo:
+            continue
+        for mes, d0 in c["curva"].items():
+            d = curva.setdefault(mes, {"principal": 0.0, "juros": 0.0})
+            d["principal"] += d0["principal"]
+            d["juros"] += d0["juros"]
         credor = max(c["credores"], key=c["credores"].get) if c["credores"] else "(sem credor)"
         sugestao_cat, sugestao_obj = c["categoria"] or "Outros financiamentos", c["objeto"] or c["chave"]
         m = manual.get(c["chave"])
         implicita = round(c["juros_aberto"] / c["base"], 4) if c["base"] > 0 and c["juros_aberto"] > 0 else None
         taxa_cad = m["taxa_mensal"] / 100.0 if m and m.get("taxa_mensal") is not None else None          # cadastro guarda em % ao mes
-        lista.append({"chave": c["chave"], "credor": credor, "categoria": (m["categoria"] if m and m["categoria"] else sugestao_cat),
+        lista.append({"chave": c["chave"], "grupo": grupo, "credor": credor, "categoria": (m["categoria"] if m and m["categoria"] else sugestao_cat),
                       "objeto": (m["objeto"] or sugestao_obj) if m else sugestao_obj, "observacao": m["observacao"] if m else None,
                       "origem": "Cadastro" if m and (m["categoria"] or m["objeto"]) else "Sugestão", "sugestao": sugestao_cat,
                       "taxa_contrato": taxa_cad, "taxa_implicita": implicita,
@@ -298,7 +327,7 @@ def financiamentos(conn, hoje: dt.date | None = None, incluir_previsao: bool = F
         custo_origem = f"taxa cadastrada de {len(com_taxa)} de {len(lista)} contratos, ponderada pelo saldo"
     else:
         custo, custo_origem = (round(juros / saldo, 4) if saldo else None), "juros ÷ saldo devedor (sem taxa de contrato cadastrada)"
-    return {"hoje": hoje, "saldo_devedor": saldo, "juros_totais": juros, "desembolso_total": round(saldo + juros, 2), "contratos": len(lista),
+    return {"hoje": hoje, "grupo": grupo, "saldo_devedor": saldo, "juros_totais": juros, "desembolso_total": round(saldo + juros, 2), "contratos": len(lista),
             "documentos": sum(d["documentos"] for d in lista), "custo_medio": custo, "custo_medio_origem": custo_origem,
             "encerramento_mais_longo": max(fins) if fins else None, "por_contrato": lista, "por_credor": credores,
             "curva": [{"mes": m, "principal": round(v["principal"], 2), "juros": round(v["juros"], 2)} for m, v in sorted(curva.items())]}

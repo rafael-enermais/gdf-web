@@ -485,18 +485,20 @@ def _cadastro_financiamentos(conn, usuario):
                "A **taxa do contrato (% ao mês)** não vem do Sienge: se tiver, preencha e o custo médio passa a usar a taxa de cada contrato. Deixar tudo vazio volta para a sugestão. Nada é apagado.")
     try:
         f = IND.financiamentos(conn)
+        inv = IND.financiamentos(conn, grupo="investimentos")
+        f = {"por_contrato": f["por_contrato"] + inv["por_contrato"]}          # o cadastro vale para os dois grupos (Financiamentos e Investimentos)
     except Exception as exc:
         st.info(f"Não consegui listar os contratos agora: {exc}")
         return
     if not f["por_contrato"]:
         st.info("Nenhum contrato com saldo em aberto ainda (depende da carga semanal de títulos em aberto).")
         return
-    base = pd.DataFrame([{"Contrato": c["chave"], "Credor": c["credor"], "Saldo (principal)": c["principal"], "Sugestão": c["sugestao"],
+    base = pd.DataFrame([{"Contrato": c["chave"], "Aba": "Investimentos" if c.get("grupo") == "investimentos" else "Financiamentos", "Credor": c["credor"], "Saldo (principal)": c["principal"], "Sugestão": c["sugestao"],
                           "Categoria": c["categoria"] if c["origem"] == "Cadastro" else None, "Objeto": c["objeto"] if c["origem"] == "Cadastro" else None,
                           "Taxa do contrato (% a.m.)": (round(c["taxa_contrato"] * 100, 4) if c["taxa_contrato"] is not None else None),
                           "Observação": c.get("observacao")} for c in f["por_contrato"]])
     ed = st.data_editor(base, key="pn2_finbem_ed", hide_index=True, width="stretch", num_rows="fixed",
-                        disabled=["Contrato", "Credor", "Saldo (principal)", "Sugestão"],
+                        disabled=["Contrato", "Aba", "Credor", "Saldo (principal)", "Sugestão"],
                         column_config={"Saldo (principal)": st.column_config.NumberColumn(format="%.2f"),
                                        "Categoria": st.column_config.SelectboxColumn("Categoria (cadastro)", options=list(IND.CATEGORIAS_FIN)),
                                        "Objeto": st.column_config.TextColumn("O que foi financiado"), "Observação": st.column_config.TextColumn("Observação"),

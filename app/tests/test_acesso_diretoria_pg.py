@@ -72,9 +72,9 @@ def test_painel_da_diretoria_com_dados_e_abas(conn):
     with patch("conexao.get_conn", return_value=conn):
         at = _app_como(conn, "diretor@empresa.com").run()
         assert not at.exception, at.exception
-        assert [t.label for t in at.tabs] == ["Resultado", "Obras", "Administração", "Despesas", "Pessoas", "Indicadores financeiros", "Financiamentos"]
+        assert [t.label for t in at.tabs] == ["Resultado", "Obras", "Administração", "Despesas", "Pessoas", "Indicadores financeiros", "Financiamentos"]        # Investimentos: so' o editor (ou se liberado)
         assert any("Receita (base-line)" == m.label for m in at.metric)
-        at.session_state["dir_todas_abas"] = True                                       # renderiza as 7 abas (so' a aberta roda por padrao)
+        at.session_state["dir_todas_abas"] = True                                       # renderiza todas as abas (so' a aberta roda por padrao)
         at.run()
         assert not at.exception, at.exception
         rotulos = {m.label for m in at.metric}
@@ -166,3 +166,31 @@ def test_painel_da_diretoria_cinco_abas_com_tudo(conn):
         assert any("Sem colaboradores para esta seleção" in c.value for c in at.caption)
     with conn.cursor() as cur:
         cur.execute("DELETE FROM pnl_regra WHERE tipo='EXCLUI_PREVISAO'")
+
+
+def test_aba_investimentos_so_para_editor_ou_se_liberada(conn):
+    """Checkbox do editor (SQL-29): padrao = visualizador NAO ve Investimentos; editor sempre ve; liberar/esconder vale na proxima abertura."""
+    _ingerir(conn)
+    acesso.definir(conn, "diretor@empresa.com", acesso.VISUALIZADOR, True, "rafael@x")
+    assert acesso.config_instalada(conn) and acesso.investimentos_para_visualizador(conn) is False
+    with patch("conexao.get_conn", return_value=conn):
+        v = _app_como(conn, "diretor@empresa.com").run()
+        assert not v.exception, v.exception
+        assert "Investimentos" not in [t.label for t in v.tabs]
+        e = AppTest.from_file(str(APP / "telas" / "9_Painel_Diretoria.py"), default_timeout=60)          # o editor abre a pagina da Diretoria direto
+        e.session_state["auth_session"] = SimpleNamespace(user=SimpleNamespace(email="contabilidade@empresa.com"))
+        e.session_state["dir_todas_abas"] = True
+        e.run()
+        assert not e.exception, e.exception
+        assert [t.label for t in e.tabs][-2:] == ["Financiamentos", "Investimentos"]
+        cb = e.checkbox(key="dir_inv_visu")
+        assert cb.value is False
+        cb.check().run()                                                                  # editor libera
+        assert not e.exception, e.exception
+        assert acesso.investimentos_para_visualizador(conn) is True
+        v2 = _app_como(conn, "diretor@empresa.com").run()
+        assert "Investimentos" in [t.label for t in v2.tabs]
+        e.checkbox(key="dir_inv_visu").uncheck().run()                                    # e esconde de novo
+        assert acesso.investimentos_para_visualizador(conn) is False
+        v3 = _app_como(conn, "diretor@empresa.com").run()
+        assert "Investimentos" not in [t.label for t in v3.tabs]

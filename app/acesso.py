@@ -66,3 +66,49 @@ def definir(conn, email: str, papel_: str, ativo: bool, quem: str | None) -> dic
             else:
                 cur.execute("INSERT INTO pnl_acesso (email, papel, ativo, criado_por, alterado_por) VALUES (%s,%s,%s,%s,%s)", (e, papel_, bool(ativo), quem, quem))
     return {"email": e, "papel": papel_, "ativo": bool(ativo), "novo": not existe}
+
+
+# ---------------------------------------------------------------- configuracao: aba Investimentos para visualizadores (SQL-29)
+CHAVE_INVEST = "investimentos_visualizador"
+
+
+def config_instalada(conn) -> bool:
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('gdf.pnl_config') IS NOT NULL")
+            return bool(cur.fetchone()[0])
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
+def investimentos_para_visualizador(conn) -> bool:
+    """True se o EDITOR liberou a aba Investimentos para o login de visualizacao. Padrao: False (tambem enquanto o SQL-29 nao existe)."""
+    if not config_instalada(conn):
+        return False
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT valor FROM pnl_config WHERE chave=%s", (CHAVE_INVEST,))
+            r = cur.fetchone()
+        return bool(r and (r[0] or "").strip().lower() == "sim")
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False
+
+
+def definir_investimentos_para_visualizador(conn, liberar: bool, quem: str | None) -> bool:
+    """Grava a escolha do editor (nunca apaga: so' troca 'sim'/'nao'). Devolve o valor gravado."""
+    if not config_instalada(conn):
+        raise RuntimeError("Falta executar o SQL-29 (sql/v2_config.sql) no Supabase.")
+    v = "sim" if liberar else "nao"
+    with db.transacao(conn):
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO pnl_config (chave, valor, alterado_por) VALUES (%s,%s,%s) "
+                        "ON CONFLICT (chave) DO UPDATE SET valor=EXCLUDED.valor, alterado_por=EXCLUDED.alterado_por, alterado_em=now()", (CHAVE_INVEST, v, quem))
+    return bool(liberar)

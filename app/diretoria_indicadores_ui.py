@@ -70,8 +70,8 @@ def _receitas(_conn, pago_ate, previsao, carimbo):
 
 
 @st.cache_data(ttl=1800, show_spinner="Calculando os financiamentos…")
-def _fin(_conn, dia, previsao, carimbo):
-    return I.financiamentos(_conn, dia, previsao)
+def _fin(_conn, dia, previsao, carimbo, grupo="financiamentos"):
+    return I.financiamentos(_conn, dia, previsao, grupo)
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -155,21 +155,31 @@ def aba_indicadores(conn, mes, carimbo):
 
 
 @st.fragment                                    # clicar numa linha do credor atualiza so' esta aba
-def aba_financiamentos(conn, carimbo):
+def aba_financiamentos(conn, carimbo, grupo="financiamentos", antes=None):
+    """Aba Financiamentos (grupo='financiamentos') ou Investimentos (grupo='investimentos'): mesmo desenho, planos diferentes. `antes` = funcao que desenha algo no topo (ex.: o checkbox do editor)."""
+    inv = grupo == "investimentos"
+    pre = "inv" if inv else "fin"
+    nome = "investimento" if inv else "financiamento"
     dia = hoje()
-    prev = st.checkbox("Incluir documentos de previsão", value=False, key="fin_prev", help="Padrão: fora.")
-    f = _fin(conn, dia, prev, carimbo)
+    if antes:
+        antes()
+    prev = st.checkbox("Incluir documentos de previsão", value=False, key=f"{pre}_prev", help="Padrão: fora.")
+    f = _fin(conn, dia, prev, carimbo, grupo)
     k = st.columns(6)
-    k[0].metric("Saldo devedor", _mi(f["saldo_devedor"]), "capital de giro + financiamentos (2.03.04 + 2.05)", delta_color="off", border=True)
+    k[0].metric("Saldo devedor", _mi(f["saldo_devedor"]), "demais planos 2.05 (investimentos)" if inv else "capital de giro + financiamentos (2.03.04 + 2.05 separados)", delta_color="off", border=True)
     k[1].metric("Juros a pagar", _mi(f["juros_totais"]), "2.03.02", delta_color="off", border=True)
     k[2].metric("Desembolso restante", _mi(f["desembolso_total"]), "principal + juros", delta_color="off", border=True)
     k[3].metric("Contratos ativos", f"{f['contratos']}", f"{f['documentos']} documentos lançados", delta_color="off", border=True)
     k[4].metric("Custo médio", _pct(f["custo_medio"]), f["custo_medio_origem"], delta_color="off", border=True)
     k[5].metric("Encerramento mais longo", f["encerramento_mais_longo"].strftime("%m/%Y") if f["encerramento_mais_longo"] else "–", "última parcela em aberto", delta_color="off", border=True)
-    st.caption(_t(f"Posição em {_data(dia)}: parcelas ainda não pagas dos planos 2.03.02 (juros), 2.03.04 (capital de giro bancário) e 2.05 (financiamentos e imobilizado). "
-                  "Contrato = número “Ct/Contrato” do nome do plano."))
+    if inv:
+        st.caption(_t(f"Posição em {_data(dia)}: parcelas ainda não pagas dos planos 2.05 que **não** são financiamentos (ficam separados para o caso de pedirem para incluir) e dos juros (2.03.02) ligados a esses contratos. "
+                      "Contrato = número “Ct/Contrato” do nome do plano."))
+    else:
+        st.caption(_t(f"Posição em {_data(dia)}: parcelas ainda não pagas dos planos 2.03.02 (juros), 2.03.04 (capital de giro bancário) e dos 2.05 separados como financiamento "
+                      "(2.05.01.01, 2.05.01.03.02, .04, .06 e .07). Contrato = número “Ct/Contrato” do nome do plano."))
     if not f["por_contrato"]:
-        st.info("Nenhum financiamento em aberto na posição.")
+        st.info(f"Nenhum {nome} em aberto na posição.")
         _aviso_cobertura(conn, carimbo)
         return
 
@@ -197,7 +207,7 @@ def aba_financiamentos(conn, carimbo):
                         "Taxa mensal": x["taxa_mensal"], "Encerramento": x["encerramento"]} for x in f["por_credor"]])
     ev = st.dataframe(cr.style.format({"Principal": _fmt_num, "Juros": _fmt_num, "% da carteira": lambda v: _pct(v), "Taxa mensal": lambda v: _pct(v, 2),
                                        "Encerramento": lambda d: d.strftime("%m/%Y") if d else "–"}, na_rep="–"),
-                      hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="fin_cr")
+                      hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key=f"{pre}_cr")
     try:
         sel = cr.iloc[ev.selection.rows[0]]["Credor"] if ev.selection.rows else None
     except Exception:
