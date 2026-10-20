@@ -72,11 +72,14 @@ def test_painel_da_diretoria_com_dados_e_abas(conn):
     with patch("conexao.get_conn", return_value=conn):
         at = _app_como(conn, "diretor@empresa.com").run()
         assert not at.exception, at.exception
-        assert [t.label for t in at.tabs] == ["Resultado", "Obras", "Administração", "Despesas", "Pessoas"]
+        assert [t.label for t in at.tabs] == ["Resultado", "Obras", "Administração", "Despesas", "Pessoas", "Indicadores financeiros", "Financiamentos"]
         assert any("Receita (base-line)" == m.label for m in at.metric)
-        at.session_state["dir_todas_abas"] = True                                       # renderiza as 5 abas (so' a aberta roda por padrao)
+        at.session_state["dir_todas_abas"] = True                                       # renderiza as 7 abas (so' a aberta roda por padrao)
         at.run()
         assert not at.exception, at.exception
+        rotulos = {m.label for m in at.metric}
+        assert {"PMR simples", "PMP ponderado", "Vencido a receber", "Vencido a pagar"} <= rotulos      # aba Indicadores financeiros
+        assert "Saldo devedor" in rotulos or any("financiamento" in (i.value or "").lower() for i in at.info)   # aba Financiamentos (com ou sem contratos)
         at.text_input(key="dir_ob_busca").input("zzz-inexistente").run()                 # busca sem resultado nao quebra
         assert not at.exception, at.exception
 

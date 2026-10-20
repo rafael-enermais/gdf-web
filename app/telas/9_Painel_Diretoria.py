@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 import diretoria_dados as DD
+import diretoria_indicadores_ui as DI
 import formatacao as F
 import historico as HIST
 import painel_db as P
@@ -165,7 +166,7 @@ adm_orc = orc_mes["total"]["orcado"] if orc_mes else None
 resultado = round(bdi - adm_real, 2) if adm_real is not None else None
 
 _TODAS = bool(st.session_state.get("dir_todas_abas"))        # so' os testes ligam: renderiza todas as abas de uma vez
-aba_res, aba_ob, aba_adm, aba_desp, aba_pes = st.tabs(["Resultado", "Obras", "Administração", "Despesas", "Pessoas"], key="dir_abas", on_change="rerun")
+aba_res, aba_ob, aba_adm, aba_desp, aba_pes, aba_ind, aba_fin = st.tabs(["Resultado", "Obras", "Administração", "Despesas", "Pessoas", "Indicadores financeiros", "Financiamentos"], key="dir_abas", on_change="rerun")
 
 
 # ------------------------------------------------------------------ dados compartilhados entre abas (PJ e colaboradores)
@@ -700,3 +701,13 @@ if aba_pes.open or _TODAS:
                     st.dataframe(pd.DataFrame([{"Colaborador PJ": c["credor"], "Alocado em": c["destino"], "Pago no mês": _m(c["valor"])} for c in pj["colaboradores"]]), hide_index=True, width="stretch")
                     _cap("Regra (contabilidade, 20/10/2026): a fonte do PJ são as contas pagas, sem regras próprias. Cada credor com valor positivo conta 1 colaborador, alocado na obra (ou na administração) "
                                "onde recebeu mais no mês.")
+
+
+# ------------------------------------------------------------------ 6) INDICADORES FINANCEIROS  e  7) FINANCIAMENTOS (so' Sienge)
+if aba_ind.open or _TODAS:
+    with aba_ind:
+        DI.aba_indicadores(conn, mes, CARIMBO)
+
+if aba_fin.open or _TODAS:
+    with aba_fin:
+        DI.aba_financiamentos(conn, CARIMBO)
