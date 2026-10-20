@@ -91,16 +91,39 @@ def test_inadimplencia_ate_hoje_e_ate_fim_do_mes(conn, dados):
     assert antes["receber"]["total"] == 0.0                                          # ainda nao tinha vencido
 
 
-def test_vencimento_original_entra_na_inadimplencia(conn, dados):
+def test_data_base_da_parcela_so_vale_depois_de_validada(conn, dados, monkeypatch):
     with conn.cursor() as cur:
-        cur.execute("ALTER TABLE pnl_titulo ADD COLUMN IF NOT EXISTS data_vencimento_original date")
-        cur.execute("UPDATE pnl_titulo SET data_vencimento_original = DATE '2026-08-01' WHERE lado='R' AND bill_id=4")   # prorrogado: o original ja venceu
-    try:
-        ina = I.inadimplencia(conn, dt.date(2026, 10, 19), HOJE)
-        assert ina["usa_vencimento_original"] and ina["receber"]["total"] == 1200.0
-    finally:
-        with conn.cursor() as cur:
-            cur.execute("ALTER TABLE pnl_titulo DROP COLUMN IF EXISTS data_vencimento_original")
+        cur.execute("UPDATE pnl_titulo SET data_base_parcela = DATE '2026-08-01' WHERE lado='R' AND bill_id=4")   # prorrogado: o original ja venceu
+    ina = I.inadimplencia(conn, dt.date(2026, 10, 19), HOJE)
+    assert not ina["usa_vencimento_original"] and ina["receber"]["total"] == 1000.0       # padrao: ainda usa o vencimento atual
+    monkeypatch.setattr(I, "USAR_DATA_BASE_COMO_ORIGINAL", True)
+    ina = I.inadimplencia(conn, dt.date(2026, 10, 19), HOJE)
+    assert ina["usa_vencimento_original"] and ina["receber"]["total"] == 1200.0
+
+
+def test_rotina_guarda_a_data_base_da_parcela(conn):
+    reg = _tit(7, 1, "R", "CLIENTE Z", "2026-09-01", "2026-10-30", 100.0, [_c("1010101", "Receita", 100)])
+    reg["installmentBaseDate"] = "2026-09-30"
+    _gravar(conn, "R", [reg])
+    with conn.cursor() as cur:
+        cur.execute("SELECT data_base_parcela FROM pnl_titulo WHERE bill_id=7")
+        assert cur.fetchone()[0] == dt.date(2026, 9, 30)
+
+
+def test_cadastro_de_financiamento_vale_mais_que_a_sugestao_e_renova_o_cache(conn, dados):
+    antes = P.carimbo_dados(conn)
+    r = P.fin_bem_salvar(conn, [{"chave": "38172", "categoria": "Máquinas e equipamentos", "objeto": "Retroescavadeira", "observacao": "teste"}], "teste@x")
+    assert r == {"novos": 1, "alterados": 0, "limpos": 0}
+    assert P.carimbo_dados(conn) != antes                                              # o painel recalcula sozinho
+    cam = next(c for c in I.financiamentos(conn, HOJE)["por_contrato"] if c["chave"] == "38172")
+    assert (cam["categoria"], cam["objeto"], cam["origem"], cam["sugestao"]) == ("Máquinas e equipamentos", "Retroescavadeira", "Cadastro", "Veículo")
+    assert P.fin_bem_salvar(conn, [{"chave": "38172", "categoria": "Máquinas e equipamentos", "objeto": "Retroescavadeira", "observacao": "teste"}], "teste@x") == {"novos": 0, "alterados": 0, "limpos": 0}
+    assert P.fin_bem_salvar(conn, [{"chave": "38172", "categoria": "", "objeto": "", "observacao": ""}], "teste@x")["limpos"] == 1
+    cam = next(c for c in I.financiamentos(conn, HOJE)["por_contrato"] if c["chave"] == "38172")
+    assert cam["categoria"] == "Veículo" and cam["origem"] == "Sugestão"                # voltou para a sugestao; a linha fica no historico
+    with conn.cursor() as cur:
+        cur.execute("SELECT ativo FROM pnl_financiamento_bem WHERE chave='38172'")
+        assert cur.fetchone()[0] is False
 
 
 def test_receitas_em_aberto_lista_cliente_nota_vencimento(conn, dados):
@@ -136,3 +159,17 @@ def test_classificar_e_chave_de_contrato():
     assert I.classificar("2.05.01.03", "Imobilizado - Maquinário")[0] == "Máquinas e equipamentos"
     assert I.classificar("2.05.01.02", "Aquisição Sala Aruna")[0] == "Imóveis e obras"
     assert I.classificar("2.05.03.01", "Aporte de Capital - Anastacio")[0] == "Aporte de capital"
+
+
+def test_custo_medio_usa_a_taxa_do_contrato_quando_cadastrada(conn, dados):
+    f0 = I.financiamentos(conn, HOJE)
+    assert f0["custo_medio"] == round(200.0 / 7000.0, 4) and "sem taxa" in f0["custo_medio_origem"]       # padrao: juros / saldo
+    P.fin_bem_salvar(conn, [{"chave": "38172", "categoria": "", "objeto": "", "observacao": "", "taxa_mensal": 2.0},
+                            {"chave": "4455667", "taxa_mensal": 1.0}], "teste@x")
+    f = I.financiamentos(conn, HOJE)
+    assert f["custo_medio"] == round((0.02 * 2000 + 0.01 * 5000) / 7000, 4) and "2 de 2" in f["custo_medio_origem"]
+    cam = next(c for c in f["por_contrato"] if c["chave"] == "38172")
+    assert cam["taxa_mensal"] == 0.02 and cam["taxa_origem"] == "Contrato" and cam["origem"] == "Sugestão" and cam["categoria"] == "Veículo"   # so' taxa: categoria segue a sugestao
+    assert next(c for c in f["por_credor"] if c["credor"] == "TRATON")["taxa_mensal"] == 0.02
+    with pytest.raises(ValueError):
+        P.fin_bem_salvar(conn, [{"chave": "38172", "taxa_mensal": 150}], "teste@x")

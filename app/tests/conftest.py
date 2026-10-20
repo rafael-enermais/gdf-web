@@ -33,6 +33,8 @@ DRE_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_dre_pdf.sq
 CONF_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_dre_confirmacao.sql"
 CREDOR_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_credor_grupo.sql"
 IMPOSTO_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_titulo_imposto.sql"
+DATABASE_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_titulo_data_base.sql"
+FINBEM_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_financiamento_bem.sql"
 FOLHA_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_folha.sql"
 ORC_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_orcamento_adm.sql"
 EDICAO_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_edicao.sql"
@@ -116,6 +118,8 @@ def pg_dsn():
         cur.execute(HISTORICO_SQL.read_text(encoding="utf-8"))   # SQL-21: historico do painel da contabilidade
         cur.execute(ACESSO_SQL.read_text(encoding="utf-8"))    # SQL-20: papel de acesso (editor / visualizador)
         cur.execute(OBRA_SQL.read_text(encoding="utf-8"))      # SQL-24: obras do Sienge (nomes)
+        cur.execute(DATABASE_SQL.read_text(encoding="utf-8"))  # SQL-25: data-base da parcela (candidata a vencimento original)
+        cur.execute(FINBEM_SQL.read_text(encoding="utf-8"))    # SQL-26: o que cada financiamento financia (de-para editavel)
     conn.close()
     return dsn
 

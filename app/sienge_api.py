@@ -154,11 +154,11 @@ def buscar_bulk(cli: Cliente, lado: str, mes: str, tipo_data: str, mes_fim: str 
 # A rotina diaria busca por pagamento (P) e por emissao (I). Isso nao traz (a) titulos emitidos antes da janela e ainda nao pagos (inadimplencia antiga) nem
 # (b) parcelas futuras de contratos antigos (financiamentos). Esta busca por VENCIMENTO (D), so' dos titulos ainda em aberto, completa o quadro.
 def janelas_abertos(ini: str, fim: str) -> list:
-    """Divide 'AAAA-MM'..'AAAA-MM' em janelas de 6 meses (ate dez/2026, onde ha muito titulo) e de 12 meses depois (poucos titulos). [(mes_ini, mes_fim)]."""
+    """Divide 'AAAA-MM'..'AAAA-MM' em janelas de 3 meses (ate dez/2026, onde ha muito titulo) e de 12 meses depois (poucos titulos). [(mes_ini, mes_fim)]."""
     a, b = (int(ini[:4]), int(ini[5:7])), (int(fim[:4]), int(fim[5:7]))
     out = []
     while a <= b:
-        passo = 6 if a < (2027, 1) else 12
+        passo = 3 if a < (2027, 1) else 12
         z = a[0] * 12 + (a[1] - 1) + passo - 1
         fim_j = (z // 12, z % 12 + 1)
         if fim_j > b:
@@ -291,6 +291,7 @@ def normalizar_titulos(lado: str, regs: list) -> dict:
                     "numero_doc": str(b.get("documentNumber") or "").strip() or None,
                     "contraparte_id": _int(b.get(contra_id)), "contraparte_nome": b.get(contra_nome),
                     "data_emissao": _data(b.get("issueDate")), "data_vencimento": _data(b.get("dueDate")),
+                    "data_base_parcela": _data(b.get("installmentBaseDate")),                  # candidata a "vencimento original" (a validar com os dados)
                     "valor_original": _num(b.get("originalAmount")),
                     "imposto_titulo": _num(b.get("taxAmount")) if lado == "R" else None,       # impostos da NF (ISS/PIS/COFINS): base do DRE 02.02
                     "tipo_negocio_id": _int(b.get("businessTypeId")), "tipo_negocio_nome": b.get("businessTypeName"),

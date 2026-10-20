@@ -54,6 +54,9 @@ def gravar_normalizado(conn, sync_id: int, norm: dict) -> dict:
             if tit:
                 com_imposto = _tem_coluna(cur, "pnl_titulo", "imposto_titulo")          # SQL-13; sem ela grava como antes (nada quebra)
                 col_extra, upd_extra = (",imposto_titulo", ", imposto_titulo=EXCLUDED.imposto_titulo") if com_imposto else ("", "")
+                com_base = _tem_coluna(cur, "pnl_titulo", "data_base_parcela")          # SQL-25; sem ela grava como antes
+                if com_base:
+                    col_extra, upd_extra = col_extra + ",data_base_parcela", upd_extra + ", data_base_parcela=EXCLUDED.data_base_parcela"
                 execute_values(cur, f"""
                     INSERT INTO pnl_titulo (lado,bill_id,installment_id,sync_id,empresa_id,empresa_nome,origem,doc_id,doc_nome,previsao,numero_doc,
                         contraparte_id,contraparte_nome,data_emissao,data_vencimento,valor_original,tipo_negocio_id,tipo_negocio_nome,
@@ -69,7 +72,8 @@ def gravar_normalizado(conn, sync_id: int, norm: dict) -> dict:
                                [(t["lado"], t["bill_id"], t["installment_id"], sync_id, t["empresa_id"], t["empresa_nome"], t["origem"], t["doc_id"],
                                  t["doc_nome"], t["previsao"], t["numero_doc"], t["contraparte_id"], t["contraparte_nome"], t["data_emissao"],
                                  t["data_vencimento"], t["valor_original"], t["tipo_negocio_id"], t["tipo_negocio_nome"], t["area_id"],
-                                 t["area_nome"], t["projeto_id"], t["projeto_nome"]) + ((t.get("imposto_titulo"),) if com_imposto else ()) for t in tit],
+                                 t["area_nome"], t["projeto_id"], t["projeto_nome"]) + ((t.get("imposto_titulo"),) if com_imposto else ())
+                                + ((t.get("data_base_parcela"),) if com_base else ()) for t in tit],
                                page_size=500)
             if bx:
                 execute_values(cur, """
@@ -843,13 +847,80 @@ def carimbo_dados(conn) -> str:
                 (SELECT count(*) FROM pnl_dre_valor),
                 (SELECT coalesce(max(atualizado_em)::text,'') FROM pnl_obra_sienge),
                 (SELECT coalesce(max(id),0) FROM pnl_log))""")
-            return cur.fetchone()[0] or ""
+            base = cur.fetchone()[0] or ""
+        return base + "|" + _carimbo_financiamento(conn)
     except Exception:
         try:
             conn.rollback()
         except Exception:
             pass
         return ""
+
+
+def _carimbo_financiamento(conn) -> str:
+    """Parte do carimbo do cadastro de financiamentos (SQL-26): vazio se a tabela ainda nao existe (nao derruba o carimbo inteiro)."""
+    if not fin_bem_instalado(conn):
+        return ""
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*)||'/'||coalesce(max(alterado_em)::text,'') FROM pnl_financiamento_bem")
+        return cur.fetchone()[0] or ""
+
+
+def fin_bem_instalado(conn) -> bool:
+    """True se o SQL-26 (sql/v2_financiamento_bem.sql) ja foi executado."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema='gdf' AND table_name='pnl_financiamento_bem'")
+            return cur.fetchone()[0] == 1
+    except Exception:
+        return False
+
+
+def fin_bem_listar(conn) -> dict:
+    """{chave_do_contrato: {'categoria','objeto','observacao','taxa_mensal'(% a.m. ou None)}} so' dos ativos."""
+    if not fin_bem_instalado(conn):
+        return {}
+    with conn.cursor() as cur:
+        cur.execute("SELECT chave, categoria, objeto, observacao, taxa_mensal FROM pnl_financiamento_bem WHERE ativo")
+        return {c: {"categoria": cat, "objeto": obj, "observacao": obs, "taxa_mensal": float(tx) if tx is not None else None}
+                for c, cat, obj, obs, tx in cur.fetchall()}
+
+
+def fin_bem_salvar(conn, linhas: list, usuario: str | None) -> dict:
+    """Grava/atualiza o cadastro de contratos. linhas = [{'chave','categoria','objeto','observacao','taxa_mensal'(% ao mes)}].
+    Sem categoria E sem taxa = tira a definicao manual (ativo=false; volta a sugestao automatica). O log guarda so' contagens.
+    Devolve {'novos','alterados','limpos'}."""
+    novos = alterados = limpos = 0
+    atuais = fin_bem_listar(conn)
+    with db.transacao(conn):
+        with conn.cursor() as cur:
+            for l in linhas:
+                chave = str(l.get("chave") or "").strip()
+                if not chave:
+                    continue
+                cat = (l.get("categoria") or "").strip() or None
+                obj = (l.get("objeto") or "").strip() or None
+                obs = (l.get("observacao") or "").strip() or None
+                tx = l.get("taxa_mensal")
+                tx = round(float(tx), 4) if tx not in (None, "") and tx == tx else None
+                if tx is not None and not (0 <= tx <= 100):
+                    raise ValueError("A taxa mensal deve estar entre 0 e 100 (% ao mês).")
+                antes = atuais.get(chave)
+                if not cat and tx is None and not obj and not obs:
+                    if antes:
+                        cur.execute("UPDATE pnl_financiamento_bem SET ativo=false, alterado_por=%s, alterado_em=now() WHERE chave=%s", (usuario, chave))
+                        limpos += 1
+                    continue
+                if antes and (antes["categoria"], antes["objeto"], antes["observacao"], antes["taxa_mensal"]) == (cat, obj, obs, tx):
+                    continue
+                cur.execute("""INSERT INTO pnl_financiamento_bem (chave, categoria, objeto, observacao, taxa_mensal, ativo, alterado_por)
+                               VALUES (%s,%s,%s,%s,%s,true,%s)
+                               ON CONFLICT (chave) DO UPDATE SET categoria=EXCLUDED.categoria, objeto=EXCLUDED.objeto, observacao=EXCLUDED.observacao,
+                                   taxa_mensal=EXCLUDED.taxa_mensal, ativo=true, alterado_por=EXCLUDED.alterado_por, alterado_em=now()""",
+                            (chave, cat, obj, obs, tx, usuario))
+                novos, alterados = (novos + 1, alterados) if not antes else (novos, alterados + 1)
+    registrar_log(conn, "FINANCIAMENTO_BEM_SALVO", "INFO", usuario, None, {"novos": novos, "alterados": alterados, "limpos": limpos})
+    return {"novos": novos, "alterados": alterados, "limpos": limpos}
 
 
 def meses_confirmados(conn) -> list:

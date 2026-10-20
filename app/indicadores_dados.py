@@ -45,10 +45,15 @@ def _tem_coluna(conn, tabela: str, coluna: str) -> bool:
         return cur.fetchone() is not None
 
 
+# So' vira True depois de validar com os dados reais que a data-base da parcela (installmentBaseDate) e' o vencimento ORIGINAL do Sienge
+# (diagnostico: SELECT count(*) FILTER (WHERE data_base_parcela <> data_vencimento) ... em gdf.pnl_titulo). Ate la a inadimplencia usa o vencimento atual.
+USAR_DATA_BASE_COMO_ORIGINAL = False
+
+
 def coluna_vencimento(conn) -> str:
-    """Expressao SQL do vencimento para inadimplencia: o ORIGINAL quando a coluna existe (e tem valor), senao o vencimento atual."""
-    if _tem_coluna(conn, "pnl_titulo", "data_vencimento_original"):
-        return "COALESCE(t.data_vencimento_original, t.data_vencimento)"
+    """Expressao SQL do vencimento para inadimplencia: o ORIGINAL (data-base da parcela) quando validado e a coluna existe, senao o vencimento atual."""
+    if USAR_DATA_BASE_COMO_ORIGINAL and _tem_coluna(conn, "pnl_titulo", "data_base_parcela"):
+        return "COALESCE(t.data_base_parcela, t.data_vencimento)"
     return "t.data_vencimento"
 
 
@@ -199,6 +204,9 @@ def classificar(plano_cod: str | None, plano_nome: str | None) -> tuple:
     return "Outros financiamentos", limpo
 
 
+CATEGORIAS_FIN = ("Capital de giro", "Veículo", "Máquinas e equipamentos", "Imóveis e obras", "Aporte de capital", "Outros financiamentos")
+
+
 def _meses_ate(hoje: dt.date, venc: dt.date) -> int:
     return max(1, (venc.year - hoje.year) * 12 + (venc.month - hoje.month))
 
@@ -247,37 +255,54 @@ def financiamentos(conn, hoje: dt.date | None = None, incluir_previsao: bool = F
                 d = curva.setdefault(mes, {"mes": mes, "principal": 0.0, "juros": 0.0})
                 d["juros" if eh_juros else "principal"] += aberto
     lista = []
+    manual = P.fin_bem_listar(conn)                  # "o que e" definido por uma pessoa (SQL-26); vale mais que a sugestao automatica
     for c in contratos.values():
         if c["principal_aberto"] + c["juros_aberto"] <= 0.004:
             continue
         credor = max(c["credores"], key=c["credores"].get) if c["credores"] else "(sem credor)"
-        lista.append({"chave": c["chave"], "credor": credor, "categoria": c["categoria"] or "Outros financiamentos", "objeto": c["objeto"] or c["chave"],
+        sugestao_cat, sugestao_obj = c["categoria"] or "Outros financiamentos", c["objeto"] or c["chave"]
+        m = manual.get(c["chave"])
+        implicita = round(c["juros_aberto"] / c["base"], 4) if c["base"] > 0 and c["juros_aberto"] > 0 else None
+        taxa_cad = m["taxa_mensal"] / 100.0 if m and m.get("taxa_mensal") is not None else None          # cadastro guarda em % ao mes
+        lista.append({"chave": c["chave"], "credor": credor, "categoria": (m["categoria"] if m and m["categoria"] else sugestao_cat),
+                      "objeto": (m["objeto"] or sugestao_obj) if m else sugestao_obj, "observacao": m["observacao"] if m else None,
+                      "origem": "Cadastro" if m and (m["categoria"] or m["objeto"]) else "Sugestão", "sugestao": sugestao_cat,
+                      "taxa_contrato": taxa_cad, "taxa_implicita": implicita,
                       "documentos": len(c["docs"]), "parcelas": len(c["parcelas_abertas"]), "principal_total": round(c["principal_total"], 2),
                       "principal": round(c["principal_aberto"], 2), "juros": round(c["juros_aberto"], 2),
                       "proximo": min(c["venc_abertos"]) if c["venc_abertos"] else None, "encerramento": max(c["venc_abertos"]) if c["venc_abertos"] else None,
-                      "taxa_mensal": round(c["juros_aberto"] / c["base"], 4) if c["base"] > 0 and c["juros_aberto"] > 0 else None})
+                      "taxa_mensal": taxa_cad if taxa_cad is not None else implicita, "taxa_origem": "Contrato" if taxa_cad is not None else ("Implícita" if implicita is not None else None)})
     lista.sort(key=lambda d: -(d["principal"] + d["juros"]))
     saldo = round(sum(d["principal"] for d in lista), 2)
     juros = round(sum(d["juros"] for d in lista), 2)
     por_credor = {}
     for d in lista:
-        a = por_credor.setdefault(d["credor"], {"credor": d["credor"], "contratos": 0, "principal": 0.0, "juros": 0.0, "base": 0.0, "encerramento": None})
+        a = por_credor.setdefault(d["credor"], {"credor": d["credor"], "contratos": 0, "principal": 0.0, "juros": 0.0, "pxt": 0.0, "pbase": 0.0, "encerramento": None})
         a["contratos"] += 1
         a["principal"] = round(a["principal"] + d["principal"], 2)
         a["juros"] = round(a["juros"] + d["juros"], 2)
-        a["base"] += (d["juros"] / d["taxa_mensal"]) if d["taxa_mensal"] else 0.0
+        if d["taxa_mensal"] is not None and d["principal"] > 0:           # taxa do credor = media das taxas dos contratos ponderada pelo saldo
+            a["pxt"] += d["taxa_mensal"] * d["principal"]
+            a["pbase"] += d["principal"]
         if d["encerramento"] and (a["encerramento"] is None or d["encerramento"] > a["encerramento"]):
             a["encerramento"] = d["encerramento"]
     credores = []
     for a in por_credor.values():
         a["pct_carteira"] = round(a["principal"] / saldo, 4) if saldo else None
-        a["taxa_mensal"] = round(a["juros"] / a["base"], 4) if a["base"] > 0 and a["juros"] > 0 else None
-        a.pop("base")
+        a["taxa_mensal"] = round(a["pxt"] / a["pbase"], 4) if a["pbase"] > 0 else None
+        a.pop("pxt")
+        a.pop("pbase")
         credores.append(a)
     credores.sort(key=lambda a: -a["principal"])
     fins = [d["encerramento"] for d in lista if d["encerramento"]]
+    com_taxa = [d for d in lista if d["taxa_contrato"] is not None and d["principal"] > 0]
+    if com_taxa:                          # contabilidade (20/10/2026): custo medio pela TAXA DE CADA CONTRATO quando houver; media ponderada pelo saldo
+        custo = round(sum(d["taxa_contrato"] * d["principal"] for d in com_taxa) / sum(d["principal"] for d in com_taxa), 4)
+        custo_origem = f"taxa cadastrada de {len(com_taxa)} de {len(lista)} contratos, ponderada pelo saldo"
+    else:
+        custo, custo_origem = (round(juros / saldo, 4) if saldo else None), "juros ÷ saldo devedor (sem taxa de contrato cadastrada)"
     return {"hoje": hoje, "saldo_devedor": saldo, "juros_totais": juros, "desembolso_total": round(saldo + juros, 2), "contratos": len(lista),
-            "documentos": sum(d["documentos"] for d in lista), "custo_medio": round(juros / saldo, 4) if saldo else None,
+            "documentos": sum(d["documentos"] for d in lista), "custo_medio": custo, "custo_medio_origem": custo_origem,
             "encerramento_mais_longo": max(fins) if fins else None, "por_contrato": lista, "por_credor": credores,
             "curva": [{"mes": m, "principal": round(v["principal"], 2), "juros": round(v["juros"], 2)} for m, v in sorted(curva.items())]}
 

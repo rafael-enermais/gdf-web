@@ -88,6 +88,7 @@ def _aviso_cobertura(conn, carimbo):
         st.caption(f"Títulos em aberto completos até a última carga semanal: {fuso.fmt_br(quando)}.")
 
 
+@st.fragment                                    # clicar/filtrar aqui recalcula so' esta aba (nao a pagina inteira)
 def aba_indicadores(conn, mes, carimbo):
     dia = hoje()
     c1, c2, c3 = st.columns([1, 1, 1])
@@ -153,6 +154,7 @@ def aba_indicadores(conn, mes, carimbo):
     _aviso_cobertura(conn, carimbo)
 
 
+@st.fragment                                    # clicar numa linha do credor atualiza so' esta aba
 def aba_financiamentos(conn, carimbo):
     dia = hoje()
     prev = st.checkbox("Incluir documentos de previsão", value=False, key="fin_prev", help="Padrão: fora.")
@@ -162,7 +164,7 @@ def aba_financiamentos(conn, carimbo):
     k[1].metric("Juros a pagar", _mi(f["juros_totais"]), "2.03.02", delta_color="off", border=True)
     k[2].metric("Desembolso restante", _mi(f["desembolso_total"]), "principal + juros", delta_color="off", border=True)
     k[3].metric("Contratos ativos", f"{f['contratos']}", f"{f['documentos']} documentos lançados", delta_color="off", border=True)
-    k[4].metric("Custo médio", _pct(f["custo_medio"]), "juros ÷ saldo devedor", delta_color="off", border=True)
+    k[4].metric("Custo médio", _pct(f["custo_medio"]), f["custo_medio_origem"], delta_color="off", border=True)
     k[5].metric("Encerramento mais longo", f["encerramento_mais_longo"].strftime("%m/%Y") if f["encerramento_mais_longo"] else "–", "última parcela em aberto", delta_color="off", border=True)
     st.caption(_t(f"Posição em {_data(dia)}: parcelas ainda não pagas dos planos 2.03.02 (juros), 2.03.04 (capital de giro bancário) e 2.05 (financiamentos e imobilizado). "
                   "Contrato = número “Ct/Contrato” do nome do plano."))
@@ -192,22 +194,22 @@ def aba_financiamentos(conn, carimbo):
 
     st.markdown("**Por credor (banco / financiadora)** — clique para filtrar os contratos")
     cr = pd.DataFrame([{"Credor": x["credor"], "Contratos": x["contratos"], "Principal": x["principal"], "Juros": x["juros"], "% da carteira": x["pct_carteira"],
-                        "Taxa mensal (implícita)": x["taxa_mensal"], "Encerramento": x["encerramento"]} for x in f["por_credor"]])
-    ev = st.dataframe(cr.style.format({"Principal": _fmt_num, "Juros": _fmt_num, "% da carteira": lambda v: _pct(v), "Taxa mensal (implícita)": lambda v: _pct(v, 2),
+                        "Taxa mensal": x["taxa_mensal"], "Encerramento": x["encerramento"]} for x in f["por_credor"]])
+    ev = st.dataframe(cr.style.format({"Principal": _fmt_num, "Juros": _fmt_num, "% da carteira": lambda v: _pct(v), "Taxa mensal": lambda v: _pct(v, 2),
                                        "Encerramento": lambda d: d.strftime("%m/%Y") if d else "–"}, na_rep="–"),
                       hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="fin_cr")
     try:
         sel = cr.iloc[ev.selection.rows[0]]["Credor"] if ev.selection.rows else None
     except Exception:
         sel = None
-    st.caption("Taxa mensal implícita = juros a pagar ÷ (saldo de cada parcela × meses até vencer); é uma aproximação, não a taxa do contrato.")
+    st.caption("Taxa mensal = taxa cadastrada do contrato (Importações → Financiamentos); sem cadastro, usa a aproximação implícita (juros a pagar ÷ saldo de cada parcela × meses até vencer). Credor = média ponderada pelo saldo.")
 
-    ct = pd.DataFrame([{"Credor": c["credor"], "Categoria": c["categoria"], "Objeto": c["objeto"], "Contrato": c["chave"], "Parcelas": c["parcelas"], "Principal": c["principal"],
-                        "Juros": c["juros"], "Próximo vencimento": c["proximo"], "Encerramento": c["encerramento"], "Taxa mensal": c["taxa_mensal"]} for c in f["por_contrato"]])
+    ct = pd.DataFrame([{"Credor": c["credor"], "Categoria": c["categoria"], "Objeto": c["objeto"], "Origem": c["origem"], "Contrato": c["chave"], "Parcelas": c["parcelas"], "Principal": c["principal"],
+                        "Juros": c["juros"], "Próximo vencimento": c["proximo"], "Encerramento": c["encerramento"], "Taxa mensal": c["taxa_mensal"], "Taxa": c["taxa_origem"]} for c in f["por_contrato"]])
     if sel:
         ct = ct[ct["Credor"] == sel]
     st.markdown(f"**Contratos{' · ' + sel if sel else ''}**")
     st.dataframe(ct.style.format({"Principal": _fmt_num, "Juros": _fmt_num, "Próximo vencimento": lambda d: _data(d), "Encerramento": lambda d: d.strftime("%m/%Y") if d else "–",
                                   "Taxa mensal": lambda v: _pct(v, 2)}, na_rep="–"), hide_index=True, width="stretch")
-    st.caption("Categoria e objeto vêm do plano de contas e do nome do lançamento (veículo, máquina, imóvel, capital de giro).")
+    st.caption("Origem “Sugestão” = classificação automática pelo plano de contas e pelo nome do lançamento; “Cadastro” = definida por uma pessoa no Painel EnerMais (Importações → Financiamentos).")
     _aviso_cobertura(conn, carimbo)

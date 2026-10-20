@@ -13,6 +13,7 @@ import importador_dre
 import importador_folha
 import importador_orcamento
 import importador_projecao
+import indicadores_dados as IND
 import painel_db as P
 
 TIPOS = {"DRE": "DRE oficial (PDF)", "FOLHA": "Folha (PDF)", "PROJECAO": "Projeção (xlsx)", "ORCAMENTO": "Orçamento ADM (PDF)", "HISTORICO": "Histórico do painel (HTML)"}
@@ -474,6 +475,49 @@ def _cadastro_credores(conn, usuario):
             st.rerun()
 
 
+def _cadastro_financiamentos(conn, usuario):
+    """De-para dos financiamentos: o que cada contrato financia (maquina, veiculo...). O painel sugere; aqui corrige. Aparece na aba Financiamentos da Diretoria."""
+    st.markdown("**Cadastro: o que cada financiamento financia**")
+    if not P.fin_bem_instalado(conn):
+        st.warning("Falta executar o **SQL-26** (`sql/v2_financiamento_bem.sql`) no Supabase para poder cadastrar. Até lá a Diretoria mostra só a sugestão automática.")
+        return
+    st.caption("Só contratos com saldo em aberto. “Sugestão” é a classificação automática (o bem = o plano financeiro lançado); corrija a categoria ou o que foi financiado se precisar. "
+               "A **taxa do contrato (% ao mês)** não vem do Sienge: se tiver, preencha e o custo médio passa a usar a taxa de cada contrato. Deixar tudo vazio volta para a sugestão. Nada é apagado.")
+    try:
+        f = IND.financiamentos(conn)
+    except Exception as exc:
+        st.info(f"Não consegui listar os contratos agora: {exc}")
+        return
+    if not f["por_contrato"]:
+        st.info("Nenhum contrato com saldo em aberto ainda (depende da carga semanal de títulos em aberto).")
+        return
+    base = pd.DataFrame([{"Contrato": c["chave"], "Credor": c["credor"], "Saldo (principal)": c["principal"], "Sugestão": c["sugestao"],
+                          "Categoria": c["categoria"] if c["origem"] == "Cadastro" else None, "Objeto": c["objeto"] if c["origem"] == "Cadastro" else None,
+                          "Taxa do contrato (% a.m.)": (round(c["taxa_contrato"] * 100, 4) if c["taxa_contrato"] is not None else None),
+                          "Observação": c.get("observacao")} for c in f["por_contrato"]])
+    ed = st.data_editor(base, key="pn2_finbem_ed", hide_index=True, width="stretch", num_rows="fixed",
+                        disabled=["Contrato", "Credor", "Saldo (principal)", "Sugestão"],
+                        column_config={"Saldo (principal)": st.column_config.NumberColumn(format="%.2f"),
+                                       "Categoria": st.column_config.SelectboxColumn("Categoria (cadastro)", options=list(IND.CATEGORIAS_FIN)),
+                                       "Objeto": st.column_config.TextColumn("O que foi financiado"), "Observação": st.column_config.TextColumn("Observação"),
+                                       "Taxa do contrato (% a.m.)": st.column_config.NumberColumn(format="%.4f", min_value=0.0, max_value=100.0)})
+    linhas, mudou = [], []
+    for (_, r0), (_, r1) in zip(base.iterrows(), ed.iterrows()):
+        cols = ("Categoria", "Objeto", "Observação", "Taxa do contrato (% a.m.)")
+        n0 = tuple(_norm(r0[k]) for k in cols)
+        n1 = tuple(_norm(r1[k]) for k in cols)
+        if n0 != n1:
+            mudou.append({"chave": r1["Contrato"], "categoria": n1[0], "objeto": n1[1], "observacao": n1[2], "taxa_mensal": n1[3]})
+    if st.button(f"Salvar {len(mudou)} alteração(ões) dos financiamentos", type="primary", disabled=not mudou, key="pn2_finbem_salvar"):
+        try:
+            r = P.fin_bem_salvar(conn, mudou, usuario)
+            st.cache_data.clear()
+            st.toast(f"Financiamentos salvos: {r['novos']} novo(s), {r['alterados']} alterado(s), {r['limpos']} voltaram à sugestão.", icon="✅")
+            st.rerun()
+        except Exception as exc:
+            st.error(f"Não consegui salvar: {exc}")
+
+
 def _log_edicoes(conn):
     st.markdown("**Histórico de edições**")
     if not P.edicao_instalada(conn):
@@ -509,5 +553,7 @@ def render(conn, usuario):
     _cadastros(conn, usuario)
     st.divider()
     _cadastro_credores(conn, usuario)
+    st.divider()
+    _cadastro_financiamentos(conn, usuario)
     st.divider()
     _log_edicoes(conn)

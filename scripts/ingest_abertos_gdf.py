@@ -12,6 +12,7 @@ O repositorio e' PUBLICO e o log tambem: imprime SO contagens e tempos.
 from __future__ import annotations
 
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -24,6 +25,27 @@ import sienge_api as S  # noqa: E402
 USUARIO_ROTINA = "rotina-abertos"
 PAUSA_ENTRE_CHAMADAS = 6
 ESPERAS_429 = (30, 60, 120, 240)
+LIMITE_POR_JANELA_S = 300          # se uma janela passar disso, desiste dela (registra no log) e segue para a proxima, em vez de ficar parado
+
+
+class _Estourou(Exception):
+    pass
+
+
+def _com_limite(segundos: int, fn):
+    """Roda fn() e aborta com _Estourou se passar de `segundos` (so' onde ha SIGALRM, ou seja, no GitHub/Linux; nos testes roda direto)."""
+    if not segundos or not hasattr(signal, "SIGALRM"):
+        return fn()
+    try:
+        antigo = signal.signal(signal.SIGALRM, lambda *_: (_ for _ in ()).throw(_Estourou()))
+    except ValueError:                                   # fora da thread principal
+        return fn()
+    signal.alarm(segundos)
+    try:
+        return fn()
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, antigo)
 
 
 def _contar_data_base_diferente(regs: list) -> tuple:
@@ -40,7 +62,7 @@ def _contar_data_base_diferente(regs: list) -> tuple:
     return dif, tot
 
 
-def executar(conn, cli, ini: str, fim: str, gravar: bool, buscar=None, log=print) -> int:
+def executar(conn, cli, ini: str, fim: str, gravar: bool, buscar=None, log=print, limite_s: int = 0) -> int:
     """Devolve 0 (ok) ou 1 (alguma busca falhou). `buscar(cli, lado, mes_ini, tipo, mes_fim=)` injetavel para teste."""
     buscar = buscar or S.buscar_bulk
     falhas = 0
@@ -54,8 +76,9 @@ def executar(conn, cli, ini: str, fim: str, gravar: bool, buscar=None, log=print
         erro = None
         for (a, b) in S.janelas_abertos(ini, fim):
             t0 = time.monotonic()
+            log(f"{lado} vencimento {a}..{b}: pedindo ao Sienge...")
             try:
-                regs = buscar(cli, lado, a, "D", mes_fim=b)
+                regs = _com_limite(limite_s, lambda: buscar(cli, lado, a, "D", mes_fim=b))
                 abertos = S.somente_abertos(regs, lado)
                 if regs and not campos_vistos[lado] and isinstance(regs[0], dict):       # SO os nomes dos campos (nunca valores): confere se existe 'vencimento original'
                     campos_vistos[lado] = True
@@ -69,6 +92,10 @@ def executar(conn, cli, ini: str, fim: str, gravar: bool, buscar=None, log=print
                     cont = P.gravar_normalizado(conn, sids[lado], S.normalizar_titulos(lado, abertos))
                     for k in acum:
                         acum[k] += cont.get(k) or 0
+            except _Estourou:
+                falhas += 1
+                erro = f"janela {a}..{b} passou de {limite_s}s sem resposta"
+                log(f"ERRO {lado} vencimento {a}..{b}: sem resposta em {limite_s}s (desisti desta janela)")
             except Exception as exc:
                 falhas += 1
                 erro = str(exc)
@@ -99,7 +126,7 @@ def main(env=None) -> int:
         return 1
     cli = S.Cliente(user, pwd, base, pausa=PAUSA_ENTRE_CHAMADAS, esperas_429=ESPERAS_429)
     if not gravar:
-        return executar(None, cli, ini, fim, False)
+        return executar(None, cli, ini, fim, False, limite_s=LIMITE_POR_JANELA_S)
     import psycopg2
     url = (env.get("DATABASE_URL") or "").strip()
     if not url:
@@ -118,7 +145,7 @@ def main(env=None) -> int:
         print(f"ERRO ao conectar no banco ({type(exc).__name__}).")
         return 1
     try:
-        return executar(conn, cli, ini, fim, True)
+        return executar(conn, cli, ini, fim, True, limite_s=LIMITE_POR_JANELA_S)
     finally:
         conn.close()
 

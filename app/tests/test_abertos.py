@@ -13,8 +13,8 @@ _spec.loader.exec_module(A)
 
 def test_janelas_cobrem_tudo_sem_buraco_nem_sobreposicao():
     j = S.janelas_abertos("2023-01", "2032-12")
-    assert j[0] == ("2023-01", "2023-06") and j[-1] == ("2032-01", "2032-12")
-    assert ("2026-07", "2026-12") in j and ("2027-01", "2027-12") in j
+    assert j[0] == ("2023-01", "2023-03") and j[-1] == ("2032-01", "2032-12")
+    assert ("2026-10", "2026-12") in j and ("2027-01", "2027-12") in j
     for (a1, b1), (a2, b2) in zip(j, j[1:]):
         y, m = int(b1[:4]), int(b1[5:])
         assert (a2 == f"{y + 1}-01") if m == 12 else (a2 == f"{y}-{m + 1:02d}")
@@ -52,3 +52,20 @@ def test_falha_de_uma_janela_devolve_1_e_segue():
             raise S.ErroSienge("boom")
         return []
     assert A.executar(None, None, "2026-01", "2026-12", False, buscar=buscar, log=lambda *_: None) == 1
+
+
+def test_janela_que_nao_responde_e_pulada_e_a_rotina_segue():
+    """Se uma janela passar do limite, registra ERRO e continua nas proximas (antes ficava parado ate o fim do job)."""
+    import time as _t
+    chamadas, linhas = [], []
+
+    def buscar(cli, lado, a, tipo, mes_fim=None):
+        chamadas.append((lado, a))
+        if a == "2026-01":
+            _t.sleep(5)            # simula o Sienge parado
+        return []
+
+    rc = A.executar(None, None, "2025-10", "2026-03", False, buscar=buscar, log=linhas.append, limite_s=1)
+    assert rc == 1
+    assert any("sem resposta" in l and "2026-01" in l for l in linhas)
+    assert ("P", "2026-04") not in chamadas and ("R", "2025-10") in chamadas      # seguiu para a proxima janela e para o outro lado
