@@ -113,3 +113,21 @@ def test_credores_da_obra():
     assert DD.credores_da_obra(dd, ["104"], "2026-09")["linhas"] == [{"chave": "FORN B", "acumulado": 200.0, "mes": 200.0}]
     assert DD.credores_da_obra(dd, None, "2026-09")["total"] == 650.0                                                  # todas as obras, inclusive ADM
     assert DD.credores_da_obra(dd, ["999"], "2026-09") == {"linhas": [], "n": 0, "total": 0.0}
+
+
+def test_agrupar_demais_obras_cinco_lucros_cinco_prejuizos_e_com_projecao():
+    def _o(cod, rec, cus):
+        return {"obra": cod, "nome": f"OBRA {cod}", "receita": rec, "custo": -cus, "bdi": rec - cus, "margem": (rec - cus) / rec if rec else None}
+    linhas = [_o(str(i), 1000.0 + i, 500.0) for i in range(1, 8)]                 # 7 obras com lucro: ficam as 5 maiores (7,6,5,4,3)
+    linhas += [_o(str(100 + i), 100.0, 300.0 + i) for i in range(1, 8)]           # 7 com prejuizo: ficam as 5 piores (107..103)
+    linhas += [_o("1026", 50.0, 10.0), _o("500", 0.0, 5.0)]                       # 1026 sempre em Demais; 500 sem projecao
+    dem0 = {"obra": "DEM", "nome": "Demais obras (2)", "receita": 10.0, "custo": -4.0, "n": 2, "bdi": 6.0, "margem": 0.6}
+    ob = {"linhas": linhas + [dem0], "total": {"receita": 1, "custo": 1, "bdi": 0, "margem": None}}
+    r = P.agrupar_demais_obras(ob, {"1", "500", "1026"})                           # 1 e 500 tem projecao (ficam); 1026 continua em Demais
+    cods = [l["obra"] for l in r["linhas"]]
+    assert set(cods) == {"7", "6", "5", "4", "3", "107", "106", "105", "104", "103", "1", "500", "DEM"} and cods[-1] == "DEM"
+    dem = r["linhas"][-1]
+    assert dem["n"] == 6 and dem["nome"] == "Demais obras (6)"                      # obra 2 (lucro) + 102 e 101 (prejuizo) + 1026 + as 2 que ja estavam em DEM
+    assert round(sum(l["receita"] for l in r["linhas"]), 2) == round(sum(l["receita"] for l in ob["linhas"]), 2)       # totais nao mudam
+    assert round(sum(l["custo"] for l in r["linhas"]), 2) == round(sum(l["custo"] for l in ob["linhas"]), 2)
+    assert len(ob["linhas"]) == 17 and ob["linhas"][-1]["obra"] == "DEM"           # a entrada nao e alterada

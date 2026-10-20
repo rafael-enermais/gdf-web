@@ -103,19 +103,23 @@ def test_adm_linhas_so_centros_adm_com_regras_e_periodo(conn):
 
 
 @pytest.mark.pg
-def test_detalhe_da_administracao_inclui_pessoal_e_o_resumo_nao(conn):
+def test_detalhe_da_administracao_inclui_pessoal_adm_mas_nao_transferencias(conn):
     """Bug 20/10: o detalhe 'Quem recebeu' do grupo 2.02.01 (mao de obra propria) aparecia vazio porque aplicava a regra das Despesas (pessoal fora).
-    Agora o detalhe usa todas as contas pagas nas unidades ADM (mes e ano); o resumo da aba Despesas continua sem as contas excluidas."""
+    Agora o detalhe mantem o pessoal ADM (2.02.01, que o Orcamento ADM inclui) e continua sem transferencias (1.03.02.02) e emprestimos (2.04.02);
+    o resumo da aba Despesas segue com todas as regras."""
     import relatorio_painel_pdf as RPP
-    _montar(conn)
-    sem_regra = P.adm_linhas(conn, "2026-09", "2026-09", [], sem_previsao=True)
-    com_regra = P.adm_linhas(conn, "2026-09", "2026-09", PREF, sem_previsao=True)
-    excl = lambda l: any(l["plano_cod"] == p or l["plano_cod"].startswith(p + ".") for p in PREF)      # noqa: E731
-    assert any(excl(l) for l in sem_regra) and not any(excl(l) for l in com_regra)                     # o pessoal (regra) existe nas contas pagas ADM
+    sid = P.criar_sync(conn, "2026-08", "P", "P", "teste@x")
+    extra = [_t(17, "PESSOAL ADM", 800.0, "2026-09-11", "2020101", 1), _t(18, "TRANSF EMPRESAS", 5000.0, "2026-09-11", "1030202", 1), _t(19, "EMPRESTIMO", 700.0, "2026-09-11", "2040201", 1)]
+    cont = P.gravar_normalizado(conn, sid, S.normalizar_titulos("P", _regs() + extra))
+    P.finalizar_sync(conn, sid, "OK", cont["titulos"], cont["baixas"], cont["rateios"], cont["liquido"])
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO pnl_centro_grupo (centro_custo_id, centro_nome, empresa_nome, grupo, codigo_obra) VALUES "
+                    "(1,'SEDE A','EMPRESA A','ADM','ADM'),(2,'SEDE B','EMPRESA B','ADM','ADM'),(1049,'OBRA 1','EMPRESA A','OBRA','103')")
     adm = RPP.montar_ctx(conn, "2026-09")["adm"]
-    assert any(excl(l) for l in adm["linhas"])
+    cods = {l["plano_cod"] for l in adm["linhas"]}
+    assert "2.02.01.01" in cods and "1.03.02.02" not in cods and "2.04.02.01" not in cods and "2.01.02.01" not in cods
     assert round(sum(l["valor"] for l in adm["linhas_ano"]), 2) >= round(sum(l["valor"] for l in adm["linhas"]), 2)
-    assert adm["resumo"]["total"] == round(sum(l["valor"] for l in adm["linhas"] if not excl(l)), 2)   # o resumo da aba Despesas segue sem as contas excluidas
+    assert round(adm["resumo"]["total"], 2) == 1550.0                          # resumo da aba Despesas: sem pessoal, transferencias e emprestimos (1000 + 400 + 150 de previsao, sem a regra de previsao no teste)
 
 
 @pytest.mark.pg

@@ -733,7 +733,7 @@ def obras_do_dre(conn, mes: str) -> dict | None:
             continue
         linhas.append({"obra": cod, "nome": o["nome"] or "", "receita": rec, "custo": cus})
     if dem["n"]:
-        linhas.append({"obra": "DEM", "nome": f"Demais obras ({dem['n']})", "receita": round(dem["receita"], 2), "custo": round(dem["custo"], 2)})
+        linhas.append({"obra": "DEM", "nome": f"Demais obras ({dem['n']})", "receita": round(dem["receita"], 2), "custo": round(dem["custo"], 2), "n": dem["n"]})
     for l in linhas:
         l["bdi"] = round(l["receita"] + l["custo"], 2)
         l["margem"] = round(l["bdi"] / l["receita"], 4) if abs(l["receita"]) > 0.005 else None
@@ -743,6 +743,31 @@ def obras_do_dre(conn, mes: str) -> dict | None:
     proprias = [l for l in linhas if l["obra"] != "DEM"]
     return {"importacao_id": imp["id"], "arquivo": imp["arquivo"], "linhas": linhas, "total": total,
             "top_lucro": sorted(proprias, key=lambda l: -l["bdi"])[:5], "top_prejuizo": sorted((l for l in proprias if l["bdi"] < 0), key=lambda l: l["bdi"])[:5]}
+
+
+SEMPRE_EM_DEMAIS = ("1026", "1050", "2014", "3009", "5013", "6003")       # contabilidade 13/10: sempre em "Demais obras"
+
+
+def agrupar_demais_obras(ob: dict, com_projecao, n: int = 5) -> dict:
+    """Regra do painel da contabilidade para a tabela de Obras: ficam em linha propria as 5 maiores em BDI positivo, as 5 maiores em BDI negativo e as obras com
+    projecao de receita no mes; todas as outras (e as da lista SEMPRE_EM_DEMAIS) viram a linha 'Demais obras' (DEM). Os totais nao mudam.
+    Recebe o resultado de `obras_do_dre` e devolve uma COPIA com 'linhas' reagrupadas (e 'n' na linha DEM)."""
+    proprias = [l for l in ob["linhas"] if l["obra"] != "DEM"]
+    dem0 = next((l for l in ob["linhas"] if l["obra"] == "DEM"), None)
+    lucro = sorted((l for l in proprias if l["bdi"] > 0.005), key=lambda l: -l["bdi"])[:n]
+    perda = sorted((l for l in proprias if l["bdi"] < -0.005), key=lambda l: l["bdi"])[:n]
+    manter = ({l["obra"] for l in lucro + perda} | {str(c) for c in (com_projecao or [])}) - set(SEMPRE_EM_DEMAIS)
+    ficam = [dict(l) for l in proprias if l["obra"] in manter]
+    resto = [l for l in proprias if l["obra"] not in manter]
+    if resto or dem0:
+        rec = round(sum(l["receita"] for l in resto) + (dem0["receita"] if dem0 else 0.0), 2)
+        cus = round(sum(l["custo"] for l in resto) + (dem0["custo"] if dem0 else 0.0), 2)
+        qtd = len(resto) + (dem0.get("n", 0) if dem0 else 0)
+        bdi = round(rec + cus, 2)
+        ficam.append({"obra": "DEM", "nome": f"Demais obras ({qtd})", "receita": rec, "custo": cus, "n": qtd, "bdi": bdi,
+                      "margem": round(bdi / rec, 4) if abs(rec) > 0.005 else None})
+    ficam.sort(key=lambda l: (l["obra"] == "DEM", -l["receita"]))
+    return {**ob, "linhas": ficam}
 
 
 def resultado_por_obra_api(conn, mes: str, sem_previsao: bool = False, sem_distrato: bool = True, sem_desfeitos: bool = True) -> dict:

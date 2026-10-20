@@ -94,6 +94,10 @@ def montar_ctx(conn, mes: str, gerado_em: str = "") -> dict:
             proj = P.projecao_do_mes(conn, mes)
             if proj:
                 ctx["proj"] = P.projecao_x_realizado(proj, ob, extra)
+            # tabela de Obras como no painel da contabilidade: 5 maiores lucros + 5 maiores prejuizos + obras com projecao; o resto em "Demais obras"
+            com_proj = {x["codigo"] for x in (ctx.get("proj") or {}).get("linhas", []) if x.get("codigo") and x.get("receita_proj")}
+            ob.update(P.agrupar_demais_obras(ob, com_proj))
+            ob["colab"] = P.colab_por_linha_obras(ob["linhas"], folha) if folha else {}
     except Exception as exc:                                    # noqa: BLE001
         ctx["avisos"].append(f"Obras: {type(exc).__name__}")
 
@@ -105,14 +109,17 @@ def montar_ctx(conn, mes: str, gerado_em: str = "") -> dict:
             regras = P.regras_ativas(conn, "DESPESAS")
             fora = P.prefixos_excluidos(regras)
             sem_prev = P.exclui_previsao(regras)
-            todas = P.adm_linhas(conn, mes, mes, [], sem_previsao=sem_prev)          # TODAS as contas pagas nas unidades ADM (inclui pessoal)
+            # detalhe da Diretoria: tira so' o que nao e' despesa (transferencias 1.03.02.02, emprestimos 2.04.02...) e MANTEM o pessoal ADM (2.02.01), que o
+            # Orcamento ADM inclui (grupo "Mao de obra propria e encargos"); o resumo da aba Despesas segue com todas as regras
+            fora_adm = [p for p in fora if p != "2.02.01"]
+            todas = P.adm_linhas(conn, mes, mes, fora_adm, sem_previsao=sem_prev)
             linhas = [l for l in todas if not P._excluido(l["plano_cod"], fora)]     # resumo da aba Despesas: sem as contas excluidas pelas regras
             if todas:
                 outros = P.credor_grupo_ativos(conn) if P.credor_grupo_instalado(conn) else []
                 adm["resumo"] = P.adm_resumo(linhas, [c["chave"] for c in outros], P.nomes_plano(conn)) if linhas else None
                 # detalhe (unidade > credor > conta) do Painel da Diretoria: mesma base do Orcamento ADM (que inclui MAO DE OBRA PROPRIA E ENCARGOS), mes e ano
                 adm["linhas"] = todas
-                adm["linhas_ano"] = P.adm_linhas(conn, f"{mes[:4]}-01", mes, [], sem_previsao=sem_prev)
+                adm["linhas_ano"] = P.adm_linhas(conn, f"{mes[:4]}-01", mes, fora_adm, sem_previsao=sem_prev)
         orc = P.orcamento_ativo(conn) if P.orcamento_instalado(conn) else None
         if orc and mes in orc["meses"]:
             adm["orcamento"] = P.orcamento_resumo(conn, orc["id"], mes)
