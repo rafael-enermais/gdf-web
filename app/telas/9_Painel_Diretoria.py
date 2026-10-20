@@ -279,6 +279,7 @@ if aba_ob.open or _TODAS:
                 regs.append({"Obra": l["obra"], "Nome": RPP._nome_obra(l, nome_cheio), "Receita": l["receita"], "Custos": abs(l["custo"]), "BDI previsto": pr["bdi_proj"] if pr else None,
                              "BDI real": l["bdi"], "Desvio BDI": (l["bdi"] - pr["bdi_proj"]) / abs(pr["bdi_proj"]) if pr and abs(pr["bdi_proj"]) > 0.005 else None,
                              "CLT": clt, "PJ": pj_n, "Colab.": hc, "Fat./colab.": (l["receita"] / hc) if hc and l["obra"] != "DEM" else None,
+                             "Custo/colab.": (abs(l["custo"]) / hc) if hc and l["obra"] != "DEM" else None,
                              "Margem": l["margem"], "receita_proj": pr["receita_proj"] if pr else None})
             base = pd.DataFrame(regs)
             main = base[base["Obra"] != "DEM"]
@@ -299,11 +300,13 @@ if aba_ob.open or _TODAS:
             busca = st.text_input("Pesquisar obra (código ou nome)", key="dir_ob_busca", placeholder="ex.: 104, lote 03, Eletrobras")
             vis = _busca(base, busca, ["Obra", "Nome"]).reset_index(drop=True)
             st.caption("Clique em uma linha para ver o detalhe da obra; clique no cabeçalho para ordenar. Previsto = projeção de receitas do mês.")
-            mostra = vis[["Obra", "Nome", "Receita", "Custos", "BDI previsto", "BDI real", "Desvio BDI", "Colab.", "Fat./colab."]]
-            cfg = {c: st.column_config.NumberColumn(c, format="localized") for c in ("Receita", "Custos", "BDI previsto", "BDI real", "Fat./colab.")}
+            mostra = vis[["Obra", "Nome", "Receita", "Custos", "BDI previsto", "BDI real", "Desvio BDI", "Margem", "Colab.", "Fat./colab.", "Custo/colab."]]
+            cfg = {c: st.column_config.NumberColumn(c, format="localized") for c in ("Receita", "Custos", "BDI previsto", "BDI real", "Fat./colab.", "Custo/colab.")}
             cfg["Desvio BDI"] = st.column_config.NumberColumn("Desvio BDI", format="percent")
+            cfg["Margem"] = st.column_config.NumberColumn("Margem", format="percent")
             ev = st.dataframe(mostra, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="dir_ob_df", column_config=cfg)
             sel = _selecionada(ev, vis)
+            st.caption(f"Total: receita {_mi(tr)} · custos {_mi(tc)} · BDI {_mi(tb)} · {int(base['Colab.'].sum())} colaboradores nas obras.")
             if sel:
                 st.markdown(f"#### {sel['Obra']} · {sel['Nome']}")
                 a, b, c, d = st.columns(4)
@@ -318,6 +321,67 @@ if aba_ob.open or _TODAS:
                 po = pes["folha"]["por_obra"].get(sel["Obra"]) if pes else None
                 e4.metric("Custo da folha CLT por colaborador", _m(po["custo"] / po["colab"]) if po and po["colab"] else "–", border=True)
             st.caption("Colaboradores = CLT da folha do mês + PJ alocado na obra onde mais recebeu em “Salários PJ” (contas pagas). Obras sem projeção não têm BDI previsto.")
+
+            # ---- cascata da obra clicada: principais credores + colaboradores alocados (o clique na linha escolhe a obra nos dois blocos)
+            dfp_ob, fora_ob = _pagos_df()
+            nomes_ob = {l["obra"]: (RPP._nome_obra(l, nome_cheio) or l["obra"]) for l in ob["linhas"]}
+            nao_obra = ("ADM", "99", "")
+            proprias_l = sorted(proprias)
+
+            def _destino_ob(cod: str):
+                """Codigo do de-para -> opcao da lista: obra propria, 'DEM' (demais obras) ou None (administracao / sem de-para ficam fora)."""
+                if cod in proprias:
+                    return cod
+                return None if cod in nao_obra or cod == "sem de-para" else "DEM"
+
+            regs_c = [{"Nome": c["nome"], "Função": c["cargo"], "Tipo": "CLT", "dest": _destino_ob(c["obra"])} for c in P.folha_colaboradores(conn, mes)]
+            for x in DD.pj_por_obra(dfp_ob, mes):
+                regs_c.append({"Nome": x["credor"], "Função": f"Prestador de serviço (PJ) — {round(x['pct'] * 100)}% nesta obra", "Tipo": "PJ", "dest": _destino_ob(x["obra"])})
+            col_df = pd.DataFrame([r for r in regs_c if r["dest"]], columns=["Nome", "Função", "Tipo", "dest"])
+            opcoes = ["ALL"] + [c for c in [*proprias_l, "DEM"] if len(col_df) and (col_df["dest"] == c).any()]
+            nome_op = lambda c: "Todas as obras" if c == "ALL" else ("Demais obras" if c == "DEM" else f"{c} · {nomes_ob.get(c, c)}")      # noqa: E731
+            cod_sel = sel["Obra"] if sel else None
+            if st.session_state.get("dir_ob_ultima") != cod_sel:                    # linha nova clicada (ou limpa): leva a lista para a mesma obra
+                st.session_state["dir_ob_ultima"] = cod_sel
+                st.session_state["dir_col_obra"] = cod_sel if cod_sel in opcoes else "ALL"
+            if st.session_state.get("dir_col_obra") not in opcoes:
+                st.session_state["dir_col_obra"] = "ALL"
+
+            st.markdown(f"**Principais credores · {nomes_ob.get(cod_sel, cod_sel) if cod_sel and cod_sel != 'DEM' else ('demais obras' if cod_sel == 'DEM' else 'todas as obras')}**")
+            dd_ob = DD.despesas_df(dfp_ob, fora_ob)
+            if cod_sel == "DEM":
+                alvo = [c for c in dd_ob["obra"].unique() if c not in proprias and c not in nao_obra] if len(dd_ob) else []
+            else:
+                alvo = [cod_sel] if cod_sel else None
+            cr_ob = DD.credores_da_obra(dd_ob, alvo, mes)
+            if cr_ob["linhas"]:
+                st.dataframe(pd.DataFrame({"Credor": [x["chave"] for x in cr_ob["linhas"]], "Acumulado no ano": [_m(x["acumulado"]) for x in cr_ob["linhas"]],
+                                           "%": [F.pct_br(x["acumulado"] / cr_ob["total"]) if cr_ob["total"] else "–" for x in cr_ob["linhas"]],
+                                           _rot(mes): [_m(x["mes"]) if abs(x["mes"]) > 0.005 else "–" for x in cr_ob["linhas"]]}), hide_index=True, width="stretch")
+                st.caption(("Todos os credores." if cr_ob["n"] <= len(cr_ob["linhas"]) else f"Top {len(cr_ob['linhas'])} de {cr_ob['n']} credores.")
+                           + " Contas pagas, sem pessoal e encargos (estão na lista de colaboradores e na aba Pessoas). Obra pelo centro de custo do lançamento.")
+            else:
+                st.caption("Sem contas pagas para esta seleção (ou falta o de-para de centros de custo → obra).")
+
+            st.markdown(f"**Colaboradores alocados nas obras — {_rot(mes)}**")
+            f1, f2 = st.columns([2, 3])
+            obra_col = f1.selectbox("Obra", opcoes, format_func=nome_op, key="dir_col_obra")
+            q_col = f2.text_input("Buscar nome ou função", key="dir_col_busca", placeholder="ex.: engenheiro, silva")
+            lista = col_df if obra_col == "ALL" else col_df[col_df["dest"] == obra_col]
+            lista = _busca(lista, q_col, ["Nome", "Função"]) if len(lista) else lista
+            if len(lista):
+                mostra_c = lista[["Nome", "Função"]].copy()
+                if obra_col == "ALL":
+                    mostra_c["Obra"] = lista["dest"].map(lambda c: "Demais obras" if c == "DEM" else f"{c} · {nomes_ob.get(c, c)}")
+                st.dataframe(mostra_c, hide_index=True, width="stretch", height=min(35 * (len(mostra_c) + 1) + 3, 420))
+                n_clt = int((lista["Tipo"] == "CLT").sum())
+                n_pj = int(lista.loc[lista["Tipo"] == "PJ", "Nome"].nunique())
+                linhas_pj = int((lista["Tipo"] == "PJ").sum())
+                st.caption(f"{n_clt + n_pj} colaboradores ({n_clt} CLT + {n_pj} PJ)"
+                           + (f"; {linhas_pj - n_pj} linhas a mais porque PJ que atendem mais de uma obra aparecem em cada uma, com o % do valor pago naquela obra" if linhas_pj > n_pj else "")
+                           + ". CLT pelos recibos da folha do mês; PJ pelos credores de “Salários PJ” pagos no mês. Administração fora da lista.")
+            else:
+                st.caption("Sem colaboradores para esta seleção (folha do mês ainda não importada ou obra sem pessoal).")
             if ob["top_prejuizo"]:
                 st.markdown("**Obras com maior prejuízo no mês**")
                 st.dataframe(pd.DataFrame([{"Obra": x["obra"], "Nome": RPP._nome_obra(x, nome_cheio), "BDI": _m(x["bdi"]), "Margem": F.pct_br(x["margem"]) if x["margem"] is not None else "–"}
@@ -380,33 +444,52 @@ if aba_adm.open or _TODAS:
             linhas_adm = adm.get("linhas") or []
             if linhas_adm:
                 filtro_cod = grp_sel["Código"] if grp_sel else None
+                _no_grupo = lambda c: (not filtro_cod) or c == filtro_cod or c.startswith(filtro_cod + ".")      # noqa: E731
                 df_l = pd.DataFrame(linhas_adm)
-                if filtro_cod:
-                    df_l = df_l[df_l["plano_cod"].map(lambda c: c == filtro_cod or c.startswith(filtro_cod + "."))]
+                df_l = df_l[df_l["plano_cod"].map(_no_grupo)]
+                df_a = pd.DataFrame(adm.get("linhas_ano") or linhas_adm)
+                df_a = df_a[df_a["plano_cod"].map(_no_grupo)]
                 st.markdown("#### Quem recebeu: unidade → credor → contas" + (f" · grupo {filtro_cod}" if filtro_cod else ""))
-                if not len(df_l):
-                    st.info("Nenhum pagamento da administração neste grupo no mês.")
+                if not len(df_l) and not len(df_a):
+                    st.info("Nenhum pagamento da administração neste grupo no ano.")
                 else:
-                    un = df_l.groupby("unidade", as_index=False)["valor"].sum().sort_values("valor", ascending=False).reset_index(drop=True)
-                    tot = un["valor"].sum()
-                    st.caption("1) Clique em uma unidade (ou deixe sem seleção para ver todas). 2) Clique em um credor para ver as contas dele. Valores pagos em " + _rot(mes) + ".")
-                    un_m = pd.DataFrame({"Unidade": un["unidade"], "Pago": un["valor"].map(_m), "% do total": un["valor"].map(lambda x: F.pct_br(x / tot) if tot else "–")})
+                    un_mes = df_l.groupby("unidade")["valor"].sum() if len(df_l) else pd.Series(dtype=float)
+                    un_ano = df_a.groupby("unidade")["valor"].sum() if len(df_a) else pd.Series(dtype=float)
+                    un = pd.DataFrame({"unidade": sorted(set(un_mes.index) | set(un_ano.index))})
+                    un["mes"] = un["unidade"].map(lambda u: float(un_mes.get(u, 0.0)))
+                    un["ano"] = un["unidade"].map(lambda u: float(un_ano.get(u, 0.0)))
+                    un = un.sort_values(["ano", "mes"], ascending=False).reset_index(drop=True)
+                    tot_u = float(un["ano"].sum())
+                    st.caption(f"Pago nas unidades da administração (contas pagas, inclui pessoal). 1) Clique em uma unidade (ou deixe sem seleção para ver todas). 2) Clique em um credor para ver as contas dele. "
+                               f"Mês = {_rot(mes)}; ano = jan–{mes[5:]}.")
+                    un_m = pd.DataFrame({"Unidade": un["unidade"], _rot(mes): un["mes"].map(lambda x: _m(x) if abs(x) > 0.005 else "–"), f"Jan–{mes[5:]}": un["ano"].map(_m),
+                                         "% do ano": un["ano"].map(lambda x: F.pct_br(x / tot_u) if tot_u else "–")})
                     ev_u = st.dataframe(un_m, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="dir_adm_un")
                     su = _selecionada(ev_u, un)
                     if su:
                         df_l = df_l[df_l["unidade"] == su["unidade"]]
+                        df_a = df_a[df_a["unidade"] == su["unidade"]]
                         st.markdown(f"Credores em **{su['unidade']}**")
                     bc = st.text_input("Pesquisar credor", key="dir_adm_busca")
-                    cr = df_l.groupby("credor", as_index=False)["valor"].sum().sort_values("valor", ascending=False)
-                    cr = _busca(cr, bc, ["credor"]).reset_index(drop=True)
-                    tot_c = df_l["valor"].sum()
-                    cr_m = pd.DataFrame({"Credor": cr["credor"], "Pago": cr["valor"].map(_m), "% do filtro": cr["valor"].map(lambda x: F.pct_br(x / tot_c) if tot_c else "–")}).head(60)
+                    c_mes = df_l.groupby("credor")["valor"].sum() if len(df_l) else pd.Series(dtype=float)
+                    c_ano = df_a.groupby("credor")["valor"].sum() if len(df_a) else pd.Series(dtype=float)
+                    cr = pd.DataFrame({"credor": sorted(set(c_mes.index) | set(c_ano.index))})
+                    cr["mes"] = cr["credor"].map(lambda c: float(c_mes.get(c, 0.0)))
+                    cr["ano"] = cr["credor"].map(lambda c: float(c_ano.get(c, 0.0)))
+                    cr = _busca(cr.sort_values(["ano", "mes"], ascending=False), bc, ["credor"]).reset_index(drop=True)
+                    tot_c = float(df_a["valor"].sum())
+                    cr_m = pd.DataFrame({"Credor": cr["credor"], _rot(mes): cr["mes"].map(lambda x: _m(x) if abs(x) > 0.005 else "–"), f"Jan–{mes[5:]}": cr["ano"].map(_m),
+                                         "% do filtro": cr["ano"].map(lambda x: F.pct_br(x / tot_c) if tot_c else "–")}).head(60)
                     ev_c = st.dataframe(cr_m, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="dir_adm_cr")
                     sc = _selecionada(ev_c, cr)
                     if sc:
-                        ct = df_l[df_l["credor"] == sc["credor"]].groupby(["plano_cod", "plano_nome"], as_index=False)["valor"].sum().sort_values("valor", ascending=False)
+                        ct_a = df_a[df_a["credor"] == sc["credor"]].groupby(["plano_cod", "plano_nome"], as_index=False)["valor"].sum().sort_values("valor", ascending=False)
+                        ct_m = df_l[df_l["credor"] == sc["credor"]].groupby("plano_cod")["valor"].sum()
                         st.markdown(f"Contas pagas a **{sc['credor']}**")
-                        st.dataframe(pd.DataFrame({"Conta": ct["plano_cod"] + " · " + ct["plano_nome"].fillna(""), "Pago": ct["valor"].map(_m)}), hide_index=True, width="stretch")
+                        st.dataframe(pd.DataFrame({"Conta": ct_a["plano_cod"] + " · " + ct_a["plano_nome"].fillna(""), _rot(mes): ct_a["plano_cod"].map(lambda c: _m(ct_m.get(c)) if abs(float(ct_m.get(c, 0.0))) > 0.005 else "–"),
+                                                   f"Jan–{mes[5:]}": ct_a["valor"].map(_m)}), hide_index=True, width="stretch")
+                    st.caption("Conferência: o Realizado do orçamento (tabela de grupos) vem do relatório de Orçamento ADM importado; aqui é o valor efetivamente pago no Sienge (contas pagas). "
+                               "Podem diferir por competência × caixa, previsões e reapropriações.")
             st.caption("Orçamento ADM consolidado das unidades. O orçado por unidade ainda não vem do banco (só o consolidado); o realizado por unidade vem das contas pagas.")
 
 

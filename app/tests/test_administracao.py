@@ -103,6 +103,22 @@ def test_adm_linhas_so_centros_adm_com_regras_e_periodo(conn):
 
 
 @pytest.mark.pg
+def test_detalhe_da_administracao_inclui_pessoal_e_o_resumo_nao(conn):
+    """Bug 20/10: o detalhe 'Quem recebeu' do grupo 2.02.01 (mao de obra propria) aparecia vazio porque aplicava a regra das Despesas (pessoal fora).
+    Agora o detalhe usa todas as contas pagas nas unidades ADM (mes e ano); o resumo da aba Despesas continua sem as contas excluidas."""
+    import relatorio_painel_pdf as RPP
+    _montar(conn)
+    sem_regra = P.adm_linhas(conn, "2026-09", "2026-09", [], sem_previsao=True)
+    com_regra = P.adm_linhas(conn, "2026-09", "2026-09", PREF, sem_previsao=True)
+    excl = lambda l: any(l["plano_cod"] == p or l["plano_cod"].startswith(p + ".") for p in PREF)      # noqa: E731
+    assert any(excl(l) for l in sem_regra) and not any(excl(l) for l in com_regra)                     # o pessoal (regra) existe nas contas pagas ADM
+    adm = RPP.montar_ctx(conn, "2026-09")["adm"]
+    assert any(excl(l) for l in adm["linhas"])
+    assert round(sum(l["valor"] for l in adm["linhas_ano"]), 2) >= round(sum(l["valor"] for l in adm["linhas"]), 2)
+    assert adm["resumo"]["total"] == round(sum(l["valor"] for l in adm["linhas"] if not excl(l)), 2)   # o resumo da aba Despesas segue sem as contas excluidas
+
+
+@pytest.mark.pg
 def test_adm_sem_de_para_devolve_vazio(conn):
     sid = P.criar_sync(conn, "2026-09", "P", "P", "teste@x")
     P.gravar_normalizado(conn, sid, S.normalizar_titulos("P", _regs()))

@@ -98,3 +98,18 @@ def test_pagos_detalhe_no_banco(conn):
     # PJ do mes com os dados do banco
     pjm = DD.pj_do_mes(DD.para_df(linhas), "2026-09")
     assert pjm["total"] == 1 and pjm["colaboradores"][0]["credor"] == "COLABORADOR TESTE"
+
+
+def test_pj_por_obra_aparece_em_cada_obra_com_percentual():
+    lst = DD.pj_por_obra(DD.para_df(BASE), "2026-09")
+    assert [(x["obra"], x["credor"], x["pct"]) for x in lst] == [("103", "PJ UM", 0.8333), ("104", "PJ DOIS", 1.0), ("104", "PJ UM", 0.1667)]
+    assert DD.pj_por_obra(DD.para_df([]), "2026-09") == [] and DD.pj_por_obra(DD.para_df(BASE), "2026-07") == []      # ADM e estorno ficam de fora
+
+
+def test_credores_da_obra():
+    dd = DD.despesas_df(DD.para_df(BASE), ["2.01.02", "2.02.01"])
+    c103 = DD.credores_da_obra(dd, ["103"], "2026-09")
+    assert c103["linhas"] == [{"chave": "FORN A", "acumulado": 400.0, "mes": 300.0}] and c103["total"] == 400.0
+    assert DD.credores_da_obra(dd, ["104"], "2026-09")["linhas"] == [{"chave": "FORN B", "acumulado": 200.0, "mes": 200.0}]
+    assert DD.credores_da_obra(dd, None, "2026-09")["total"] == 650.0                                                  # todas as obras, inclusive ADM
+    assert DD.credores_da_obra(dd, ["999"], "2026-09") == {"linhas": [], "n": 0, "total": 0.0}

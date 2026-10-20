@@ -191,3 +191,40 @@ def pj_do_mes(df: pd.DataFrame, mes: str) -> dict:
             n_obra[dest] = n_obra.get(dest, 0) + 1
     n_adm = sum(1 for c in colabs if c["destino"] == "ADM")
     return {"total": len(colabs), "obra": len(colabs) - n_adm, "adm": n_adm, "por_obra": n_obra, "colaboradores": sorted(colabs, key=lambda c: -c["valor"])}
+
+
+def _destino_linha(r) -> str:
+    """Destino de um pagamento: 'ADM' (conta de pessoal ADM ou centro do grupo ADM), codigo da obra do de-para ou 'sem de-para'."""
+    if r["plano_cod"].startswith("2.02.01") or r["grupo"] == "ADM":
+        return "ADM"
+    return r["obra"] or "sem de-para"
+
+
+def pj_por_obra(df: pd.DataFrame, mes: str) -> list:
+    """Lista de PJ por obra no mes, como no painel da contabilidade: o PJ que recebeu em mais de uma obra aparece em cada uma, com o % do que recebeu naquela obra
+    sobre o total dele no mes (obra + administracao). Estornos/zerados ficam fora; a administracao nao entra (o painel mostra so' as obras).
+    -> [{'obra','credor','valor','pct'}] ordenado por obra e valor."""
+    if not len(df):
+        return []
+    d = df[(df["mes"] == mes) & df.apply(lambda r: eh_pj(r["plano_cod"], r["plano_nome"]), axis=1)]
+    if not len(d):
+        return []
+    d = d.assign(destino=d.apply(_destino_linha, axis=1))
+    por = d.groupby(["credor", "destino"])["valor"].sum().reset_index()
+    tot = por.groupby("credor")["valor"].sum()
+    out = []
+    for _, r in por.iterrows():
+        t = float(tot[r["credor"]])
+        if r["destino"] == "ADM" or t <= 0.005 or r["valor"] <= 0.005:
+            continue
+        out.append({"obra": r["destino"], "credor": r["credor"], "valor": round(float(r["valor"]), 2), "pct": round(float(r["valor"]) / t, 4)})
+    return sorted(out, key=lambda x: (x["obra"], -x["valor"]))
+
+
+def credores_da_obra(dd: pd.DataFrame, obras: list | None, mes_ref: str, top: int = 15) -> dict:
+    """Principais credores das Despesas (sem pessoal) por obra. `obras` = codigos de obra do de-para (None = todas as obras, ate sem de-para).
+    -> mesmo formato de `agrupar`: {'linhas': [{'chave','acumulado','mes'}], 'n', 'total'}."""
+    if not len(dd):
+        return {"linhas": [], "n": 0, "total": 0.0}
+    d = dd if obras is None else dd[dd["obra"].isin(obras)]
+    return agrupar(d, "credor", mes_ref, top=top)

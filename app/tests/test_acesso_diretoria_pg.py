@@ -151,5 +151,15 @@ def test_painel_da_diretoria_cinco_abas_com_tudo(conn):
         assert not at.exception, at.exception
         at.radio(key="dir_pes_linhas").set_value("Todas").run()
         assert not at.exception, at.exception
+        # cascata da aba Obras: lista de colaboradores por obra (CLT da folha + PJ das contas pagas), com busca
+        sb = at.selectbox(key="dir_col_obra")
+        assert sb.options[0] == "Todas as obras" and len(sb.options) >= 2, sb.options
+        todos = [c.value for c in at.caption if "colaboradores (" in c.value]
+        assert todos and "CLT" in todos[0] and "PJ" in todos[0], todos
+        sb.set_value("DEM").run()
+        assert not at.exception, at.exception
+        at.text_input(key="dir_col_busca").set_value("zzzz-nao-existe").run()
+        assert not at.exception, at.exception
+        assert any("Sem colaboradores para esta seleção" in c.value for c in at.caption)
     with conn.cursor() as cur:
         cur.execute("DELETE FROM pnl_regra WHERE tipo='EXCLUI_PREVISAO'")

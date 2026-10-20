@@ -1162,6 +1162,25 @@ def folha_do_mes(conn, mes: str) -> dict | None:
             "por_empresa": sorted(por_emp.values(), key=lambda d: d["empresa"]), "por_obra": por_obra, "sem_depara": sem}
 
 
+def folha_colaboradores(conn, mes: str) -> list:
+    """Colaboradores CLT do mes (recibos da folha das importacoes ativas): [{'nome','cargo','empresa','obra'}], 'obra' = codigo do de-para departamento -> obra
+    ('sem de-para' quando nao ha; '99' = administracao central). So' leitura; lista vazia se o mes nao tem folha."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT r.nome, r.cargo, r.empresa, COALESCE(d.codigo_obra,'sem de-para')
+                           FROM pnl_folha_recibo r JOIN pnl_importacao i ON i.id = r.importacao_id
+                           LEFT JOIN pnl_folha_depto_obra d ON d.empresa = r.empresa AND d.departamento = r.departamento
+                           WHERE i.tipo='FOLHA' AND i.mes=%s::date AND i.ativo
+                           ORDER BY r.nome""", (f"{mes}-01",))
+            return [{"nome": n or "", "cargo": c or "", "empresa": EMPRESAS_FOLHA.get(e, e), "obra": o} for n, c, e, o in cur.fetchall()]
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return []
+
+
 def folha_serie(conn) -> list:
     """[{'mes','colab','salarios','he_pct'}] dos meses com folha importada (para o grafico HE / salarios)."""
     out = []

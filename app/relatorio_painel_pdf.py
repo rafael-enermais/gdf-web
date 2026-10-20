@@ -103,11 +103,16 @@ def montar_ctx(conn, mes: str, gerado_em: str = "") -> dict:
         meses_a = P.meses_com_dados(conn)
         if meses_a and P.centro_grupo_instalado(conn):
             regras = P.regras_ativas(conn, "DESPESAS")
-            linhas = P.adm_linhas(conn, mes, mes, P.prefixos_excluidos(regras), sem_previsao=P.exclui_previsao(regras))
-            if linhas:
+            fora = P.prefixos_excluidos(regras)
+            sem_prev = P.exclui_previsao(regras)
+            todas = P.adm_linhas(conn, mes, mes, [], sem_previsao=sem_prev)          # TODAS as contas pagas nas unidades ADM (inclui pessoal)
+            linhas = [l for l in todas if not P._excluido(l["plano_cod"], fora)]     # resumo da aba Despesas: sem as contas excluidas pelas regras
+            if todas:
                 outros = P.credor_grupo_ativos(conn) if P.credor_grupo_instalado(conn) else []
-                adm["resumo"] = P.adm_resumo(linhas, [c["chave"] for c in outros], P.nomes_plano(conn))
-                adm["linhas"] = linhas                                   # para o detalhe (unidade > credor > conta) do Painel da Diretoria
+                adm["resumo"] = P.adm_resumo(linhas, [c["chave"] for c in outros], P.nomes_plano(conn)) if linhas else None
+                # detalhe (unidade > credor > conta) do Painel da Diretoria: mesma base do Orcamento ADM (que inclui MAO DE OBRA PROPRIA E ENCARGOS), mes e ano
+                adm["linhas"] = todas
+                adm["linhas_ano"] = P.adm_linhas(conn, f"{mes[:4]}-01", mes, [], sem_previsao=sem_prev)
         orc = P.orcamento_ativo(conn) if P.orcamento_instalado(conn) else None
         if orc and mes in orc["meses"]:
             adm["orcamento"] = P.orcamento_resumo(conn, orc["id"], mes)

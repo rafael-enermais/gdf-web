@@ -630,6 +630,18 @@ def test_gravar_folha_ativa_repetido_e_totais(conn):
     assert n_ev >= 12 and float(soma_inf or 0) == 0.0
 
 
+def test_folha_colaboradores_lista_nome_cargo_e_obra(conn):
+    from folha_sintetica import pdf_folha_sintetico
+    import importador_folha as IF
+    assert P.folha_colaboradores(conn, "2026-09") == []                                    # sem folha: lista vazia
+    _depara_folha(conn)
+    P.gravar_folha(conn, IF.ler_recibos_pdf(pdf_folha_sintetico()), "r.pdf", "d" * 64, "teste@x")
+    lst = P.folha_colaboradores(conn, "2026-09")
+    assert len(lst) == 3 and all(x["nome"] and x["empresa"] == "CONSTRUTORA" for x in lst)
+    assert sorted(x["obra"] for x in lst) == ["103", "103", "104"]                         # mesmo de-para da folha_do_mes
+    assert P.folha_colaboradores(conn, "2025-01") == []
+
+
 def test_folha_nova_do_mesmo_mes_substitui_a_antiga_e_log_sem_nomes(conn):
     from folha_sintetica import pdf_folha_sintetico
     import importador_folha as IF
