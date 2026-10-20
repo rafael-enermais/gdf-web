@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """GDF V2 - Painel da Diretoria: replica do painel da contabilidade (Resultado, Obras, Administracao, Despesas, Pessoas), interativo e so' de leitura.
 Unica pagina do papel VISUALIZADOR. Cada aba abre com o resumo (formula / KPIs) e desce em detalhe ao clicar numa linha (conta -> credor -> obra).
-Os dados vem do banco no momento da abertura (cache de 2 a 5 minutos; o botao Atualizar limpa), ou seja, refletem as sincronizacoes com o Sienge e os
-uploads da contabilidade. Nao grava nada. So' a aba aberta e' calculada (as abas de Despesas/Pessoas leem o ano todo)."""
+Os dados vem do banco. O resultado fica guardado (cache de ate 30 min) e se renova SOZINHO quando o 'carimbo' do banco muda (carga do Sienge, upload,
+regra ou de-para); o botao Atualizar agora limpa na hora (util logo depois de gerar algo). Nao grava nada. So' a aba aberta e' calculada."""
 import datetime as dt
 
 import altair as alt
@@ -35,22 +35,49 @@ def _sem_latex(f):
 _cap, _md, _info, _warn = _sem_latex(st.caption), _sem_latex(st.markdown), _sem_latex(st.info), _sem_latex(st.warning)
 
 
-@st.cache_data(ttl=120, show_spinner="Atualizando os dados…")
-def _ctx(_conn, mes: str) -> dict:
+@st.cache_data(ttl=5, show_spinner=False)
+def _carimbo(_conn) -> str:
+    """Estado dos dados no banco (1 consulta barata; guardada 5 s para cliques seguidos). Faz parte da chave dos caches abaixo."""
+    return P.carimbo_dados(_conn)
+
+
+# Os resultados ficam guardados ate 30 min, mas valem so' enquanto o carimbo for o mesmo: carga do Sienge, upload ou regra nova -> recalcula sozinho.
+@st.cache_data(ttl=1800, show_spinner="Atualizando os dados…")
+def _ctx(_conn, mes: str, carimbo: str) -> dict:
     return RPP.montar_ctx(_conn, mes, dt.datetime.now().strftime("%d/%m/%Y %H:%M"))
 
 
-@st.cache_data(ttl=120, show_spinner=False)
-def _meses(_conn) -> list:
+@st.cache_data(ttl=1800, show_spinner=False)
+def _meses(_conn, carimbo: str) -> list:
     return sorted(set(P.meses_com_dre(_conn)) | set(P.meses_confirmados(_conn)) | set(P.meses_com_dados(_conn)) | set(P.folha_meses(_conn)))
 
 
-@st.cache_data(ttl=300, show_spinner="Lendo as contas pagas do ano…")
-def _pagos(_conn, mes: str):
+@st.cache_data(ttl=1800, show_spinner=False)
+def _confirmados(_conn, carimbo: str) -> list:
+    return P.meses_confirmados(_conn)
+
+
+@st.cache_data(ttl=1800, show_spinner="Lendo as contas pagas do ano…")
+def _pagos(_conn, mes: str, carimbo: str):
     """Contas pagas de janeiro ate o mes (credor, centro de custo, obra) + as contas excluidas das Despesas pelas regras. Devolve (linhas, prefixos_fora)."""
     regras = P.regras_ativas(_conn, "DESPESAS")
     linhas = DD.pagos_detalhe(_conn, f"{mes[:4]}-01", mes, sem_previsao=P.exclui_previsao(regras))
     return linhas, P.prefixos_excluidos(regras)
+
+
+def _fmt_num(v):
+    return "–" if v is None or pd.isna(v) else f"{v:,.0f}".replace(",", ".")
+
+
+def _fmt_pct(v):
+    return "–" if v is None or pd.isna(v) else f"{v * 100:,.1f}%".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _estilo(df, numeros=(), percentuais=()):
+    """Mostra celula vazia como '–' (em vez de 'None') e numeros no mesmo formato; a ordenacao continua pelo valor."""
+    fm = {c: _fmt_num for c in numeros if c in df.columns}
+    fm.update({c: _fmt_pct for c in percentuais if c in df.columns})
+    return df.style.format(fm, na_rep="–")
 
 
 def _m(v, vazio="–"):
@@ -111,15 +138,16 @@ def _barras_mes(rotulos, valores, titulo_y="R$ milhões", cor=NAVY, destaque=Non
 
 # ------------------------------------------------------------------ cabecalho
 st.title("Painel da Diretoria")
-meses = _meses(conn)
+CARIMBO = _carimbo(conn)
+meses = _meses(conn, CARIMBO)
 if not meses:
     _info("Ainda não há dados no painel. Assim que a contabilidade importar e o Sienge sincronizar, eles aparecem aqui.")
     st.stop()
 h1, h2, h3 = st.columns([1, 2, 1])
-conf = P.meses_confirmados(conn)
+conf = _confirmados(conn, CARIMBO)
 padrao = conf[-1] if conf else meses[-1]
 mes = h1.selectbox("Mês", meses, index=meses.index(padrao), format_func=_rot, key="dir_mes")
-ctx = _ctx(conn, mes)
+ctx = _ctx(conn, mes, CARIMBO)
 h2.caption(f"Dados do banco em {ctx['gerado_em']} · DRE: **{ctx['dre']['origem']}**" + (" · confirmado pela contabilidade" if ctx["dre"].get("quem") else " · ainda não confirmado"))
 if h3.button("Atualizar agora", key="dir_atualizar"):
     st.cache_data.clear()
@@ -142,7 +170,7 @@ aba_res, aba_ob, aba_adm, aba_desp, aba_pes = st.tabs(["Resultado", "Obras", "Ad
 
 # ------------------------------------------------------------------ dados compartilhados entre abas (PJ e colaboradores)
 def _pagos_df():
-    linhas, fora = _pagos(conn, mes)
+    linhas, fora = _pagos(conn, mes, CARIMBO)
     return DD.para_df(linhas), fora
 
 
@@ -316,10 +344,9 @@ if aba_ob.open or _TODAS:
             vis = _busca(base, busca, ["Obra", "Nome"]).reset_index(drop=True)
             _cap("Clique em uma linha para ver o detalhe da obra; clique no cabeçalho para ordenar. Previsto = projeção de receitas do mês.")
             mostra = vis[["Obra", "Nome", "Receita", "Custos", "BDI previsto", "BDI real", "Desvio BDI", "Margem", "Colab.", "Fat./colab.", "Custo/colab."]]
-            cfg = {c: st.column_config.NumberColumn(c, format="localized") for c in ("Receita", "Custos", "BDI previsto", "BDI real", "Fat./colab.", "Custo/colab.")}
-            cfg["Desvio BDI"] = st.column_config.NumberColumn("Desvio BDI", format="percent")
-            cfg["Margem"] = st.column_config.NumberColumn("Margem", format="percent")
-            ev = st.dataframe(mostra, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="dir_ob_df", column_config=cfg)
+            ev = st.dataframe(_estilo(mostra, numeros=("Receita", "Custos", "BDI previsto", "BDI real", "Colab.", "Fat./colab.", "Custo/colab."),
+                                      percentuais=("Desvio BDI", "Margem")),
+                              hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="dir_ob_df")
             sel = _selecionada(ev, vis)
             _pj_unicos = set().union(*[cr for c, cr in pj_obra.items() if c not in ("ADM", "99", "sem de-para")]) if pj_obra else set()
             _cap(f"Total: receita {_mi(tr)} · custos {_mi(tc)} · BDI {_mi(tb)} · {int(base['CLT'].sum()) + len(_pj_unicos)} colaboradores nas obras (cada PJ contado uma vez, mesmo atendendo várias obras).")

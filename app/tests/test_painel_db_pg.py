@@ -1038,3 +1038,20 @@ def test_botao_atualizar_cadastros_grava_obras_e_mostra_conferencia(conn):
         else:
             assert any("Não consegui ler as obras do Sienge" in w.value for w in at.warning)
     assert _contar(conn, "pnl_empresa_sienge") == 1 and _contar(conn, "pnl_obra_sienge") == 1
+
+
+def test_carimbo_muda_quando_entra_carga_ou_regra(conn):
+    c0 = P.carimbo_dados(conn)
+    assert c0 and c0 == P.carimbo_dados(conn)                # estavel enquanto nada muda
+    _ingerir(conn)                                           # carga do Sienge
+    c1 = P.carimbo_dados(conn)
+    assert c1 != c0
+    P.registrar_log(conn, "TESTE_CARIMBO")                   # qualquer evento registrado
+    assert P.carimbo_dados(conn) != c1
+
+
+def test_carimbo_devolve_vazio_se_o_banco_falhar():
+    class Quebrada:
+        def cursor(self):
+            raise RuntimeError("sem banco")
+    assert P.carimbo_dados(Quebrada()) == ""

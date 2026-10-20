@@ -820,6 +820,33 @@ def confirmacao_ativa(conn, mes: str) -> dict | None:
     return {"id": r[0], "fontes": r[1], "valores": r[2], "quem": r[3], "quando": r[4], "observacao": r[5], "resumo": r[6]} if r else None
 
 
+def carimbo_dados(conn) -> str:
+    """'Carimbo' barato do estado dos dados (1 consulta so'): muda quando entra carga do Sienge, upload, confirmacao do DRE, regra ou de-para editado.
+    O painel usa o carimbo como parte da chave do cache: enquanto nao muda, serve o resultado guardado; mudou, recalcula sozinho.
+    Devolve '' se algo falhar (o cache cai no prazo de seguranca e o botao Atualizar continua valendo)."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT concat_ws('|',
+                (SELECT coalesce(max(id),0) FROM pnl_sync),
+                (SELECT count(*)||'/'||coalesce(max(importado_em)::text,'')||'/'||count(*) FILTER (WHERE ativo) FROM pnl_importacao),
+                (SELECT count(*)||'/'||coalesce(max(alterado_em)::text,'')||'/'||count(*) FILTER (WHERE ativo) FROM pnl_regra),
+                (SELECT coalesce(max(id),0) FROM pnl_edicao),
+                (SELECT count(*) FROM pnl_centro_grupo),
+                (SELECT count(*) FROM pnl_credor_grupo),
+                (SELECT count(*) FROM pnl_folha_depto_obra),
+                (SELECT coalesce(max(id),0) FROM pnl_dre_confirmacao),
+                (SELECT count(*) FROM pnl_dre_valor),
+                (SELECT coalesce(max(atualizado_em)::text,'') FROM pnl_obra_sienge),
+                (SELECT coalesce(max(id),0) FROM pnl_log))""")
+            return cur.fetchone()[0] or ""
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return ""
+
+
 def meses_confirmados(conn) -> list:
     try:
         with conn.cursor() as cur:
