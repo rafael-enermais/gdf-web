@@ -26,6 +26,20 @@ PAUSA_ENTRE_CHAMADAS = 6
 ESPERAS_429 = (30, 60, 120, 240)
 
 
+def _contar_data_base_diferente(regs: list) -> tuple:
+    """(quantos, de quantos): titulos cuja 'installmentBaseDate' difere de 'dueDate'. So' contagem (nunca imprime datas/valores).
+    Serve para descobrir se a data-base da parcela e' o 'vencimento original' do Sienge (parcelas prorrogadas)."""
+    dif = tot = 0
+    for r in regs:
+        if not isinstance(r, dict):
+            continue
+        a, b = str(r.get("installmentBaseDate") or "")[:10], str(r.get("dueDate") or "")[:10]
+        if a and b:
+            tot += 1
+            dif += a != b
+    return dif, tot
+
+
 def executar(conn, cli, ini: str, fim: str, gravar: bool, buscar=None, log=print) -> int:
     """Devolve 0 (ok) ou 1 (alguma busca falhou). `buscar(cli, lado, mes_ini, tipo, mes_fim=)` injetavel para teste."""
     buscar = buscar or S.buscar_bulk
@@ -48,7 +62,9 @@ def executar(conn, cli, ini: str, fim: str, gravar: bool, buscar=None, log=print
                     log(f"{lado} campos do título: {', '.join(sorted(regs[0].keys()))}")
                 totais[lado][0] += len(regs)
                 totais[lado][1] += len(abertos)
-                log(f"{lado} vencimento {a}..{b}: {len(regs)} títulos, {len(abertos)} em aberto, {time.monotonic() - t0:.0f}s")
+                dif, tot = _contar_data_base_diferente(abertos)
+                log(f"{lado} vencimento {a}..{b}: {len(regs)} títulos, {len(abertos)} em aberto, {time.monotonic() - t0:.0f}s"
+                    f" | em aberto com data-base da parcela diferente do vencimento: {dif} de {tot}")
                 if gravar and abertos:
                     cont = P.gravar_normalizado(conn, sids[lado], S.normalizar_titulos(lado, abertos))
                     for k in acum:
@@ -69,6 +85,10 @@ def executar(conn, cli, ini: str, fim: str, gravar: bool, buscar=None, log=print
 
 def main(env=None) -> int:
     env = os.environ if env is None else env
+    try:
+        sys.stdout.reconfigure(line_buffering=True)      # no GitHub Actions o log aparecia em blocos atrasados; assim sai linha a linha
+    except Exception:
+        pass
     ini = (env.get("GDF_ABERTOS_INI") or "2023-01").strip()
     fim = (env.get("GDF_ABERTOS_FIM") or "2032-12").strip()
     gravar = (env.get("GDF_ABERTOS_GRAVAR") or "").strip().lower() in ("sim", "true", "1")
