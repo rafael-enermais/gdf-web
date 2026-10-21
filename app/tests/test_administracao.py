@@ -134,10 +134,10 @@ def test_credor_grupo_adiciona_duplicado_remove_e_log_sem_nome(conn):
     assert P.credor_grupo_instalado(conn) and P.credor_grupo_ativos(conn) == []
     r = P.credor_grupo_adicionar(conn, "Credor Exemplo Gama", "teste@x")
     assert r["ok"] and [c["chave"] for c in P.credor_grupo_ativos(conn)] == ["CREDOR EXEMPLO GAMA"]
-    assert not P.credor_grupo_adicionar(conn, "CREDOR   EXEMPLO GAMA", "teste@x")["ok"]       # mesmo credor, escrito diferente
+    assert not P.credor_grupo_adicionar(conn, "CREDOR   EXEMPLO   GAMA", "teste@x")["ok"]       # mesmo credor, escrito diferente
     assert not P.credor_grupo_adicionar(conn, " ab ", "teste@x")["ok"]                          # curto demais
     logs = P.ultimos_logs(conn, acao="CREDOR_GRUPO_ADICIONADO")
-    assert len(logs) == 1 and "CREDOR" not in str(logs[0]["detalhe"]).upper()                # log nao guarda nome
+    assert len(logs) == 1 and "CREDOR EXEMPLO" not in str(logs[0]["detalhe"]).upper()                # log nao guarda nome
     assert P.credor_grupo_remover(conn, r["id"], "teste@x") and P.credor_grupo_ativos(conn) == []
     assert not P.credor_grupo_remover(conn, r["id"], "teste@x")
     assert P.credor_grupo_adicionar(conn, "Credor Exemplo Gama", "teste@x")["ok"]              # depois de removido pode voltar
@@ -213,7 +213,7 @@ def test_tela_administracao_mostra_ranking_e_outros_credores(conn):
     assert any("1.400,00" in m.value for m in at.tabs[5].metric)
     cred = [df.value for df in at.tabs[5].dataframe if "Credor" in df.value.columns and "% do total" in df.value.columns]
     assert cred and "Outros credores/Dir (fora do ranking)" in set(cred[0]["Credor"]) and "FORNECEDOR ALFA LTDA" in set(cred[0]["Credor"])
-    assert not any("CREDOR" in str(x).upper() for x in cred[0]["Credor"])                      # saiu do ranking
+    assert not any("CREDOR EXEMPLO" in str(x).upper() for x in cred[0]["Credor"])                      # saiu do ranking
 
 
 @pytest.mark.pg
