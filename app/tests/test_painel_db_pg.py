@@ -1113,3 +1113,15 @@ def test_orcamento_resumo_por_periodo_e_contas_do_grupo(conn):
     assert P.orcamento_resumo(conn, ro["id"], meses[-1], acumulado=True, mes_ini=meses[-1])["total"] == ultimo["total"]
     assert len(tudo["contas"]) >= len(tudo["acima"]) and all(c["tipo"] in ("R", "M") for c in tudo["contas"])
     assert [c["desvio"] for c in tudo["contas"]] == sorted((c["desvio"] for c in tudo["contas"]), reverse=True)           # maiores estouros primeiro
+
+
+def test_credores_sienge_guarda_fantasia_e_muda_o_carimbo(conn):
+    assert P.credores_sienge_instalado(conn) and P.fantasia_por_credor(conn) == {}
+    c0 = P.carimbo_dados(conn)
+    r = P.gravar_credores_sienge(conn, S.normalizar_credores([{"id": 77, "name": "Colaborador Teste Ltda", "tradeName": "Colab Teste"}, {"id": 78, "name": "Sem Fantasia"}]))
+    assert r == {"credores": 2, "com_fantasia": 1}
+    assert P.fantasia_por_credor(conn) == {"COLABORADOR TESTE LTDA": "Colab Teste"}                  # so' quem tem fantasia; chave normalizada
+    assert P.carimbo_dados(conn) != c0                                                                # o painel recalcula sozinho depois da atualizacao
+    P.gravar_credores_sienge(conn, S.normalizar_credores([{"id": 77, "name": "Colaborador Teste Ltda", "tradeName": "Colab T."}]))      # upsert: troca, nao duplica
+    assert P.fantasia_por_credor(conn) == {"COLABORADOR TESTE LTDA": "Colab T."} and _contar(conn, "pnl_credor_sienge") == 2
+    assert P.gravar_credores_sienge(conn, []) == {"credores": 0, "com_fantasia": 0}

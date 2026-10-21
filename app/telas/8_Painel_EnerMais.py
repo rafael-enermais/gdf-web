@@ -8,6 +8,7 @@ import datetime as dt
 import streamlit as st
 
 import formatacao as F
+from fuso import agora_br, fmt_br
 import importacoes_ui
 import painel_db as P
 import sienge_api as S
@@ -52,7 +53,7 @@ if aba_sync.open or _TODAS:                                   # so' a aba aberta
     with aba_sync:
         st.markdown("Busca no Sienge as **contas pagas** e **a receber** do período e grava no banco (nada é apagado; cada busca fica registrada). "
                     "O app só **consulta** o Sienge; nunca grava nada lá.")
-        _hoje = dt.date.today()
+        _hoje = agora_br().date()
         c1, c1b, c2 = st.columns([1, 1, 2])
         mes_sync = c1.text_input("De (AAAA-MM)", value=f"{_hoje.year - 1}-{_hoje.month:02d}", key="pn2_mes_sync")
         mes_ate = c1b.text_input("Até (AAAA-MM)", value=f"{_hoje.year}-{_hoje.month:02d}", key="pn2_mes_ate", help="Igual ao 'De' = um mês só. Mais de um mês = uma busca só para a janela inteira.")
@@ -102,6 +103,16 @@ if aba_sync.open or _TODAS:                                   # so' a aba aberta
                         st.success(f"Obras do Sienge atualizadas: {r_obras['obras']}. Confira abaixo se o número de cada obra do painel bate com o do Sienge.")
                 except S.ErroSienge as exc:
                     st.warning(f"Não consegui ler as obras do Sienge (o restante dos cadastros foi atualizado): {exc}")
+                # nome fantasia dos credores (PJ no Painel da Diretoria): tambem nao desfaz o que ja foi atualizado
+                try:
+                    with st.spinner("Buscando os credores do Sienge (nome fantasia)…"):
+                        r_cred = P.gravar_credores_sienge(conn, S.normalizar_credores(S.buscar_credores(cli)))
+                    if "erro" in r_cred:
+                        st.warning(r_cred["erro"])
+                    else:
+                        st.success(f"Credores do Sienge atualizados: {r_cred['credores']} ({r_cred['com_fantasia']} com nome fantasia).")
+                except S.ErroSienge as exc:
+                    st.warning(f"Não consegui ler os credores do Sienge (o restante dos cadastros foi atualizado): {exc}")
         if P.obras_sienge_instalado(conn):
             conf_obras = P.obras_sienge_conferencia(conn)
             if conf_obras:
@@ -128,7 +139,7 @@ if aba_desp.open or _TODAS:                                   # so' a aba aberta
         if not meses_ok:
             st.info("Sincronize primeiro as contas pagas (data P) de um mês na aba ao lado.")
         else:
-            _fechados = [m for m in meses_ok if m < f"{dt.date.today().year}-{dt.date.today().month:02d}"] or meses_ok      # padrao: ultimo mes FECHADO
+            _fechados = [m for m in meses_ok if m < f"{agora_br().date().year}-{agora_br().date().month:02d}"] or meses_ok      # padrao: ultimo mes FECHADO
             mes = st.selectbox("Mês", meses_ok, index=meses_ok.index(_fechados[-1]), key="pn2_mes_desp")
             P.garantir_regras_padrao(conn)                   # cria a regra EXCLUI_PREVISAO (proposta) se ainda nao existir
             regras = P.regras_ativas(conn, "DESPESAS")
@@ -220,7 +231,7 @@ if aba_res.open or _TODAS:                                   # so' a aba aberta 
         meses_r_opts = sorted(set(meses_em) | set(meses_dre))
         if not meses_r_opts:
             st.info("Importe o PDF do DRE gerencial do Sienge na aba **Importações (V2)** ou sincronize as contas por data de emissão (tipo I) na primeira aba.")
-        _hj = f"{dt.date.today().year}-{dt.date.today().month:02d}"
+        _hj = f"{agora_br().date().year}-{agora_br().date().month:02d}"
         _fech = [m for m in meses_r_opts if m < _hj] or meses_r_opts
         r1, r2, r3, r4 = st.columns([1, 2, 2, 2])
         mes_r = r1.selectbox("Mês", meses_r_opts or [_hj], index=(meses_r_opts.index(_fech[-1]) if meses_r_opts else 0), key="pn2_mes_res")
@@ -241,7 +252,7 @@ if aba_res.open or _TODAS:                                   # so' a aba aberta 
         # ---- importar o PDF
         imp = P.dre_importacao_ativa(conn, mes_r)
         if imp:
-            st.caption(f"DRE oficial de {mes_r}: PDF “{imp['arquivo']}”, importado por {imp['quem'] or '–'} em {imp['quando']:%d/%m/%Y %H:%M} (importação #{imp['id']}).")
+            st.caption(f"DRE oficial de {mes_r}: PDF “{imp['arquivo']}”, importado por {imp['quem'] or '–'} em {fmt_br(imp['quando'])} (importação #{imp['id']}).")
             oficial = P.dre_do_mes([{"plano_cod": c, "plano_nome": "", "valor": x} for c, x in P.dre_contas_importadas(conn, imp["id"]).items()])["valores"]
             st.markdown("**DRE oficial (PDF do Sienge)**")
             m1, m2, m3, m4 = st.columns(4)
@@ -273,7 +284,7 @@ if aba_res.open or _TODAS:                                   # so' a aba aberta 
             if not P.confirmacao_instalada(conn):
                 st.warning("Falta executar o **SQL-10** (`sql/v2_dre_confirmacao.sql`) no Supabase para gravar a confirmação. Você já pode escolher as fontes e ver o resultado.")
             if conf:
-                st.success(f"DRE de {mes_r} confirmado por {conf['quem'] or '–'} em {conf['quando']:%d/%m/%Y %H:%M} (confirmação #{conf['id']})"
+                st.success(f"DRE de {mes_r} confirmado por {conf['quem'] or '–'} em {fmt_br(conf['quando'])} (confirmação #{conf['id']})"
                            + (f" — {conf['observacao']}" if conf["observacao"] else "") + ". Se mudar alguma escolha e confirmar de novo, a anterior fica guardada no histórico.")
             def _todos(fonte, mes_=mes_r):
                 for k_, _ in _folhas:
@@ -510,7 +521,7 @@ if aba_adm.open or _TODAS:                                   # so' a aba aberta 
         elif not P.centro_grupo_instalado(conn):
             st.warning("Falta o de-para centro de custo → grupo (OBRA/ADM) no banco; sem ele o app não sabe quais centros são administrativos.")
         else:
-            _hoje_a = f"{dt.date.today().year}-{dt.date.today().month:02d}"
+            _hoje_a = f"{agora_br().date().year}-{agora_br().date().month:02d}"
             _fech_a = [m for m in meses_a if m < _hoje_a] or meses_a
             ca1, ca2 = st.columns([1, 2])
             mes_a = ca1.selectbox("Mês", meses_a, index=meses_a.index(_fech_a[-1]), key="pn2_mes_adm")
@@ -632,7 +643,7 @@ if aba_pess.open or _TODAS:                                   # so' a aba aberta
                 _grafico_meses([round(x["he_pct"] * 100, 1) for x in _sf], [x["mes"] for x in _sf], "HE ÷ remuneração (%)", linha=True)
         st.divider()
         st.markdown("Evolução do **faturamento** mês a mês.")
-        _mes_cur = f"{dt.date.today().year}-{dt.date.today().month:02d}"
+        _mes_cur = f"{agora_br().date().year}-{agora_br().date().month:02d}"
         serie = P.receita_mensal(conn, mes_atual=_mes_cur)
         if not serie:
             st.info("Ainda não há receita para mostrar. Sincronize o Sienge (data de emissão) ou importe o DRE oficial na aba Resultado.")
@@ -683,7 +694,7 @@ if aba_regras.open or _TODAS:                                   # so' a aba aber
             ac = acesso.listar(conn)
             if ac:
                 st.dataframe(pd.DataFrame([{"E-mail": a["email"], "Papel": a["papel"].lower(), "Ativo": "sim" if a["ativo"] else "não", "Por": a["alterado_por"] or "",
-                                            "Em": a["alterado_em"].strftime("%d/%m/%Y %H:%M")} for a in ac]), hide_index=True, width="stretch")
+                                            "Em": fmt_br(a["alterado_em"])} for a in ac]), hide_index=True, width="stretch")
             c_a1, c_a2, c_a3 = st.columns([3, 1.4, 1])
             em_ac = c_a1.text_input("E-mail do usuário", key="pn2_ac_email")
             pa_ac = c_a2.selectbox("Papel", ["VISUALIZADOR", "EDITOR"], key="pn2_ac_papel")
@@ -712,7 +723,7 @@ if aba_log.open or _TODAS:                                   # so' a aba aberta 
             acao = f2.selectbox("Ação", acoes, key="pn2_log_acao")
             logs = P.ultimos_logs(conn, None if nivel == "Todos" else nivel, None if acao == "Todas" else acao)
             if logs:
-                st.dataframe(pd.DataFrame([{"Quando": l["quando"].strftime("%d/%m/%Y %H:%M"), "Quem": l["usuario"] or "", "Nível": l["nivel"], "Ação": l["acao"],
+                st.dataframe(pd.DataFrame([{"Quando": fmt_br(l["quando"]), "Quem": l["usuario"] or "", "Nível": l["nivel"], "Ação": l["acao"],
                                             "Mês": l["mes"].strftime("%m/%Y") if l["mes"] else "", "Detalhe": "; ".join(f"{k}={v}" for k, v in l["detalhe"].items())}
                                            for l in logs]), hide_index=True, width="stretch")
                 st.download_button("Baixar o histórico (CSV)", P.csv_logs(logs), file_name="historico_painel.csv", mime="text/csv", key="pn2_dl_log")
@@ -733,7 +744,7 @@ if aba_pdf.open or _TODAS:                                   # so' a aba aberta 
             mes_pdf = st.selectbox("Mês do relatório", _m_pdf, index=_m_pdf.index(_padrao), key="pn2_mes_pdf")
             if st.button("Gerar o PDF", type="primary", key="pn2_btn_pdf"):
                 import relatorio_painel_pdf as RPP
-                _agora = dt.datetime.now().strftime("%d/%m/%Y %H:%M")
+                _agora = agora_br().strftime("%d/%m/%Y %H:%M")
                 with st.spinner("Montando o relatório…"):
                     _ctx_pdf = RPP.montar_ctx(conn, mes_pdf, _agora)
                     st.session_state["pn2_pdf"] = (mes_pdf, RPP.gerar_pdf_painel(_ctx_pdf, gerado_em=_agora), _ctx_pdf["dre"]["origem"])

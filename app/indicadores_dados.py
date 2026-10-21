@@ -19,6 +19,7 @@ import datetime as dt
 import re
 
 import painel_db as P
+from fuso import agora_br
 from grupo_enermais import nucleos_do_grupo, sql_nucleo
 
 # baixas a pagar que sao saida de caixa: 1 Pagamento, 10 Adiantamento, 1002 Movimento bancario: Pagamento (cancelamento/substituicao/abatimento nao sao dinheiro; 1030 e' transferencia)
@@ -130,7 +131,7 @@ def gasto_pago(conn, mes: str, hoje: dt.date | None = None, mes_ini: str | None 
                         WHERE b.lado='P' AND b.tipo_oper_id IN {TIPOS_CAIXA_PAGAR} AND b.data_pagamento >= %(ini)s AND b.data_pagamento < %(prox)s
                           {_prev(False)} {filtro}""", par)
         total = float(cur.fetchone()[0] or 0)
-    hoje = hoje or dt.date.today()
+    hoje = hoje or agora_br().date()
     ate = fim if hoje > fim else max(hoje, ini)
     dias = (ate - ini).days + 1
     return {"mensal": round(total, 2), "total": round(total, 2), "diario": round(total / dias, 2) if dias else 0.0, "dias": dias}
@@ -173,7 +174,7 @@ def _abertos_sql(venc: str, incluir_previsao: bool, completo: bool = True) -> st
 def data_posicao(mes: str, hoje: dt.date | None = None, ate_hoje: bool = True) -> tuple:
     """(venc_ate, pago_ate) da posicao. Ao vivo ('ate hoje'): vence ate ontem, pago ate hoje (o que vence hoje ainda esta no prazo).
     Fim do mes: ambos o ultimo dia do mes escolhido."""
-    hoje = hoje or dt.date.today()
+    hoje = hoje or agora_br().date()
     if ate_hoje:
         return hoje - dt.timedelta(days=1), hoje
     _, fim, _ = _limites(mes)
@@ -277,7 +278,7 @@ def financiamentos(conn, hoje: dt.date | None = None, incluir_previsao: bool = F
     com principal nos dois, prevalece financiamentos; contrato so' de juros fica em financiamentos."""
     if grupo not in GRUPOS:
         raise ValueError("grupo deve ser financiamentos ou investimentos")
-    hoje = hoje or dt.date.today()
+    hoje = hoje or agora_br().date()
     sql = f"""WITH pg AS (SELECT lado, bill_id, installment_id, sum(bruto) AS v FROM pnl_v_baixa WHERE data_pagamento <= %s GROUP BY 1,2,3)
               SELECT t.bill_id, t.installment_id, t.contraparte_nome, t.data_vencimento, t.valor_original, COALESCE(pg.v, 0), r.plano_cod, r.plano_nome, r.percentual
               FROM pnl_titulo t JOIN pnl_v_rateio r ON r.lado=t.lado AND r.bill_id=t.bill_id AND r.installment_id=t.installment_id

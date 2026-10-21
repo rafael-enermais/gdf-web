@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 
 import acesso
+import estilo
 import diretoria_dados as DD
 import diretoria_indicadores_ui as DI
 import formatacao as F
@@ -20,6 +21,7 @@ import periodo as PER
 import relatorio_painel_pdf as RPP
 from auth import usuario_atual
 from conexao import get_conn, sidebar_rodape
+from fuso import agora_br
 
 NAVY, ORANGE, AZUL, CINZA = "#171C60", "#F99D20", "#5C6091", "#B9C3D4"
 BOM, RUIM = "#1F8A55", "#C0392B"
@@ -48,7 +50,7 @@ def _carimbo(_conn) -> str:
 # Os resultados ficam guardados ate 30 min, mas valem so' enquanto o carimbo for o mesmo: carga do Sienge, upload ou regra nova -> recalcula sozinho.
 @st.cache_data(ttl=1800, show_spinner="Atualizando os dados…")
 def _ctx(_conn, mes: str, carimbo: str) -> dict:
-    return RPP.montar_ctx(_conn, mes, dt.datetime.now().strftime("%d/%m/%Y %H:%M"))
+    return RPP.montar_ctx(_conn, mes, agora_br().strftime("%d/%m/%Y %H:%M"))
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -100,6 +102,12 @@ def _nomes_obras(_conn, carimbo: str) -> dict:
 @st.cache_data(ttl=1800, show_spinner=False)
 def _nucleos_grupo(_conn, carimbo: str) -> list:
     return GE.nucleos_do_grupo(_conn)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _fantasias(_conn, carimbo: str) -> dict:
+    """{credor normalizado: nome fantasia} do cadastro de credores do Sienge (vazio se o SQL-30 / a atualizacao ainda nao foram feitos)."""
+    return P.fantasia_por_credor(_conn)
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -206,27 +214,30 @@ def _barras_mes(rotulos, valores, titulo_y="R$ milhões", cor=NAVY, destaque=Non
 
 # ------------------------------------------------------------------ cabecalho
 st.title("Painel da Diretoria")
+estilo.painel_adaptavel()                                  # layout que se adapta ao tamanho da tela (estilo.py)
 CARIMBO = _carimbo(conn)
 meses = _meses(conn, CARIMBO)
 if not meses:
     _info("Ainda não há dados no painel. Assim que a contabilidade importar e o Sienge sincronizar, eles aparecem aqui.")
     st.stop()
-h1, h2, h3, h4 = st.columns([1, 1.3, 1, 1])
+_cab = st.container(key="dir_cab")
+h1, h2, h3, h4 = _cab.columns([1.3, 1, 1, 1], vertical_alignment="bottom")          # Periodo | De (ou Mes) | Ate (ou texto do periodo) | Atualizar
 conf = _confirmados(conn, CARIMBO)
 padrao = conf[-1] if conf else meses[-1]
-modo_per = h2.selectbox("Período", PER.MODOS, index=PER.MODOS.index(PER.PADRAO), key="dir_per_modo",
+modo_per = h1.selectbox("Período", PER.MODOS, index=PER.MODOS.index(PER.PADRAO), key="dir_per_modo",
                         help="Vale para todas as abas. 'Ano até o mês' = janeiro até o mês de referência (como o painel era). Resultado e Obras somam os meses com DRE.")
 if modo_per == PER.PERSONALIZADO:
-    mes = h1.selectbox("Até", meses, index=meses.index(padrao), format_func=_rot, key="dir_mes_ate")
-    _de_opcoes = [m for m in meses if m <= mes]
-    if st.session_state.get("dir_mes_de") not in _de_opcoes:
-        st.session_state.pop("dir_mes_de", None)
-    _de_pad = next((i for i, m in enumerate(_de_opcoes) if m >= f"{mes[:4]}-01"), 0)
-    mes_de = h3.selectbox("De", _de_opcoes, index=_de_pad, format_func=_rot, key="dir_mes_de")
+    # primeiro o INICIO ("De"), depois o FIM ("Até"): a ordem em que a pessoa pensa. O "Até" só oferece meses a partir do "De".
+    _de_pad = next((i for i, m in enumerate(meses) if m >= f"{padrao[:4]}-01"), 0)
+    mes_de = h2.selectbox("De", meses, index=_de_pad, format_func=_rot, key="dir_mes_de")
+    _ate_opcoes = [m for m in meses if m >= mes_de]
+    if st.session_state.get("dir_mes_ate") not in _ate_opcoes:
+        st.session_state.pop("dir_mes_ate", None)
+    mes = h3.selectbox("Até", _ate_opcoes, index=_ate_opcoes.index(padrao) if padrao in _ate_opcoes else len(_ate_opcoes) - 1, format_func=_rot, key="dir_mes_ate")
 else:
-    mes = h1.selectbox("Mês de referência" if modo_per != PER.MES else "Mês", meses, index=meses.index(padrao), format_func=_rot, key="dir_mes")
+    mes = h2.selectbox("Mês de referência" if modo_per != PER.MES else "Mês", meses, index=meses.index(padrao), format_func=_rot, key="dir_mes")
     mes_de = None
-    h3.markdown(f"<div style='padding-top:1.9rem;color:#5C6091;font-size:.9rem'>Período: <b>{PER.rotulo(*PER.resolver(modo_per, mes))}</b></div>", unsafe_allow_html=True)
+    h3.markdown(f"<div class='gdf-periodo-txt'>Período: <b>{PER.rotulo(*PER.resolver(modo_per, mes))}</b></div>", unsafe_allow_html=True)
 mes_ini, mes = PER.resolver(modo_per, mes, mes_de)
 PER_ROT = PER.rotulo(mes_ini, mes)                           # '01/2026 a 10/2026'
 ACUM = PER.curto(mes_ini, mes)                               # cabecalho de coluna: 'Jan–Out/26'
@@ -319,7 +330,7 @@ def _formula(modo: str, termos=None):
               "O acumulado do ano aparece quando o histórico do painel da contabilidade cobre o mês escolhido (Importações (V2) → Histórico do painel).")
         return
     rot = [("rec", "Receita (base-line)", True), ("cus", "Custos diretos", False), ("bdi", "BDI", True), ("adm", "Administração", False), ("res", "Resultado", True)]
-    cols = st.columns([5, 1, 5, 1, 5, 1, 5, 1, 5], vertical_alignment="center")
+    cols = st.container(key="dir_formula").columns([5, 1, 5, 1, 5, 1, 5, 1, 5], vertical_alignment="center")
     for i, (k, nome, maior_melhor) in enumerate(rot):
         real_, prev_ = termos[k]
         with cols[i * 2]:
@@ -366,23 +377,27 @@ if aba_res.open or _TODAS:
         g1, g2 = st.columns(2)
         with g1:
             _md("**Desvio mensal (realizado − previsto)**")
-            if hist and hist["desvio_linhas"]:
+            _idx_h = [i for i, m in enumerate(hist["desvio_meses"]) if mes_ini <= m["mes"] <= mes] if hist and hist["desvio_linhas"] else []      # so' os meses do periodo escolhido
+            if hist and hist["desvio_linhas"] and not _idx_h:
+                _info(f"O histórico do painel da contabilidade (até {_rot(hist['ate'])}) não tem desvio mensal em {PER_ROT}.")
+            elif hist and hist["desvio_linhas"]:
                 linhas_h = list(hist["desvio_linhas"])
                 sel_h = st.selectbox("Métrica", linhas_h, index=len(linhas_h) - 1, key="dir_ano_linha", label_visibility="collapsed")
-                ml = [m["rotulo"] for m in hist["desvio_meses"]]
-                vals_h = hist["desvio_linhas"][sel_h]
+                ml = [hist["desvio_meses"][i]["rotulo"] for i in _idx_h]
+                vals_h = [hist["desvio_linhas"][sel_h][i] for i in _idx_h]
                 estouro = sel_h in ("Custos", "Despesas ADM")        # nessas linhas, positivo = gastou mais que o previsto (ruim)
                 dfd = pd.DataFrame({"Mês": ml, "Desvio (R$ mi)": [x / 1e6 for x in vals_h]})
                 dfd["cor"] = ["bom" if ((x >= 0) != estouro) else "ruim" for x in vals_h]
-                st.altair_chart(alt.Chart(dfd).mark_bar().encode(
+                estilo.altair(alt.Chart(dfd).mark_bar().encode(
                     x=alt.X("Mês:N", sort=ml, axis=alt.Axis(labelAngle=0, title=None)), y=alt.Y("Desvio (R$ mi):Q", title="R$ milhões"),
                     color=alt.Color("cor:N", scale=alt.Scale(domain=["bom", "ruim"], range=[BOM, RUIM]), legend=None),
                     tooltip=["Mês", alt.Tooltip("Desvio (R$ mi):Q", format=",.2f")]).properties(height=240), width="stretch")
-                _cap("Para Custos e Despesas ADM, valor positivo indica estouro. Janeiro = desvio acumulado menos a soma de fevereiro em diante.")
+                _cap(f"Meses de {PER_ROT} (histórico do painel da contabilidade). Para Custos e Despesas ADM, valor positivo indica estouro. Janeiro = desvio acumulado menos a soma de fevereiro em diante.")
             else:
                 _info("O desvio mensal aparece quando o histórico do painel da contabilidade é importado.")
         with g2:
             _md("**Recomposição out–dez**")
+            _cap("Visão do fim do ano; não muda com o período escolhido.")
             if hist and hist["recomposicao"]:
                 rc = hist["recomposicao"]
                 st.dataframe(pd.DataFrame([{"Mês": r["rotulo"], "Projeção": _m(r["projecao"]), "Para cobrir o déficit": _m(r["para_cobrir"])} for r in rc]
@@ -397,7 +412,7 @@ if aba_res.open or _TODAS:
             _md("**Receita mês a mês**")
             rots = [_rot(x["mes"]) for x in serie]
             dfs = pd.DataFrame({"Mês": rots, "Receita (R$ mi)": [x["receita"] / 1e6 for x in serie], "Fonte": [x["fonte"] for x in serie], "destaque": [mes_ini <= x["mes"] <= mes for x in serie]})
-            st.altair_chart(alt.Chart(dfs).mark_bar().encode(
+            estilo.altair(alt.Chart(dfs).mark_bar().encode(
                 x=alt.X("Mês:N", sort=rots, axis=alt.Axis(labelAngle=-60, title=None)), y=alt.Y("Receita (R$ mi):Q", title="R$ milhões"),
                 color=alt.condition("datum.destaque", alt.value(NAVY), alt.value("#9A9CC4")), tooltip=["Mês", alt.Tooltip("Receita (R$ mi):Q", format=",.2f"), "Fonte"]).properties(height=220), width="stretch")
             if any(x["fonte"].startswith("API") for x in serie):
@@ -521,8 +536,11 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
                 return None if cod in nao_obra or cod == "sem de-para" else "DEM"
 
             regs_c = [{"Nome": c["nome"], "Função": c["cargo"], "Tipo": "CLT", "dest": _destino_ob(c["obra"])} for c in P.folha_colaboradores(conn, mes)]
+            _fant = _fantasias(conn, CARIMBO)
             for x in DD.pj_por_obra(dfp_ob, mes):
-                regs_c.append({"Nome": x["credor"], "Função": f"Prestador de serviço (PJ) — {round(x['pct'] * 100)}% nesta obra", "Tipo": "PJ", "dest": _destino_ob(x["obra"])})
+                _nf = DD.nome_fantasia(x["credor"], _fant)                                     # contabilidade 21/10: PJ aparece pelo nome fantasia do cadastro do credor
+                regs_c.append({"Nome": _nf, "Função": f"Prestador de serviço (PJ) — {round(x['pct'] * 100)}% nesta obra" + (f" · razão social: {x['credor']}" if _nf != x["credor"] else ""),
+                               "Tipo": "PJ", "dest": _destino_ob(x["obra"])})
             col_df = pd.DataFrame([r for r in regs_c if r["dest"]], columns=["Nome", "Função", "Tipo", "dest"])
             opcoes = ["ALL"] + [c for c in [*proprias_l, "DEM"] if len(col_df) and (col_df["dest"] == c).any()]
             nome_op = lambda c: "Todas as obras" if c == "ALL" else ("Demais obras" if c == "DEM" else f"{c} · {nomes_ob.get(c, c)}")      # noqa: E731
@@ -572,7 +590,7 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
             else:
                 _cap("Sem colaboradores para esta seleção (folha do mês ainda não importada ou obra sem pessoal).")
             if ob["top_prejuizo"]:
-                _md("**Obras com maior prejuízo no mês**")
+                _md("**Obras com maior prejuízo " + ("no mês**" if UM_MES else "no período**"))
                 st.dataframe(pd.DataFrame([{"Obra": x["obra"], "Nome": RPP._nome_obra(x, nome_cheio), "BDI": _m(x["bdi"]), "Margem": F.pct_br(x["margem"]) if x["margem"] is not None else "–"}
                                            for x in ob["top_prejuizo"]]), hide_index=True, width="stretch")
 ob, proj = _ob_mes, _proj_mes
@@ -604,7 +622,7 @@ if aba_adm.open or _TODAS:
                         linhas_g.append({"Mês": _rot(x["mes"]), "Série": "Realizado acima do orçado" if x["realizado"] > x["orcado"] else "Realizado", "v": x["realizado"] / 1e6})
                     dg = pd.DataFrame(linhas_g)
                     ordem_m = [_rot(x["mes"]) for x in so]
-                    st.altair_chart(alt.Chart(dg).mark_bar().encode(
+                    estilo.altair(alt.Chart(dg).mark_bar().encode(
                         x=alt.X("Mês:N", sort=ordem_m, axis=alt.Axis(labelAngle=0, title=None)), xOffset=alt.XOffset("Série:N"),
                         y=alt.Y("v:Q", title="R$ milhões"),
                         color=alt.Color("Série:N", scale=alt.Scale(domain=["Orçado", "Realizado", "Realizado acima do orçado"], range=[CINZA, NAVY, RUIM]), legend=alt.Legend(orient="bottom", title=None)),
@@ -744,7 +762,7 @@ if aba_desp.open or _TODAS:
             with e2:
                 _md(f"**Evolução mensal · {conta or 'todas as contas'}**")
                 vals = DD.serie_mensal(dd, ms, conta)
-                st.altair_chart(_barras_mes(rots, vals, destaque=len(ms) - 1), width="stretch")
+                estilo.altair(_barras_mes(rots, vals, destaque=len(ms) - 1), width="stretch")
                 cr = DD.agrupar(dd, "credor", mes, conta=conta)
                 _md(f"**Principais credores · {conta or 'todas as contas'}**")
                 cr_df = pd.DataFrame({"Credor": [x["chave"] for x in cr["linhas"]], "ac": [x["acumulado"] for x in cr["linhas"]], "mes": [x["mes"] for x in cr["linhas"]]})
@@ -801,7 +819,7 @@ if aba_pes.open or _TODAS:
                 _hc = [(m, x) for m, x in _hc if x is not None]
                 if _hc:
                     rots_hc = [m[5:] + "/" + m[2:4] for m, _ in _hc]
-                    st.altair_chart(_barras_mes(rots_hc, [x for _, x in _hc], titulo_y="colaboradores", destaque=len(_hc) - 1, divisor=1, altura=220), width="stretch")
+                    estilo.altair(_barras_mes(rots_hc, [x for _, x in _hc], titulo_y="colaboradores", destaque=len(_hc) - 1, divisor=1, altura=220), width="stretch")
                 _cap(f"Colaboradores = CLT pelos recibos da folha + PJ pelos credores de “Salários PJ” pagos no mês" + (f" ({pj['obra']} em obras e {pj['adm']} na administração)." if pj["total"] else "."))
             with c2:
                 _md("**Horas extras × receita**")
@@ -812,22 +830,22 @@ if aba_pes.open or _TODAS:
                     rots_g = [_rot(x["mes"]) for x in ev_g]
                     base_g = alt.Chart(pd.DataFrame({"Mês": rots_g})).encode(x=alt.X("Mês:N", sort=rots_g, axis=alt.Axis(labelAngle=-45, title=None)))
                     dfp1 = pd.DataFrame([{"Mês": _rot(x["mes"]), "%": round(x["he_pct"] * 100, 1)} for x in ev_g if x["he_pct"] is not None])
-                    l_he = alt.Chart(dfp1).mark_line(point=True, color=ORANGE).encode(x=alt.X("Mês:N", sort=rots_g), y=alt.Y("%:Q", title="% HE / remuneração", axis=alt.Axis(titleColor=ORANGE)),
+                    l_he = alt.Chart(dfp1).mark_line(point=True, color=ORANGE).encode(x=alt.X("Mês:N", sort=rots_g, axis=alt.Axis(labelAngle=-45, title=None)), y=alt.Y("%:Q", title="% HE ÷ remuneração", axis=alt.Axis(titleColor=ORANGE)),
                                                                                       tooltip=["Mês", alt.Tooltip("%:Q", title="HE ÷ remuneração (%)")])
                     var_rows = []
                     for x in ev_g:
                         if x["var_he"] is not None:
-                            var_rows.append({"Mês": _rot(x["mes"]), "Série": "Custo de HE: variação s/ mês anterior", "Variação %": round(x["var_he"] * 100, 1)})
+                            var_rows.append({"Mês": _rot(x["mes"]), "Série": "Custo de HE (var. %)", "Variação %": round(x["var_he"] * 100, 1)})
                         if x["var_receita"] is not None:
-                            var_rows.append({"Mês": _rot(x["mes"]), "Série": "Receita: variação s/ mês anterior", "Variação %": round(x["var_receita"] * 100, 1)})
+                            var_rows.append({"Mês": _rot(x["mes"]), "Série": "Receita (var. %)", "Variação %": round(x["var_receita"] * 100, 1)})
                     layers = [l_he]
                     if var_rows:
                         l_var = alt.Chart(pd.DataFrame(var_rows)).mark_line(point=True, strokeDash=[5, 3]).encode(
-                            x=alt.X("Mês:N", sort=rots_g), y=alt.Y("Variação %:Q", title="Variação % s/ mês anterior", axis=alt.Axis(titleColor=NAVY)),
-                            color=alt.Color("Série:N", scale=alt.Scale(domain=["Custo de HE: variação s/ mês anterior", "Receita: variação s/ mês anterior"], range=["#C97A00", NAVY]),
+                            x=alt.X("Mês:N", sort=rots_g), y=alt.Y("Variação %:Q", title="Var. % s/ mês anterior", axis=alt.Axis(titleColor=NAVY)),
+                            color=alt.Color("Série:N", scale=alt.Scale(domain=["Custo de HE (var. %)", "Receita (var. %)"], range=["#C97A00", NAVY]),
                                             legend=alt.Legend(orient="bottom", title=None)), tooltip=["Mês", "Série", alt.Tooltip("Variação %:Q", format=",.1f")])
                         layers.append(l_var)
-                    st.altair_chart(alt.layer(*layers).resolve_scale(y="independent").properties(height=250), width="stretch")
+                    estilo.altair(alt.layer(*layers).resolve_scale(y="independent").properties(height=280), width="stretch")
                     cp = DD.comparar_periodos(sf, ctx["serie"], mes_ini, mes)
                     _fv = lambda x: "n/d" if x is None else F.pct_br(x, 1)                      # noqa: E731
                     _cap(f"Período {PER_ROT} × período anterior ({PER.rotulo(cp['meses_anterior'][0], cp['meses_anterior'][-1])}): custo de HE {_fv(cp['var_he'])}"
@@ -851,10 +869,12 @@ if aba_pes.open or _TODAS:
                     tdf = pd.DataFrame(tabp_v)
                     tot_m = sum(x["mes"] for x in tabp)
                     _cap("Clique em uma conta para ver credores e obras; clique de novo para voltar ao total.")
-                    ev_p = st.dataframe(pd.DataFrame({"Conta": tdf["conta"], _rot(mes): tdf["mes"].map(_m), "% do mês": tdf["pct_mes"].map(lambda x: F.pct_br(x, 2)),
-                                                      "R$/colab. mês": tdf["por_colab_mes"].map(_m), "Acum. até mês anterior": tdf["acum_antes"].map(_m),
-                                                      "R$/colab. acum.": tdf["por_colab_acum"].map(_m), "Variação": tdf["variacao"].map(lambda x: F.pct_br(x) if x is not None else "N/A")}),
-                                        hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="dir_pes_tab")
+                    _tab_p = {"Conta": tdf["conta"], _rot(mes): tdf["mes"].map(_m), "% do mês": tdf["pct_mes"].map(lambda x: F.pct_br(x, 2)), "R$/colab. mês": tdf["por_colab_mes"].map(_m),
+                              "Acum. até mês anterior": tdf["acum_antes"].map(_m), "R$/colab. acum.": tdf["por_colab_acum"].map(_m), "Variação": tdf["variacao"].map(lambda x: F.pct_br(x) if x is not None else "N/A")}
+                    if not UM_MES:                                                           # periodo de varios meses: acrescenta o total do PERIODO (meses antes + mes de referencia)
+                        _tab_p = {**{k: v for k, v in _tab_p.items() if k != "Variação"}, f"Total {ACUM}": tdf["periodo"].map(_m), f"R$/colab. {ACUM}": tdf["por_colab_periodo"].map(_m),
+                                  "Variação": _tab_p["Variação"]}
+                    ev_p = st.dataframe(pd.DataFrame(_tab_p), hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="dir_pes_tab")
                     p_sel = _selecionada(ev_p, tdf.rename(columns={"conta": "Conta"}))
                     conta_p = p_sel["Conta"] if p_sel else None
                     _cap(f"Contas de pessoal de obra (2.01.02) e ADM (2.02.01), sem salários CLT/PJ e premiações. Total do mês (todas as contas): {_m(tot_m)}. "
@@ -895,7 +915,11 @@ if aba_pes.open or _TODAS:
                                                 "HE ÷ remuneração": F.pct_br(x["he_pct"]) if x["he_pct"] is not None else "–"} for x in po]), hide_index=True, width="stretch")
             if pj["colaboradores"]:
                 with st.expander(f"PJ do mês: {pj['total']} colaboradores (fonte: contas pagas “Salários PJ”)"):
-                    st.dataframe(pd.DataFrame([{"Colaborador PJ": c["credor"], "Alocado em": c["destino"], "Pago no mês": _m(c["valor"])} for c in pj["colaboradores"]]), hide_index=True, width="stretch")
+                    _fant = _fantasias(conn, CARIMBO)
+                    _lin_pj = [{"Colaborador PJ": DD.nome_fantasia(c["credor"], _fant), "Razão social": c["credor"], "Alocado em": c["destino"], "Pago no mês": _m(c["valor"])} for c in pj["colaboradores"]]
+                    st.dataframe(pd.DataFrame(_lin_pj), hide_index=True, width="stretch")
+                    if not _fant:
+                        _cap("Nome fantasia: ainda não carregado. Executar o SQL-30 e clicar em “Atualizar cadastros” no Painel EnerMais (aba de sincronização) para mostrar o nome fantasia no lugar da razão social.")
                     _cap("Regra (contabilidade, 20/10/2026): a fonte do PJ são as contas pagas, sem regras próprias. Cada credor com valor positivo conta 1 colaborador, alocado na obra (ou na administração) "
                                "onde recebeu mais no mês.")
 

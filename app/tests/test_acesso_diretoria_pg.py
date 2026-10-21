@@ -135,12 +135,19 @@ def test_painel_da_diretoria_cinco_abas_com_tudo(conn):
     P.gravar_projecao(conn, IP.ler_projecao_xlsx(buf.getvalue()), "p.xlsx", "e" * 64, "teste@x")
     H.gravar(conn, H.ler_historico(_html(), "a.html"), "2026-09", "a.html", "rafael@x")
     assert P.credor_grupo_adicionar(conn, "FORNECEDOR TESTE", "rafael@x")["ok"]            # "Outros credores/Dir": entra numa linha so' na Administracao
+    P.gravar_credores_sienge(conn, [{"id": 78, "nome": "COLABORADOR TESTE", "nome_fantasia": "Colab Fantasia"}])        # contabilidade 21/10: PJ pelo nome fantasia do cadastro
+    with conn.cursor() as cur:                                                                                         # o centro do PJ vira a obra 103 (para ele aparecer na lista da aba Obras)
+        cur.execute("INSERT INTO pnl_centro_grupo (centro_custo_id, centro_nome, empresa_nome, grupo, codigo_obra) VALUES (1,'CC TESTE','EMPRESA','OBRA','103')")
     acesso.definir(conn, "diretor@empresa.com", acesso.VISUALIZADOR, True, "rafael@x")
     with patch("conexao.get_conn", return_value=conn):
         at = _app_como(conn, "diretor@empresa.com")
         at.session_state["dir_todas_abas"] = True
         at.run()
         assert not at.exception, at.exception
+        nomes_pj = [list(d.value["Nome"]) for d in at.dataframe if "Nome" in d.value.columns and "Função" in d.value.columns]          # lista de colaboradores da aba Obras
+        assert nomes_pj and any("Colab Fantasia" in n for n in nomes_pj[0]) and not any(n == "COLABORADOR TESTE" for n in nomes_pj[0]), nomes_pj
+        pj_exp = [d.value for d in at.dataframe if "Colaborador PJ" in d.value.columns]                                                 # expander "PJ do mes" da aba Pessoas
+        assert pj_exp and "Colab Fantasia" in set(pj_exp[0]["Colaborador PJ"]) and "COLABORADOR TESTE" in set(pj_exp[0]["Razão social"])
         rotulos = [m.label for m in at.metric]
         for esperado in ("Receita (base-line)", "Custos diretos", "BDI", "Administração", "Resultado",        # Resultado
                          "Receita realizada", "Obras com prejuízo",                                           # Obras
@@ -220,3 +227,24 @@ def test_administracao_do_painel_junta_outros_credores_dir_e_respeita_o_periodo(
         assert any("Outros credores/Dir" in c.value for c in at.caption)
         at.selectbox(key="dir_per_modo").select("Mês").run()                # periodo de um mes so': a mesma tela segue sem erro
         assert not at.exception, at.exception
+
+
+def test_periodo_personalizado_pede_primeiro_o_inicio_depois_o_fim(conn):
+    """21/10/2026: na ordem da tela vem "De" e depois "Até"; o "Até" so' oferece meses a partir do "De" (nunca fim antes do inicio)."""
+    from test_administracao import _montar
+    _montar(conn)
+    acesso.definir(conn, "diretor@empresa.com", acesso.VISUALIZADOR, True, "rafael@x")
+    with patch("conexao.get_conn", return_value=conn):
+        at = _app_como(conn, "diretor@empresa.com")
+        at.run()
+        at.selectbox(key="dir_per_modo").select("Personalizado").run()
+        assert not at.exception, at.exception
+        ordem = [s.key for s in at.selectbox if s.key in ("dir_mes_de", "dir_mes_ate")]
+        assert ordem == ["dir_mes_de", "dir_mes_ate"], ordem
+        de = at.selectbox(key="dir_mes_de")
+        assert at.selectbox(key="dir_mes_ate").options[-1] == de.options[-1]
+        ultimo = de.options[-1]                                                    # rotulos "MM/AAAA"
+        de.set_value(f"{ultimo[3:]}-{ultimo[:2]}").run()                           # inicio = ultimo mes -> o fim so' pode ser esse mes
+        assert not at.exception, at.exception
+        assert at.selectbox(key="dir_mes_ate").options == [ultimo]
+        assert at.selectbox(key="dir_mes_ate").value == f"{ultimo[3:]}-{ultimo[:2]}"

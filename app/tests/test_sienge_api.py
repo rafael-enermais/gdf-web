@@ -210,3 +210,29 @@ def test_buscar_obras_pagina_ate_acabar():
     cli = Falso()
     obras = S.buscar_obras(cli)
     assert len(obras) == 207 and [c[0] for c in cli.chamadas] == ["v1/enterprises", "v1/enterprises"] and cli.chamadas[1][1]["offset"] == 200
+
+
+def test_normalizar_credores_pega_o_nome_fantasia_sem_guardar_documento():
+    regs = [{"id": 77, "name": " COLABORADOR TESTE LTDA ", "tradeName": " Colab Teste ", "cnpj": "00.000.000/0001-00"},
+            {"id": "78", "name": "SEM FANTASIA", "tradeName": ""},
+            {"id": 79, "name": "Igual Ltda", "tradeName": "IGUAL LTDA"},
+            {"creditorId": 80, "creditorName": "OUTRO NOME", "fantasyName": "Outro"},
+            {"id": None, "name": "sem id"}, {"id": 5}, "lixo"]
+    n = S.normalizar_credores(regs)
+    assert n == [{"id": 77, "nome": "COLABORADOR TESTE LTDA", "nome_fantasia": "Colab Teste"}, {"id": 78, "nome": "SEM FANTASIA", "nome_fantasia": None},
+                 {"id": 79, "nome": "Igual Ltda", "nome_fantasia": None}, {"id": 80, "nome": "OUTRO NOME", "nome_fantasia": "Outro"}]
+    assert all("cnpj" not in c for c in n)                                   # sem CPF/CNPJ no que vai para o banco
+    assert S.normalizar_credores(None) == []
+
+
+def test_buscar_credores_pagina_ate_acabar():
+    class Falso:
+        def __init__(self):
+            self.chamadas = []
+
+        def get(self, caminho, params=None):
+            self.chamadas.append((caminho, dict(params or {})))
+            off = (params or {}).get("offset", 0)
+            return {"results": [{"id": off + i, "name": f"C{off + i}"} for i in range(200 if off == 0 else 3)]}
+    cli = Falso()
+    assert len(S.buscar_credores(cli)) == 203 and [c[0] for c in cli.chamadas] == ["v1/creditors", "v1/creditors"]

@@ -8,7 +8,7 @@ import psycopg2
 import psycopg2.extensions
 import streamlit as st
 
-APP_VERSION = "0.30.0"        # 0.MAJOR.MINOR ate' o lancamento oficial (mesma regra do EGC)
+APP_VERSION = "0.31.0"        # 0.MAJOR.MINOR ate' o lancamento oficial (mesma regra do EGC)
 NOME_APP = "GDF — Gestão de Demonstrativo Financeiro"
 CONTATO = "rafael.nakahara@enermais.com.br"       # mesmo contato do rodape do EGC/RADAR
 
@@ -120,6 +120,8 @@ def logo_marca() -> None:
     arq = Path(__file__).parent / "assets_relatorio" / "logo_enermais_app.png"
     if arq.exists():
         st.logo(str(arq), size="large")
+        import estilo
+        estilo.logo_maior()                 # 21/10/2026: logo maior (o tamanho "large" do Streamlit era pequeno)
 
 
 def sidebar_rodape() -> None:

@@ -8,6 +8,7 @@ import pandas as pd
 import streamlit as st
 
 import formatacao as F
+from fuso import agora_br
 import historico
 import importador_dre
 import importador_folha
@@ -224,7 +225,7 @@ def up_historico(conn, usuario):
             if isinstance(lido, str):
                 st.error(lido)
                 return
-            ano_pad = dt.date.today().year
+            ano_pad = agora_br().date().year
             ult = historico.MESES.index(lido["meses"][-1]) + 1 if lido["meses"] and lido["meses"][-1] in historico.MESES else 1
             c1, c2 = st.columns(2)
             ano = c1.number_input("Ano do painel", min_value=2024, max_value=2100, value=ano_pad, step=1, key=f"pn2_hist_ano_{sha}")

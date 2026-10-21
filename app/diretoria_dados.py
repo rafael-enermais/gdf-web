@@ -157,10 +157,20 @@ def tabela_pessoas(df_pess: pd.DataFrame, mes: str, colab_mes: int | None, colab
         v, a = float(set_.get(c, 0.0)), float(acu.get(c, 0.0))
         rc_m = v / colab_mes if colab_mes else None
         rc_a = a / colab_soma_antes if colab_soma_antes else None
+        rc_p = (v + a) / (colab_soma_antes + colab_mes) if colab_mes and colab_soma_antes else None            # periodo inteiro (meses antes + mes de referencia) por colaborador-mes
         out.append({"conta": c, "mes": round(v, 2), "pct_mes": round(v / tot_mes, 4) if abs(tot_mes) > 0.005 else None, "por_colab_mes": None if rc_m is None else round(rc_m, 2),
                     "acum_antes": round(a, 2), "por_colab_acum": None if rc_a is None else round(rc_a, 2),
+                    "periodo": round(v + a, 2), "por_colab_periodo": None if rc_p is None else round(rc_p, 2),
                     "variacao": round(rc_m / rc_a - 1, 4) if rc_m is not None and rc_a else None})
     return out
+
+
+def nome_fantasia(credor: str, mapa: dict | None) -> str:
+    """Nome a mostrar para um colaborador PJ: o NOME FANTASIA do cadastro do credor (pedido da contabilidade, 21/10/2026); sem fantasia cadastrada, a razao social como veio."""
+    if not mapa or not credor:
+        return credor
+    from painel_db import norm_credor
+    return mapa.get(norm_credor(credor)) or credor
 
 
 # ------------------------------------------------------------------ PJ por colaborador (fonte: contas pagas "Salarios PJ")

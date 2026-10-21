@@ -145,6 +145,62 @@ def gravar_obras_sienge(conn, obras: list) -> dict:
     return {"obras": len(obras)}
 
 
+def credores_sienge_instalado(conn) -> bool:
+    """True se a tabela dos credores do Sienge (sql/v2_credor_sienge.sql, SQL-30) existe."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema='gdf' AND table_name='pnl_credor_sienge'")
+            return cur.fetchone()[0] == 1
+    except Exception:
+        return False
+
+
+def gravar_credores_sienge(conn, credores: list) -> dict:
+    """Upsert dos credores do Sienge (ja normalizados por sienge_api.normalizar_credores). Sem a tabela devolve {'erro': ...}."""
+    if not credores_sienge_instalado(conn):
+        return {"erro": "A tabela dos credores do Sienge ainda não existe no banco (falta executar o SQL-30, arquivo sql/v2_credor_sienge.sql)."}
+    if not credores:
+        return {"credores": 0, "com_fantasia": 0}
+    with db.transacao(conn):
+        with conn.cursor() as cur:
+            execute_values(cur, """INSERT INTO pnl_credor_sienge (id, nome, nome_fantasia) VALUES %s
+                                   ON CONFLICT (id) DO UPDATE SET nome=EXCLUDED.nome, nome_fantasia=EXCLUDED.nome_fantasia, atualizado_em=now()""",
+                           [(c["id"], c["nome"], c["nome_fantasia"]) for c in credores])
+    return {"credores": len(credores), "com_fantasia": sum(1 for c in credores if c["nome_fantasia"])}
+
+
+def fantasia_por_credor(conn) -> dict:
+    """{nome do credor normalizado (norm_credor): nome fantasia} so' dos credores que TEM fantasia no cadastro. Sem a tabela (ou sem dados) devolve {}."""
+    if not credores_sienge_instalado(conn):
+        return {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT nome, nome_fantasia FROM pnl_credor_sienge WHERE nome_fantasia IS NOT NULL AND btrim(nome_fantasia) <> ''")
+            return {norm_credor(n): f.strip() for n, f in cur.fetchall()}
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return {}
+
+
+def _carimbo_credores(conn) -> str:
+    """Parte do carimbo do painel: muda quando o cadastro de credores e' atualizado (sem a tabela = vazio)."""
+    if not credores_sienge_instalado(conn):
+        return ""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT count(*)||'/'||coalesce(max(atualizado_em)::text,'') FROM pnl_credor_sienge")
+            return cur.fetchone()[0]
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return ""
+
+
 def obras_sienge_conferencia(conn) -> list:
     """Para cada codigo de obra do painel (de-para de centros de custo), o nome que o Sienge tem para o mesmo numero (id ou codigo da obra) ao lado do nome ja usado.
     Serve para a contabilidade/Rafael validarem se o numero do painel e' o mesmo do Sienge ANTES de confiar nos nomes. [{'codigo','nome_sienge','nome_comercial','nome_atual'}]."""
@@ -950,7 +1006,7 @@ def carimbo_dados(conn) -> str:
                 (SELECT coalesce(max(atualizado_em)::text,'') FROM pnl_obra_sienge),
                 (SELECT coalesce(max(id),0) FROM pnl_log))""")
             base = cur.fetchone()[0] or ""
-        return base + "|" + _carimbo_financiamento(conn)
+        return base + "|" + _carimbo_financiamento(conn) + "|" + _carimbo_credores(conn)
     except Exception:
         try:
             conn.rollback()

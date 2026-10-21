@@ -228,6 +228,22 @@ def buscar_obras(cli: Cliente) -> list:
     return obras
 
 
+ENDPOINT_CREDORES = "v1/creditors"
+
+
+def buscar_credores(cli: Cliente) -> list:
+    """Credores do cadastro do Sienge, em paginas de 200 (so' para pegar o nome fantasia). Se a chave nao tiver permissao neste recurso, o Cliente levanta ErroSienge."""
+    regs, off = [], 0
+    while off < 100000:
+        pag = lista(cli.get(ENDPOINT_CREDORES, {"limit": 200, "offset": off}))
+        regs += pag
+        if len(pag) < 200:
+            break
+        off += 200
+        time.sleep(0.2)
+    return regs
+
+
 # ---------------------------------------------------------------- normalizacao (funcoes puras)
 def cod_plano(i) -> str:
     """O Sienge devolve o plano financeiro as vezes sem pontos (2020212) e os relatorios com pontos (2.02.02.12)."""
@@ -396,4 +412,20 @@ def normalizar_obras(regs: list) -> list:
         out.append({"id": oid, "nome": nome or None, "nome_comercial": comercial or None,
                     "empresa_id": _int(x.get("companyId") if x.get("companyId") is not None else x.get("idCompany")),
                     "codigo": str(codigo).strip() if codigo not in (None, "") else None, "bruto": x})
+    return out
+
+
+def normalizar_credores(regs: list) -> list:
+    """Credores do Sienge -> [{'id','nome','nome_fantasia'}]. Tolerante a nomes de campo (name/tradeName/fantasyName...). So' guarda o necessario: sem CPF/CNPJ.
+    Fantasia igual a razao social (ou vazia) vira None."""
+    out = []
+    for x in regs or []:
+        if not isinstance(x, dict):
+            continue
+        cid = _int(x.get("id") if x.get("id") is not None else x.get("creditorId"))
+        nome = (x.get("name") or x.get("creditorName") or x.get("companyName") or "").strip()
+        if cid is None or not nome:
+            continue
+        fant = (x.get("tradeName") or x.get("fantasyName") or x.get("nomeFantasia") or x.get("alias") or "").strip()
+        out.append({"id": cid, "nome": nome, "nome_fantasia": None if not fant or fant.upper() == nome.upper() else fant})
     return out

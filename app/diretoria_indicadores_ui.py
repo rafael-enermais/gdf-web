@@ -6,6 +6,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+import estilo
 import formatacao as F
 import fuso
 import indicadores_dados as I
@@ -176,6 +177,7 @@ def aba_financiamentos(conn, carimbo, grupo="financiamentos", antes=None):
     dia = hoje()
     if antes:
         antes()
+    st.caption(_t(f"Esta aba mostra a **posição de hoje** ({_data(dia)}): o que ainda falta pagar. Por isso ela não muda com o filtro de período do topo (o período escolhido vale para as outras abas)."))
     prev = st.checkbox("Incluir documentos de previsão", value=False, key=f"{pre}_prev", help="Padrão: fora.")
     f = _fin(conn, dia, prev, carimbo, grupo)
     k = st.columns(6)
@@ -201,7 +203,7 @@ def aba_financiamentos(conn, carimbo, grupo="financiamentos", antes=None):
         st.markdown("**Curva de endividamento — desembolso por mês de vencimento**")
         long = pd.concat([pd.DataFrame({"Mês": cur["mes"], "Parte": "Principal", "R$ mil": cur["principal"] / 1e3}),
                           pd.DataFrame({"Mês": cur["mes"], "Parte": "Juros", "R$ mil": cur["juros"] / 1e3})])
-        st.altair_chart(alt.Chart(long).mark_bar().encode(
+        estilo.altair(alt.Chart(long).mark_bar().encode(
             x=alt.X("Mês:N", sort=list(cur["mes"]), axis=alt.Axis(labelAngle=-45, title=None)), y=alt.Y("R$ mil:Q", title="R$ mil"),
             color=alt.Color("Parte:N", scale=alt.Scale(domain=["Principal", "Juros"], range=[NAVY, ORANGE]), legend=alt.Legend(orient="top", title=None)),
             tooltip=["Mês", "Parte", alt.Tooltip("R$ mil:Q", format=",.1f")]).properties(height=260), width="stretch")

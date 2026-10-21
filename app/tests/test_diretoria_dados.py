@@ -184,6 +184,10 @@ def test_tabela_pessoas_conta_so_os_meses_do_periodo_escolhido():
     per = DD.tabela_pessoas(pes, "2026-09", 10, 40, meses=["2026-09"])                    # periodo de um mes so': nada "antes"
     assert next(x for x in ano if x["conta"] == "Horas Extras")["acum_antes"] == 400.0
     assert next(x for x in per if x["conta"] == "Horas Extras")["acum_antes"] == 0.0
+    he_ano = next(x for x in ano if x["conta"] == "Horas Extras")
+    assert he_ano["periodo"] == 1300.0 and he_ano["por_colab_periodo"] == pytest.approx(1300 / 50)                    # total do PERIODO = antes + mes de referencia; por colaborador-mes (40 + 10)
+    assert next(x for x in per if x["conta"] == "Horas Extras")["periodo"] == 900.0
+    assert DD.tabela_pessoas(pes, "2026-09", None, None)[0]["por_colab_periodo"] is None
 
 
 def test_he_x_receita_variacao_sobre_o_mes_anterior_e_periodo_x_periodo():
@@ -198,3 +202,10 @@ def test_he_x_receita_variacao_sobre_o_mes_anterior_e_periodo_x_periodo():
     assert cp["receita_atual"] == 2700.0 and cp["receita_anterior"] == 2000.0 and cp["var_receita"] == 0.35
     sem = DD.comparar_periodos(he, rec, "2026-09", "2026-10")                             # outubro sem dado: nao compara periodo incompleto
     assert sem["var_he"] is None and sem["var_receita"] is None
+
+
+def test_nome_fantasia_do_pj_usa_o_cadastro_e_cai_na_razao_social():
+    mapa = {"COLABORADOR TESTE LTDA": "Colab Teste"}
+    assert DD.nome_fantasia("Colaborador  Teste Ltda", mapa) == "Colab Teste"                     # casa sem diferenca de caixa/espacos
+    assert DD.nome_fantasia("OUTRO PJ ME", mapa) == "OUTRO PJ ME"                                   # sem fantasia: razao social
+    assert DD.nome_fantasia("X", None) == "X" == DD.nome_fantasia("X", {})

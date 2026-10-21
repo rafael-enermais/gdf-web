@@ -11,6 +11,7 @@ from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 import historico as HIST
+from fuso import agora_br
 import relatorio_pdf as R
 from relatorio_fmt import fnum, mm, mmn, neg, pct
 from relatorio_pdf import (ASSETS, BLUES, calc_levels, cascata, BORDER, CW, GREY, GREY_BG, H, MX, NAVY, NEG_TXT, ORANGE, W, WHITE, barras, caixa_nota, hline, kpi,
@@ -79,7 +80,7 @@ def montar_ctx(conn, mes: str, gerado_em: str = "") -> dict:
         ctx["dre"] = {"linhas": d["linhas"], "valores": d["valores"], "origem": origem, "fontes": {}, "quem": None, "quando": None,
                       "observacao": None, "manuais": []}
     import datetime as _dt
-    _hoje = _dt.date.today()
+    _hoje = agora_br().date()
     ctx["serie"] = P.receita_mensal(conn, mes_atual=f"{_hoje.year}-{_hoje.month:02d}")      # mes em andamento fica de fora (incompleto)
 
     # --- Obras (DRE oficial importado)
