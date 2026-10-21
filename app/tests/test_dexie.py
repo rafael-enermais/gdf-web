@@ -474,6 +474,14 @@ def test_prompt_manda_usar_a_base_e_fala_no_feminino():
     assert "conhecimento" in s and "assessoria tributária" in s and "feminino" in s and "a Dexie" in s
 
 
+def test_prompt_define_a_interlocutora_sem_nome_de_pessoa():
+    from datetime import date
+    s = DC.montar_system("ana@x", date(2026, 10, 13))
+    assert "contadora responsável" in s and "assistente" in s and "assinatura" in s
+    assert "contabilidade" not in s and "Rafael" not in s and "Alex" not in s                       # repositorio publico: sem nome de pessoa no prompt
+    assert s.index("SEGURANÇA") > s.index("QUEM É A SUA INTERLOCUTORA")                        # regras de seguranca continuam por ultimo e valem sobre tudo
+
+
 # ------------------------------------------------------------------ relatorio em PDF
 def _texto_pdf(b):
     import io
