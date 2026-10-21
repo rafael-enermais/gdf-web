@@ -654,9 +654,18 @@ def test_valor_que_veio_da_ferramenta_nao_e_marcado():
     assert DC.valores_sem_fonte(t, FONTES) == []
 
 
-def test_valor_inventado_ou_conta_da_dexie_e_marcado():
-    t = "Receita R$ 12.999.999,00; diferença de R$ 8.345.678,90; cerca de 1,2 mi a mais."
-    assert DC.valores_sem_fonte(t, FONTES) == ["R$ 12.999.999,00", "R$ 8.345.678,90", "1,2 mi"]
+def test_valor_inventado_ou_conta_errada_e_marcado():
+    t = "Receita R$ 12.999.999,00; diferença de R$ 8.000.000,00; cerca de 1,2 mi a mais."
+    assert DC.valores_sem_fonte(t, FONTES) == ["R$ 12.999.999,00", "R$ 8.000.000,00", "1,2 mi"]
+
+
+def test_conta_certa_feita_a_partir_das_consultas_nao_e_marcada():
+    """Caso real (set/26 x ago/26): receita, custo e administracao vieram das consultas; BDI, variacao e resultado sao contas da Dexie e estavam certas."""
+    fontes = ['<dados_do_banco>{"ago": {"receita": 13385699.71, "custo": 8724816.14, "adm": 1945537.70}, "set": {"receita": 9291981.70, "custo": 9360947.54, "adm": 1685445.88}}</dados_do_banco>']
+    certo = "BDI ago R$ 4.660.883,57; BDI set -R$ 68.965,84; variacao do BDI -R$ 4.729.849,41; resultado ago R$ 2.715.345,87; resultado set -R$ 1.754.411,72; variacao da receita R$ 4.093.718,01."
+    assert DC.valores_sem_fonte(certo, fontes) == []
+    errado = "BDI ago R$ 4.660.883,99; resultado set -R$ 1.754.411,00."                     # conta errada nao passa
+    assert DC.valores_sem_fonte(errado, fontes) == ["R$ 4.660.883,99", "1.754.411,00"]
 
 
 def test_resposta_com_valor_sem_fonte_ganha_aviso_e_o_log_conta():

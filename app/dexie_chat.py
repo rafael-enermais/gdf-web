@@ -11,6 +11,7 @@ Desenho (o mesmo do Erik.AI do EGC, com as licoes de seguranca da v0.42.0 do EGC
 """
 from __future__ import annotations
 
+import bisect
 import json
 import re
 import unicodedata
@@ -97,16 +98,32 @@ def _numeros_do_texto(t: str) -> list:
 
 
 def valores_sem_fonte(texto: str, fontes: list) -> list:
-    """Valores em reais citados na resposta que NAO aparecem nas consultas da rodada (nem na pergunta): conta feita pela Dexie ou invencao. Nunca levanta erro."""
+    """Valores em reais citados na resposta que NAO aparecem nas consultas da rodada (nem na pergunta) e que tambem NAO sao soma/diferenca (de 2 ou 3) de valores
+    das consultas ou de contas ja confirmadas na propria resposta (ex.: BDI = receita - custos; variacao = BDI de set - BDI de ago): invencao ou conta errada.
+    Conta certa feita a partir dos dados passa. Nunca levanta erro."""
     try:
         conhecidos = []
         for f in fontes:
             conhecidos += [abs(float(x)) for x in re.findall(r"-?\d+(?:\.\d+)?", f)]
         conhecidos += [v for _, v, _ in _numeros_do_texto("".join(fontes))]
+        pendentes = [x for x in _numeros_do_texto(texto) if x[1] != 0 and not any(abs(x[1] - c) <= x[2] for c in conhecidos)]
+        aceitos = []                                                # contas certas da propria resposta (entram como base das proximas)
+        for _ in range(3):                                          # repete: uma conta pode depender de outra conta mais abaixo no texto
+            base = sorted({round(c, 2) for c in conhecidos + aceitos if c >= 1000})[:200]
+            derivados = sorted({abs(base[i] + base[j]) for i in range(len(base)) for j in range(i + 1, len(base))}
+                               | {abs(base[i] - base[j]) for i in range(len(base)) for j in range(len(base)) if i != j})
+
+            def _perto(v, tol, lista):
+                k = bisect.bisect_left(lista, v - tol)
+                return k < len(lista) and lista[k] <= v + tol
+
+            novos = [x for x in pendentes if x[1] >= 1000 and (_perto(x[1], x[2], derivados) or any(_perto(x[1] + c, x[2], derivados) or _perto(abs(x[1] - c), x[2], derivados) for c in base))]
+            if not novos:
+                break
+            aceitos += [x[1] for x in novos]
+            pendentes = [x for x in pendentes if x not in novos]
         faltam = []
-        for original, v, tol in _numeros_do_texto(texto):
-            if v == 0 or any(abs(v - c) <= tol for c in conhecidos):
-                continue
+        for original, _, _ in pendentes:
             if original not in faltam:
                 faltam.append(original)
         return faltam
@@ -117,7 +134,7 @@ def valores_sem_fonte(texto: str, fontes: list) -> list:
 def _aviso_valores(faltam: list) -> str:
     if not faltam:
         return ""
-    return ("\n\nAtenção: estes valores não aparecem nas consultas feitas para esta resposta (podem ser contas que eu fiz ou erro meu): "
+    return ("\n\nAtenção: estes valores não batem com as consultas desta resposta nem com somas ou diferenças delas (podem ser erro meu): "
             + "; ".join(faltam[:6]) + ". Confira no painel antes de usar.")
 
 
