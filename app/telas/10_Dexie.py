@@ -35,8 +35,9 @@ ALTURA_CHAT = 520          # altura minima (px) do quadro da conversa; o CSS aba
 
 # O quadro da conversa acompanha a altura da tela (some o vazio embaixo em tela grande; em tela pequena nao passa de um minimo legivel).
 st.markdown("""<style>
-.st-key-dexie_chat_box, .st-key-dexie_chat_box > [data-testid="stVerticalBlock"]{
-  height: max(22rem, calc(100vh - 22rem)) !important; max-height: none !important; }
+/* o Streamlit fixa a altura do quadro no ENVOLTORIO (flex 0 0 520px), por isso o CSS mexe nele e o quadro enche o envoltorio */
+[data-testid="stLayoutWrapper"]:has(> .st-key-dexie_chat_box){ flex: 0 0 auto !important; height: max(22rem, calc(100vh - 24rem)) !important; }
+.st-key-dexie_chat_box{ flex: 1 1 auto !important; height: 100% !important; max-height: none !important; }
 </style>""", unsafe_allow_html=True)
 
 usuario = usuario_atual()

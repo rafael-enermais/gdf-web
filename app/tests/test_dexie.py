@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Dexie (assistente de IA): higiene de texto, laco de ferramentas com cliente FALSO (nunca chama a API de verdade), acoes com confirmacao e a tela.
 Dados 100% sinteticos. Os testes que precisam de banco usam o Postgres descartavel (marca `pg`)."""
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -751,3 +752,9 @@ def test_serie_mensal_esta_nas_ferramentas_e_no_prompt():
     assert "serie_mensal" in [t["name"] for t in DC.TOOLS] and "serie_mensal" in FERR.FUNCOES
     s = DC.montar_system("ana@x", date(2026, 10, 13))
     assert "serie_mensal" in s and "montar_grafico" in s
+
+
+def test_quadro_do_chat_ajusta_o_envoltorio_e_nao_so_o_quadro():
+    """Visto ao vivo (v0.32.6): o CSS so no quadro nao mudou nada porque o Streamlit fixa a altura no envoltorio (flex 0 0 520px)."""
+    src = open(os.path.join(os.path.dirname(__file__), "..", "telas", "10_Dexie.py"), encoding="utf-8").read()
+    assert 'key="dexie_chat_box"' in src and 'stLayoutWrapper"]:has(> .st-key-dexie_chat_box)' in src and "100vh" in src
