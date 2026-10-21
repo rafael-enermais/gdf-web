@@ -56,13 +56,69 @@ def limpar_texto(s) -> str:
     return t if t.isascii() else "".join(c for c in t if not _escondido(c))
 
 
+_LINK_MD = re.compile(r"\[([^\]]*)\]\(\s*[^)]*\)")
+_URL = re.compile(r"(?:https?://|ftp://|www\.)[^\s<>\)\]]+", re.I)
+
+
 def limpar_resposta(txt) -> str:
-    """Resposta do modelo para a tela: sem imagens (markdown/HTML) e sem definicoes de link-de-imagem; cifrao escapado para nao virar formula."""
+    """Resposta do modelo para a tela: sem imagens (markdown/HTML), sem definicoes de link-de-imagem e SEM LINKS (so' o texto do link fica): um link com dado
+    na URL poderia levar informacao para fora com um clique. Cifrao escapado na tela para nao virar formula."""
     t = limpar_texto(txt)
     t = _IMG_MD.sub("", t)
     t = _IMG_HTML.sub("", t)
     t = _REF_IMG.sub("", t)
+    t = _LINK_MD.sub(lambda m: m.group(1), t)
+    t = re.sub(r"<\s*a\b[^>]*>(.*?)<\s*/\s*a\s*>", r"\1", t, flags=re.I | re.S)
+    t = _URL.sub("[link removido]", t)
     return t.strip()
+
+
+# ------------------------------------------------------------------ conferencia dos valores da resposta (anti-alucinacao)
+_VALOR = re.compile(r"(?<![\w.,/-])(R\$\s*)?(-?\d{1,3}(?:\.\d{3})+(?:,\d+)?|-?\d+,\d+|-?\d+)(?![\d.,]*[%/])(?![.,]?\d)(\s*(?:mi\b|milh[õo]es|milh[ãa]o|mil\b|bi\b|bilh[õo]es|bilh[ãa]o))?", re.I)
+_MULT = {"mil": 1e3, "mi": 1e6, "milhao": 1e6, "milhão": 1e6, "milhoes": 1e6, "milhões": 1e6, "bi": 1e9, "bilhao": 1e9, "bilhão": 1e9, "bilhoes": 1e9, "bilhões": 1e9}
+
+
+def _numeros_do_texto(t: str) -> list:
+    """Numeros que parecem VALOR (R$, separador de milhar, decimal ou 5+ digitos; ano, codigo curto, percentual e data ficam de fora) -> [(texto, valor, tolerancia)]."""
+    saida = []
+    for m in _VALOR.finditer(t):
+        rs, num, mult = m.group(1), m.group(2), (m.group(3) or "").strip().lower()
+        so_digitos = num.lstrip("-").replace(".", "").replace(",", "")
+        if not (rs or mult or "." in num or "," in num or len(so_digitos) >= 5):
+            continue
+        casas = len(num.split(",")[1]) if "," in num else 0
+        try:
+            v = float(num.replace(".", "").replace(",", "."))
+        except ValueError:
+            continue
+        k = _MULT.get(mult, 1.0)
+        saida.append((m.group(0).strip(), abs(v) * k, 0.5 * (10 ** -casas) * k + 0.001))
+    return saida
+
+
+def valores_sem_fonte(texto: str, fontes: list) -> list:
+    """Valores em reais citados na resposta que NAO aparecem nas consultas da rodada (nem na pergunta): conta feita pela Dexie ou invencao. Nunca levanta erro."""
+    try:
+        conhecidos = []
+        for f in fontes:
+            conhecidos += [abs(float(x)) for x in re.findall(r"-?\d+(?:\.\d+)?", f)]
+        conhecidos += [v for _, v, _ in _numeros_do_texto("".join(fontes))]
+        faltam = []
+        for original, v, tol in _numeros_do_texto(texto):
+            if v == 0 or any(abs(v - c) <= tol for c in conhecidos):
+                continue
+            if original not in faltam:
+                faltam.append(original)
+        return faltam
+    except Exception:                                               # noqa: BLE001
+        return []
+
+
+def _aviso_valores(faltam: list) -> str:
+    if not faltam:
+        return ""
+    return ("\n\nAtenção: estes valores não aparecem nas consultas feitas para esta resposta (podem ser contas que eu fiz ou erro meu): "
+            + "; ".join(faltam[:6]) + ". Confira no painel antes de usar.")
 
 
 def empacotar_resultado(nome: str, resultado) -> str:
@@ -226,6 +282,7 @@ def responder(client, conn, modelo: str, historico: list, pergunta: str, usuario
     msgs.append({"role": "user", "content": pergunta})
     system = montar_system(usuario, hoje)
     usadas: list = []
+    fontes: list = [pergunta]
     try:
         for _ in range(MAX_ITERACOES):
             resp = client.messages.create(model=modelo, max_tokens=MAX_TOKENS, system=system, tools=TOOLS, messages=msgs)
@@ -236,7 +293,8 @@ def responder(client, conn, modelo: str, historico: list, pergunta: str, usuario
                     msgs.append({"role": "user", "content": "Responda agora em texto, de forma curta, com o que você já consultou."})
                     resp = client.messages.create(model=modelo, max_tokens=MAX_TOKENS, system=system, tools=TOOLS, messages=msgs)
                     texto = limpar_resposta(_texto(resp.content))
-                return {"texto": texto or "Não consegui montar uma resposta. Reformule a pergunta.", "ferramentas": usadas, "ok": bool(texto)}
+                faltam = valores_sem_fonte(texto, fontes) if texto else []
+                return {"texto": (texto + _aviso_valores(faltam)) if texto else "Não consegui montar uma resposta. Reformule a pergunta.", "ferramentas": usadas, "ok": bool(texto), "conferir": len(faltam)}
             msgs.append({"role": "assistant", "content": _conteudo_assistente(resp.content)})
             retornos = []
             for b in resp.content:
@@ -244,7 +302,9 @@ def responder(client, conn, modelo: str, historico: list, pergunta: str, usuario
                     continue
                 usadas.append(b.name)
                 resultado = _executar_ferramenta(conn, b.name, b.input, estado)
-                retornos.append({"type": "tool_result", "tool_use_id": b.id, "content": empacotar_resultado(b.name, resultado)})
+                pacote = empacotar_resultado(b.name, resultado)
+                fontes.append(pacote)
+                retornos.append({"type": "tool_result", "tool_use_id": b.id, "content": pacote})
             msgs.append({"role": "user", "content": retornos})
         return {"texto": "Precisei de consultas demais para essa pergunta. Peça um recorte menor (um mês, uma obra) ou divida em partes.", "ferramentas": usadas, "ok": False}
     except Exception as exc:                                        # noqa: BLE001

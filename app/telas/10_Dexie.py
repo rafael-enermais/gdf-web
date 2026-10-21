@@ -160,7 +160,7 @@ with c_chat:
             S["dexie_n"] += 1
             DM.gravar(conn, usuario, "assistant", r["texto"])
             P.registrar_log(conn, "DEXIE_PERGUNTA", "INFO" if r["ok"] else "AVISO", usuario, None,
-                            {"caracteres": len(S["dexie_pendente"]), "ferramentas": r["ferramentas"][:12], "ok": r["ok"], **({"erro": r["erro"]} if r.get("erro") else {})})
+                            {"caracteres": len(S["dexie_pendente"]), "ferramentas": r["ferramentas"][:12], "ok": r["ok"], **({"erro": r["erro"]} if r.get("erro") else {}), **({"valores_a_conferir": r["conferir"]} if r.get("conferir") else {})})
             S["dexie_pendente"] = None
             st.rerun()
 
