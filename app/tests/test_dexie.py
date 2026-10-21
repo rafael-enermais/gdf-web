@@ -713,3 +713,17 @@ def test_sdk_real_loop_com_ferramenta_manda_corpo_valido_na_2a_chamada(blocos):
     assistente = reqs[1]["messages"][1]["content"]
     assert not any(b.get("type") == "text" and not b["text"].strip() for b in assistente)          # a API recusa texto vazio
     assert assistente[-1]["type"] == "tool_use" and reqs[1]["messages"][2]["content"][0]["type"] == "tool_result"
+
+
+def test_ferramenta_de_acao_explica_que_tipos_e_data_e_nao_pagar_receber():
+    """Visto ao vivo: a Dexie dizia 'somente pagas (P)' porque P parecia 'pagar'; o cartao (correto) dizia pagar e receber. O esquema agora desfaz a ambiguidade."""
+    t = [x for x in DC.TOOLS if x["name"] == "propor_acao"][0]
+    d = t["input_schema"]["properties"]["tipos"]["description"] + t["description"]
+    assert "DATA" in d and "NAO escolhe pagar" in d and "pagar E a receber" in d
+
+
+def test_prompt_manda_usar_serie_pronta_e_nao_dre_mes_em_laco():
+    from datetime import date
+    s = DC.montar_system("ana@x", date(2026, 10, 13))
+    assert "resultado_periodo" in s and "Nunca chame dre_mes mês a mês" in s and "MESMA rodada" in s
+    assert DC.MAX_ITERACOES >= 8

@@ -342,7 +342,7 @@ TOOLS = [
     _t("visao_geral", "Mostra o que existe no banco: meses com dados do Sienge, DRE confirmado, DRE oficial (PDF), folha, projecao, orcamento ADM e as ultimas sincronizacoes. Chame primeiro para saber quais meses existem."),
     _t("resultado_periodo", "Resultado da Diretoria (Receita - Custos diretos = BDI - Administracao = Resultado), realizado e previsto, mes a mes e somado. So' meses com DRE confirmado entram na soma.",
        {"mes_ini": _INI, "mes_fim": _FIM}, ["mes_ini", "mes_fim"]),
-    _t("dre_mes", "DRE gerencial de um mes (linhas e valores) e a origem do dado (confirmado, PDF oficial ou reconstruido pela API).", {"mes": _MES}, ["mes"]),
+    _t("dre_mes", "DRE gerencial de UM mes (linhas e valores) e a origem do dado (confirmado, PDF oficial ou reconstruido pela API). Para varios meses use resultado_periodo ou receita_mensal.", {"mes": _MES}, ["mes"]),
     _t("obras_mes", "Receita, custo, BDI e margem por obra no mes, com as maiores lucros e prejuizos (DRE oficial por obra).", {"mes": _MES, "limite": _LIM}, ["mes"]),
     _t("despesas", "Contas pagas no periodo (mesma base da aba Despesas), agrupadas por conta, credor, obra, centro_de_custo ou mes.",
        {"mes_ini": _INI, "mes_fim": _FIM, "agrupar_por": {"type": "string", "enum": list(_AGRUPAR), "description": "Como agrupar (padrao: conta)."}, "limite": _LIM,

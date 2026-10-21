@@ -22,7 +22,7 @@ import dexie_ferramentas as FERR
 MODELO_PADRAO = "claude-sonnet-5"          # mesmo id do Erik.AI em producao no EGC; pode ser trocado pelo secret ANTHROPIC_MODEL
 MAX_PERGUNTA = 2000
 MAX_HISTORICO = 20
-MAX_ITERACOES = 6
+MAX_ITERACOES = 8
 MAX_TOKENS = 4096
 MAX_CHARS_RESULTADO = 14000
 LIMITE_PERGUNTAS_SESSAO = 80
@@ -165,6 +165,7 @@ COMO TRABALHAR
 - Resultado da Diretoria = Receita − Custos diretos = BDI; BDI − Administração = Resultado. Desvio de orçamento positivo = gastou mais que o orçado.
 - CONHECIMENTO: para perguntas de contabilidade, tributos, CPCs, indicadores e reforma tributária (IBS, CBS, Imposto Seletivo, transição 2026–2033, construção e incorporação), chame a ferramenta conhecimento e responda a partir dela, citando "base atualizada em <data>". Lei e regulamento mudam: diga que a confirmação é da contabilidade/assessoria tributária e nunca afirme alíquota, prazo ou enquadramento que não esteja na base ou que esteja marcado como a conferir. Conecte o conhecimento aos números do app quando ajudar (ex.: impacto no ciclo financeiro, no BDI, na margem), deixando claro o que é simulação sua.
 - Valores em reais no padrão brasileiro (R$ 1.234.567,89). Compare períodos sempre pelo mesmo critério.
+- ECONOMIA DE CONSULTAS: para série mês a mês use resultado_periodo (receita, custos, BDI, administração e resultado de cada mês) ou receita_mensal (receita, inclusive de meses ainda não confirmados); dre_mes é para UM mês. Nunca chame dre_mes mês a mês. Quando precisar de vários recortes, peça várias ferramentas na MESMA rodada.
 - GRÁFICOS: chame a ferramenta de consulta que traz os números e depois montar_grafico com as colunas dessa última consulta. O gráfico aparece no painel ao lado; não desenhe gráfico em texto.
 - ESTUDOS e análises: separe com clareza o que são fatos (das ferramentas) do que é leitura ou hipótese sua. Sugira conferências concretas. A decisão é sempre de quem edita o app e da diretoria.
 - AÇÕES: você só PODE propor (propor_acao: sincronizar_sienge ou atualizar_cadastros). Nada é executado até a pessoa clicar em "Confirmar e executar" no cartão que aparece. Nunca diga que executou; diga que deixou a proposta aguardando confirmação. Proponha só quando a pessoa pedir ou quando os dados estiverem claramente desatualizados, e explique o motivo.
@@ -190,12 +191,13 @@ _FERR_EXTRAS = [
          "titulo": {"type": "string"}}, "required": ["tipo", "x", "y"]}},
     {"name": "propor_acao",
      "description": ("PROPÕE (não executa) uma ação para a pessoa confirmar na tela. tipos: 'sincronizar_sienge' (busca contas pagas/a receber do Sienge no período: mes_ini, mes_fim, "
-                     "tipos opcionais P/I/D) ou 'atualizar_cadastros' (empresas, centros de custo, plano, obras e nomes fantasia dos credores)."),
+                     "tipos = qual DATA considerar, nao pagar/receber: P pagamento/recebimento (padrao), I emissao, D vencimento; a busca sempre traz as contas a pagar E a receber) ou 'atualizar_cadastros' (empresas, centros de custo, plano, obras e nomes fantasia dos credores)."),
      "input_schema": {"type": "object", "properties": {
          "tipo": {"type": "string", "enum": list(ACOES.TIPOS)},
          "mes_ini": {"type": "string", "description": "AAAA-MM (só sincronizar_sienge)."},
          "mes_fim": {"type": "string", "description": "AAAA-MM (só sincronizar_sienge)."},
-         "tipos": {"type": "array", "items": {"type": "string", "enum": ["P", "I", "D"]}},
+         "tipos": {"type": "array", "items": {"type": "string", "enum": ["P", "I", "D"]},
+                   "description": "Tipo de DATA: P = data de pagamento/recebimento (padrao), I = emissao, D = vencimento. NAO escolhe pagar ou receber: o Sienge e' consultado dos dois lados. Omita se a pessoa nao pediu."},
          "motivo": {"type": "string", "description": "Em uma frase, por que propor isto."}}, "required": ["tipo", "motivo"]}},
 ]
 TOOLS = FERR.TOOLS + _FERR_EXTRAS
