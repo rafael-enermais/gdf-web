@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 
 import dexie_acoes as ACOES
 import dexie_ferramentas as FERR
@@ -35,9 +36,24 @@ _REF_IMG = re.compile(r"^\s*\[[^\]]+\]:\s*\S+.*$", re.M)
 
 
 # ------------------------------------------------------------------ higiene de texto
+_SEM_FORMA = {0x115F, 0x1160, 0x17B4, 0x17B5, 0x2800, 0x3164, 0xFFA0}          # "espacos" que nao aparecem (preenchimento hangul/khmer, braille em branco)
+
+
+def _escondido(ch: str) -> bool:
+    """True para caractere que nao aparece na tela mas o modelo le: formato (Cf: zero-width, bidi, TAGS U+E0000-E007F usados para 'contrabandear' ordens),
+    uso privado/nao atribuido/substituto, seletores de variacao e os preenchimentos acima."""
+    o = ord(ch)
+    if o < 0x80:
+        return False
+    if o in _SEM_FORMA or 0xFE00 <= o <= 0xFE0F or 0xE0100 <= o <= 0xE01EF:
+        return True
+    return unicodedata.category(ch) in ("Cf", "Co", "Cn", "Cs")
+
+
 def limpar_texto(s) -> str:
     """Tira Unicode invisivel (usado para esconder ordens em texto) e caracteres de controle."""
-    return _CONTROLE.sub("", _INVISIVEIS.sub("", str(s if s is not None else "")))
+    t = _CONTROLE.sub("", _INVISIVEIS.sub("", str(s if s is not None else "")))
+    return t if t.isascii() else "".join(c for c in t if not _escondido(c))
 
 
 def limpar_resposta(txt) -> str:
