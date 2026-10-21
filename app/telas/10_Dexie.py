@@ -21,6 +21,7 @@ import streamlit as st
 
 import acesso
 import dexie_acoes as DA
+import dexie_aprendizado as APR
 import dexie_chat as DC
 import dexie_memoria as DM
 import dexie_relatorio as DR
@@ -88,7 +89,7 @@ def _grafico(tab: list, g: dict):
     longo["Categoria"] = longo["Categoria"].astype(str)
     cor = alt.Color("Série:N", scale=alt.Scale(range=[NAVY, ORANGE, AZUL]), legend=alt.Legend(orient="bottom", title=None) if len(y) > 1 else None)
     tip = ["Categoria", "Série", alt.Tooltip("Valor:Q", format=",.2f")]
-    base = alt.Chart(longo).properties(height=320, title=g.get("titulo") or "")
+    base = alt.Chart(longo).properties(height=380, title=g.get("titulo") or "")
     if g["tipo"] == "linhas":
         c = base.mark_line(point=True).encode(x=alt.X("Categoria:N", sort=ordem, axis=alt.Axis(labelAngle=-30, title=None)), y=alt.Y("Valor:Q", title=None), color=cor, tooltip=tip)
     elif g["tipo"] == "barras_horizontais":
@@ -96,6 +97,51 @@ def _grafico(tab: list, g: dict):
     else:
         c = base.mark_bar().encode(x=alt.X("Categoria:N", sort=ordem, axis=alt.Axis(labelAngle=-30, title=None)), y=alt.Y("Valor:Q", title=None), color=cor, xOffset="Série:N", tooltip=tip)
     estilo.altair(c, width="stretch")
+
+
+def _anotacoes(conn, usuario):
+    """Aba 'Anotacoes': o que a Dexie aprendeu (aprovado pela equipe). Adicionar, editar (versao nova) e desativar; nada se apaga."""
+    if not APR.instalado(conn):
+        st.info("As anotações ainda não estão ativas: falta rodar o **SQL-33** no Supabase (arquivo `sql/v2_dexie_aprendizado.sql`). Enquanto isso a Dexie funciona normal, só não guarda anotações.")
+        return
+    st.caption("Regras da casa, definições e conhecimento que a equipe aprovou. A Dexie consulta isto nas conversas, mas não muda regra de segurança nem executa nada por causa daqui. Ela só sugere; vale depois do seu clique.")
+    ativas = APR.listar(conn, "ativo")
+    if not ativas:
+        st.caption("Nenhuma anotação ativa ainda. Ensine uma regra à Dexie na conversa ou adicione abaixo.")
+    for a in ativas[:40]:
+        with st.expander(f"{a['titulo']} · {a['tipo']}"):
+            st.markdown(_sem_latex(a["texto"]))
+            st.caption(_sem_latex(f"Fonte: {a['fonte'] or '—'} · guardada em {a['criado_em']} por {a['criado_por']} ({'sugerida pela Dexie' if a['origem'] == 'dexie' else 'digitada'})"))
+            with st.form(f"dexie_edita_{a['id']}"):
+                nt = st.text_input("Título", value=a["titulo"], max_chars=APR.MAX_TITULO, key=f"dexie_et_{a['id']}")
+                nx = st.text_area("Texto", value=a["texto"], max_chars=APR.MAX_TEXTO, key=f"dexie_ex_{a['id']}")
+                c1, c2 = st.columns(2)
+                salvar = c1.form_submit_button("Salvar nova versão")
+                desat = c2.form_submit_button("Desativar")
+            if salvar:
+                try:
+                    APR.editar(conn, usuario, a["id"], a["tipo"], nt, nx, a["fonte"])
+                    P.registrar_log(conn, "DEXIE_ANOTACAO", "INFO", usuario, None, {"acao": "editar", "titulo": nt[:80]})
+                    st.rerun()
+                except APR.ErroAnotacao as exc:
+                    st.error(str(exc))
+            if desat:
+                if APR.desativar(conn, usuario, a["id"], "desativada na tela"):
+                    P.registrar_log(conn, "DEXIE_ANOTACAO", "INFO", usuario, None, {"acao": "desativar", "titulo": a["titulo"][:80]})
+                st.rerun()
+    with st.expander("Adicionar anotação"):
+        with st.form("dexie_nova_anotacao", clear_on_submit=True):
+            tipo = st.selectbox("Tipo", list(APR.TIPOS), format_func=lambda t: {"regra": "Regra da casa", "definicao": "Definição", "conhecimento": "Conhecimento"}[t])
+            titulo = st.text_input("Título", max_chars=APR.MAX_TITULO)
+            texto = st.text_area("Texto (a regra ou definição, sem valores de período nem dados pessoais)", max_chars=APR.MAX_TEXTO)
+            fonte = st.text_input("Fonte (opcional)", max_chars=APR.MAX_FONTE)
+            if st.form_submit_button("Guardar"):
+                try:
+                    APR.guardar(conn, usuario, tipo, titulo, texto, fonte, origem="pessoa")
+                    P.registrar_log(conn, "DEXIE_ANOTACAO", "INFO", usuario, None, {"acao": "adicionar", "titulo": titulo[:80], "tipo": tipo})
+                    st.rerun()
+                except APR.ErroAnotacao as exc:
+                    st.error(str(exc))
 
 
 # ------------------------------------------------------------------ estado da conversa
@@ -198,26 +244,53 @@ with c_chat:
                 estado["acao_pendente"] = None
                 st.rerun()
 
+    apr = estado.get("aprendizado_pendente")
+    if apr:                                                 # cartao de anotacao: so' guarda com o clique de quem edita
+        with st.container(border=True):
+            st.markdown("**Anotação sugerida — vale só depois da sua confirmação**")
+            st.markdown(_sem_latex(f"**{apr['titulo']}** ({apr['tipo']})"))
+            st.markdown(_sem_latex(apr["texto"]))
+            if apr.get("fonte"):
+                st.caption(_sem_latex(f"Fonte: {apr['fonte']}"))
+            a1, a2, _ = st.columns([1.3, 1, 3])
+            if a1.button("Guardar anotação", type="primary", key="dexie_guarda_anotacao"):
+                try:
+                    APR.guardar(conn, usuario, apr["tipo"], apr["titulo"], apr["texto"], apr.get("fonte"), origem="dexie")
+                    P.registrar_log(conn, "DEXIE_ANOTACAO", "INFO", usuario, None, {"titulo": apr["titulo"][:80], "tipo": apr["tipo"], "origem": "dexie"})
+                    msg = f"Anotação guardada: {apr['titulo']}. Vou considerá-la nas próximas conversas."
+                except APR.ErroAnotacao as exc:
+                    msg = f"Não guardei a anotação: {exc}"
+                S["dexie_hist"].append({"role": "assistant", "content": msg})
+                DM.gravar(conn, usuario, "assistant", msg)
+                estado["aprendizado_pendente"] = None
+                st.rerun()
+            if a2.button("Descartar", key="dexie_descarta_anotacao"):
+                S["dexie_hist"].append({"role": "assistant", "content": "Anotação descartada. Nada foi guardado."})
+                DM.gravar(conn, usuario, "assistant", "Anotação descartada. Nada foi guardado.")
+                estado["aprendizado_pendente"] = None
+                st.rerun()
+
 # ------------------------------------------------------------------ painel ao lado: tabela, grafico e relatorio da ultima consulta
 with c_painel:
     st.markdown("**Última consulta**")
     tab = estado.get("ultima_tabela")
-    if not tab:
-        st.caption("Quando eu consultar os dados, a tabela, o gráfico e o relatório aparecem aqui.")
-    else:
-        g = estado.get("grafico")
-        aba_t, aba_g, aba_r = st.tabs(["Tabela", "Gráfico", "Relatório"])
-        with aba_t:
+    g = estado.get("grafico")
+    aba_t, aba_g, aba_r, aba_a = st.tabs(["Tabela", "Gráfico", "Relatório", "Anotações"])
+    with aba_t:
+        if not tab:
+            st.caption("Quando eu consultar os dados, a tabela, o gráfico e o relatório aparecem aqui.")
+        else:
             st.caption(f"Consulta: {estado.get('ultima_ferramenta')} · {len(tab)} linhas")
             st.dataframe(pd.DataFrame(tab), hide_index=True, width="stretch", height=int(min(max(len(tab) * 35 + 38, 110), 560)))   # altura pelo numero de linhas (sem vazio)
             st.download_button("Baixar em Excel", _excel(tab), "consulta_dexie.xlsx",
                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dexie_excel")
-        with aba_g:
-            if g:
-                _grafico(tab, g)
-            else:
-                st.caption("Peça um gráfico (ex.: “faça um gráfico de barras disso”) e ele aparece aqui.")
-        with aba_r:
+    with aba_g:
+        if g and tab:
+            _grafico(tab, g)
+        else:
+            st.caption("Peça um gráfico (ex.: “faça um gráfico de barras disso”) e ele aparece aqui.")
+    with aba_r:
+        if tab:
             st.caption("Relatório em PDF no padrão EnerMais: título, resumo da última resposta, gráfico (se houver) e a tabela.")
             titulo_pdf = st.text_input("Título do relatório", value=(g or {}).get("titulo") or f"Consulta — {estado.get('ultima_ferramenta')}", key="dexie_titulo_pdf", max_chars=80)
             com_resumo = st.checkbox("Incluir a última resposta da Dexie como resumo", value=True, key="dexie_com_resumo")
@@ -231,3 +304,18 @@ with c_painel:
                     st.error("Não consegui montar o PDF desta consulta. A tabela continua disponível em Excel.")
             if S.get("dexie_pdf"):
                 st.download_button("Baixar o PDF", S["dexie_pdf"], "relatorio_dexie.pdf", "application/pdf", key="dexie_baixar_pdf")
+            st.divider()
+        else:
+            st.caption("O relatório da consulta aparece quando eu consultar os dados.")
+        st.caption("PDF da conversa inteira (perguntas e respostas, em ordem).")
+        if st.button("Gerar PDF da conversa", key="dexie_gerar_conversa", disabled=not S["dexie_hist"]):
+            try:
+                S["dexie_pdf_conversa"] = DR.gerar_conversa_pdf(S["dexie_hist"], usuario, agora_br().strftime("%d/%m/%Y %H:%M"))
+                P.registrar_log(conn, "DEXIE_RELATORIO", "INFO", usuario, None, {"consulta": "conversa", "mensagens": len(S["dexie_hist"])})
+            except Exception:                                        # noqa: BLE001
+                S.pop("dexie_pdf_conversa", None)
+                st.error("Não consegui montar o PDF da conversa. O botão 'Baixar conversa' (texto) continua disponível.")
+        if S.get("dexie_pdf_conversa"):
+            st.download_button("Baixar o PDF da conversa", S["dexie_pdf_conversa"], "conversa_dexie.pdf", "application/pdf", key="dexie_baixar_conversa")
+    with aba_a:
+        _anotacoes(conn, usuario)

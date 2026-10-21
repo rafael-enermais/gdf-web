@@ -160,3 +160,59 @@ def gerar_pdf(titulo_: str, tabela_: list, grafico: dict | None, resumo: str, us
                 if g_ is None:
                     raise
         raise RuntimeError("PDF nao gerado")
+
+
+# ------------------------------------------------------------------ PDF da CONVERSA inteira
+def _linhas_conversa(historico: list) -> list:
+    """[(papel, [linhas de texto])] a partir do historico (so' texto). Tabela markdown vira linhas 'a · b · c'; markdown simples sai."""
+    out = []
+    for m in historico or []:
+        if m.get("role") not in ("user", "assistant") or not str(m.get("content") or "").strip():
+            continue
+        bruto = []
+        for ln in _plano(m["content"]).split("\n"):
+            if re.match(r"^\s*\|?\s*:?-{2,}", ln):
+                continue                                   # linha separadora da tabela (|---|---|)
+            if ln.strip().startswith("|"):
+                ln = "  ·  ".join(p.strip() for p in ln.strip().strip("|").split("|"))
+            bruto.append(ln)
+        out.append((m["role"], bruto))
+    return out
+
+
+def gerar_conversa_pdf(historico: list, usuario: str | None, gerado_em: str, titulo_: str = "Conversa com a Dexie") -> bytes:
+    """PDF (bytes) da conversa inteira (perguntas e respostas, em ordem). Sem ferramentas/tabelas internas: so' o que a tela mostrou."""
+    R._registrar_fontes()
+    titulo_ = (titulo_ or "Conversa com a Dexie").strip()[:80]
+    turnos = _linhas_conversa(historico)
+    if not turnos:
+        raise ValueError("Conversa vazia.")
+
+    def desenhar(c, N):
+        n = 1
+        _moldura(c, n, N, titulo_, gerado_em, usuario)
+        y = TOPY
+        txt(c, MX, y, titulo_, "PB", 15, NAVY); y -= 16
+        txt(c, MX, y, f"{len(turnos)} mensagens · registro da conversa, não é demonstrativo oficial", "P", 8, GREY); y -= 20
+        for papel, linhas in turnos:
+            quem, cor = ("Você", NAVY) if papel == "user" else ("Dexie", BRAND_OR)
+            if y < 110:
+                c.showPage(); n += 1; _moldura(c, n, N, titulo_, gerado_em, usuario); y = TOPY
+            txt(c, MX, y, quem.upper(), "PB", 7, cor); y -= 11
+            for ln in linhas:
+                partes = simpleSplit(ln, "P", 8.2, CW) or [""]
+                for p_ in partes:
+                    if y < 56:
+                        c.showPage(); n += 1; _moldura(c, n, N, titulo_, gerado_em, usuario); y = TOPY
+                    txt(c, MX, y, p_, "P", 8.2, GREY if papel == "assistant" else NAVY); y -= 11.4
+            y -= 8
+        return n
+
+    with R._LOCK:
+        N = desenhar(canvas.Canvas(io.BytesIO(), pagesize=(W, H), invariant=1), 1)                 # ensaio: conta as paginas
+        buf = io.BytesIO()
+        c = canvas.Canvas(buf, pagesize=(W, H), invariant=1)
+        c.setTitle(titulo_); c.setAuthor("Grupo EnerMais — GDF (Dexie)")
+        desenhar(c, N)
+        c.showPage(); c.save()
+        return buf.getvalue()
