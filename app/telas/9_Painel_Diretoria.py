@@ -13,8 +13,10 @@ import acesso
 import diretoria_dados as DD
 import diretoria_indicadores_ui as DI
 import formatacao as F
+import grupo_enermais as GE
 import historico as HIST
 import painel_db as P
+import periodo as PER
 import relatorio_painel_pdf as RPP
 from auth import usuario_atual
 from conexao import get_conn, sidebar_rodape
@@ -59,12 +61,76 @@ def _confirmados(_conn, carimbo: str) -> list:
     return P.meses_confirmados(_conn)
 
 
-@st.cache_data(ttl=1800, show_spinner="Lendo as contas pagas do ano…")
-def _pagos(_conn, mes: str, carimbo: str):
-    """Contas pagas de janeiro ate o mes (credor, centro de custo, obra) + as contas excluidas das Despesas pelas regras. Devolve (linhas, prefixos_fora)."""
+@st.cache_data(ttl=1800, show_spinner="Lendo as contas pagas do período…")
+def _pagos(_conn, mes_ini: str, mes: str, carimbo: str):
+    """Contas pagas de `mes_ini` ate o mes (credor, centro de custo, obra) + as contas excluidas das Despesas pelas regras. Devolve (linhas, prefixos_fora)."""
     regras = P.regras_ativas(_conn, "DESPESAS")
-    linhas = DD.pagos_detalhe(_conn, f"{mes[:4]}-01", mes, sem_previsao=P.exclui_previsao(regras))
+    linhas = DD.pagos_detalhe(_conn, mes_ini, mes, sem_previsao=P.exclui_previsao(regras))
     return linhas, P.prefixos_excluidos(regras)
+
+
+@st.cache_data(ttl=1800, show_spinner="Somando os meses do período…")
+def _termos_meses(_conn, meses_t: tuple, carimbo: str) -> list:
+    """Termos do Resultado de cada mes (None onde nao ha DRE confirmado)."""
+    return [P.termos_do_mes(_conn, m) for m in meses_t]
+
+
+@st.cache_data(ttl=1800, show_spinner="Somando as obras do período…")
+def _obras_meses(_conn, meses_t: tuple, carimbo: str):
+    """Para cada mes: (tabela de obras SEM reagrupar, projecao x realizado) ou (None, None) se nao ha DRE oficial (PDF) naquele mes."""
+    extra = P.nomes_obras_extra(_conn)
+    com_dre = set(P.meses_com_dre(_conn))
+    saida = []
+    for m in meses_t:
+        ob_m = P.obras_do_dre(_conn, m) if m in com_dre else None
+        px = None
+        if ob_m:
+            pj_ = P.projecao_do_mes(_conn, m)
+            px = P.projecao_x_realizado(pj_, ob_m, extra) if pj_ else None
+        saida.append((ob_m, px))
+    return saida
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _nomes_obras(_conn, carimbo: str) -> dict:
+    """{codigo da obra: nome completo} (de-para de centros de custo) — a mesma linguagem da aba Obras."""
+    return RPP._nomes_obras(_conn)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _nucleos_grupo(_conn, carimbo: str) -> list:
+    return GE.nucleos_do_grupo(_conn)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _outros_dir(_conn, carimbo: str) -> list:
+    """Chaves (nomes) do grupo 'Outros credores/Dir' da Administracao."""
+    return [c["chave"] for c in P.credor_grupo_ativos(_conn)] if P.credor_grupo_instalado(_conn) else []
+
+
+@st.cache_data(ttl=1800, show_spinner="Lendo a administração do período…")
+def _adm_periodo(_conn, mes_ini: str, mes: str, carimbo: str):
+    """Administracao no periodo: pagamentos das unidades ADM (mes de referencia e periodo todo) e orcado x realizado (mes, periodo e serie). None se nao ha nada."""
+    linhas_mes, linhas_per = [], []
+    if P.meses_com_dados(_conn) and P.centro_grupo_instalado(_conn):
+        regras = P.regras_ativas(_conn, "DESPESAS")
+        fora_adm = [p for p in P.prefixos_excluidos(regras) if p != "2.02.01"]          # o orcamento ADM inclui o pessoal ADM (2.02.01)
+        sem_prev = P.exclui_previsao(regras)
+        linhas_mes = P.adm_linhas(_conn, mes, mes, fora_adm, sem_previsao=sem_prev)
+        linhas_per = P.adm_linhas(_conn, mes_ini, mes, fora_adm, sem_previsao=sem_prev) if mes_ini != mes else linhas_mes
+    orc = P.orcamento_ativo(_conn) if P.orcamento_instalado(_conn) else None
+    orc_mes = orc_per = None
+    serie = []
+    if orc:
+        meses_orc = [m for m in PER.meses_entre(mes_ini, mes) if m in orc["meses"]]
+        if mes in orc["meses"]:
+            orc_mes = P.orcamento_resumo(_conn, orc["id"], mes)
+        if meses_orc:
+            orc_per = P.orcamento_resumo(_conn, orc["id"], mes, acumulado=True, mes_ini=meses_orc[0])
+        serie = [x for x in P.orcamento_serie_mensal(_conn, orc["id"]) if mes_ini <= x["mes"] <= mes]
+    if not (linhas_per or orc_per or orc_mes):
+        return None
+    return {"linhas_mes": linhas_mes, "linhas_per": linhas_per, "orc_mes": orc_mes, "orc_per": orc_per, "serie_orc": serie}
 
 
 def _fmt_num(v):
@@ -145,13 +211,30 @@ meses = _meses(conn, CARIMBO)
 if not meses:
     _info("Ainda não há dados no painel. Assim que a contabilidade importar e o Sienge sincronizar, eles aparecem aqui.")
     st.stop()
-h1, h2, h3 = st.columns([1, 2, 1])
+h1, h2, h3, h4 = st.columns([1, 1.3, 1, 1])
 conf = _confirmados(conn, CARIMBO)
 padrao = conf[-1] if conf else meses[-1]
-mes = h1.selectbox("Mês", meses, index=meses.index(padrao), format_func=_rot, key="dir_mes")
+modo_per = h2.selectbox("Período", PER.MODOS, index=PER.MODOS.index(PER.PADRAO), key="dir_per_modo",
+                        help="Vale para todas as abas. 'Ano até o mês' = janeiro até o mês de referência (como o painel era). Resultado e Obras somam os meses com DRE.")
+if modo_per == PER.PERSONALIZADO:
+    mes = h1.selectbox("Até", meses, index=meses.index(padrao), format_func=_rot, key="dir_mes_ate")
+    _de_opcoes = [m for m in meses if m <= mes]
+    if st.session_state.get("dir_mes_de") not in _de_opcoes:
+        st.session_state.pop("dir_mes_de", None)
+    _de_pad = next((i for i, m in enumerate(_de_opcoes) if m >= f"{mes[:4]}-01"), 0)
+    mes_de = h3.selectbox("De", _de_opcoes, index=_de_pad, format_func=_rot, key="dir_mes_de")
+else:
+    mes = h1.selectbox("Mês de referência" if modo_per != PER.MES else "Mês", meses, index=meses.index(padrao), format_func=_rot, key="dir_mes")
+    mes_de = None
+    h3.markdown(f"<div style='padding-top:1.9rem;color:#5C6091;font-size:.9rem'>Período: <b>{PER.rotulo(*PER.resolver(modo_per, mes))}</b></div>", unsafe_allow_html=True)
+mes_ini, mes = PER.resolver(modo_per, mes, mes_de)
+PER_ROT = PER.rotulo(mes_ini, mes)                           # '01/2026 a 10/2026'
+ACUM = PER.curto(mes_ini, mes)                               # cabecalho de coluna: 'Jan–Out/26'
+UM_MES = mes_ini == mes
 ctx = _ctx(conn, mes, CARIMBO)
-h2.caption(f"Dados do banco em {ctx['gerado_em']} · DRE: **{ctx['dre']['origem']}**" + (" · confirmado pela contabilidade" if ctx["dre"].get("quem") else " · ainda não confirmado"))
-if h3.button("Atualizar agora", key="dir_atualizar"):
+_cap(f"Dados do banco em {ctx['gerado_em']} · DRE de {_rot(mes)}: **{ctx['dre']['origem']}**" + (" · confirmado pela contabilidade" if ctx["dre"].get("quem") else " · ainda não confirmado")
+     + f" · período: **{PER_ROT}**")
+if h4.button("Atualizar agora", key="dir_atualizar"):
     st.cache_data.clear()
     st.rerun()
 
@@ -180,7 +263,7 @@ aba_inv = _abas[7] if _mostra_inv else None
 
 # ------------------------------------------------------------------ dados compartilhados entre abas (PJ e colaboradores)
 def _pagos_df():
-    linhas, fora = _pagos(conn, mes, CARIMBO)
+    linhas, fora = _pagos(conn, mes_ini, mes, CARIMBO)
     return DD.para_df(linhas), fora
 
 
@@ -222,10 +305,18 @@ def _termos(modo: str):
     return out
 
 
-def _formula(modo: str):
-    termos = _termos(modo)
+def _termos_periodo():
+    """Soma dos meses do periodo com DRE CONFIRMADO. -> (termos ou None, meses fora da soma)."""
+    ms_p = PER.meses_entre(mes_ini, mes)
+    lst = _termos_meses(conn, tuple(ms_p), CARIMBO)
+    return P.somar_termos(lst), [m for m, t in zip(ms_p, lst) if not t]
+
+
+def _formula(modo: str, termos=None):
+    termos = termos if termos is not None else _termos(modo)
     if not termos:
-        _info("O acumulado do ano aparece quando o histórico do painel da contabilidade cobre o mês escolhido (Importações (V2) → Histórico do painel).")
+        _info("Não há DRE confirmado em nenhum mês deste período." if modo == "per" else
+              "O acumulado do ano aparece quando o histórico do painel da contabilidade cobre o mês escolhido (Importações (V2) → Histórico do painel).")
         return
     rot = [("rec", "Receita (base-line)", True), ("cus", "Custos diretos", False), ("bdi", "BDI", True), ("adm", "Administração", False), ("res", "Resultado", True)]
     cols = st.columns([5, 1, 5, 1, 5, 1, 5, 1, 5], vertical_alignment="center")
@@ -254,8 +345,24 @@ def _formula(modo: str):
 
 if aba_res.open or _TODAS:
     with aba_res:
-        modo_lbl = st.radio("Período", ["Mês", "Acumulado no ano"], horizontal=True, key="dir_periodo")
-        _formula("mes" if modo_lbl == "Mês" else "acc")
+        if modo_per == PER.MES:
+            _formula("mes")
+        else:
+            _t_acc = _termos("acc") if modo_per == PER.ANO else None                                            # ano ate o mes: do historico do painel da contabilidade, quando cobre o mes
+            if _t_acc:
+                _formula("acc", _t_acc)
+                _cap(f"Acumulado do ano (jan–{mes[5:]}) vindo do histórico do painel da contabilidade.")
+            else:
+                _t_per, _falt = _termos_periodo()
+                if _t_per:
+                    _formula("per", _t_per)
+                else:
+                    _warn(f"Nenhum mês de {PER_ROT} tem DRE confirmado pela contabilidade; abaixo, o resultado do mês de referência ({_rot(mes)}).")
+                    _formula("mes")
+                if _t_per:
+                    _cap(f"Soma de {len(_t_per['meses'])} {'mês' if len(_t_per['meses']) == 1 else 'meses'} com DRE confirmado em {PER_ROT}: {', '.join(_rot(m) for m in _t_per['meses'])}."
+                         + (f" Fora da soma por falta de DRE confirmado: {', '.join(_rot(m) for m in _falt)}." if _falt else "")
+                         + " Administração/Resultado só aparecem se todos os meses somados têm Orçamento ADM; previsto só se todos têm projeção.")
         g1, g2 = st.columns(2)
         with g1:
             _md("**Desvio mensal (realizado − previsto)**")
@@ -284,17 +391,18 @@ if aba_res.open or _TODAS:
                 _cap("Faturamento necessário para cobrir o déficit acumulado de base-line, distribuído proporcionalmente à projeção.")
             else:
                 _info("A recomposição aparece quando o histórico do painel da contabilidade é importado.")
-        serie = ctx["serie"][-12:]
+        _ini_g = min(mes_ini, PER.somar_meses(mes, -11))                       # grafico: o periodo escolhido, com no minimo 12 meses
+        serie = [x for x in ctx["serie"] if _ini_g <= x["mes"] <= mes]
         if len(serie) >= 2:
             _md("**Receita mês a mês**")
             rots = [_rot(x["mes"]) for x in serie]
-            dfs = pd.DataFrame({"Mês": rots, "Receita (R$ mi)": [x["receita"] / 1e6 for x in serie], "Fonte": [x["fonte"] for x in serie], "destaque": [x["mes"] == mes for x in serie]})
+            dfs = pd.DataFrame({"Mês": rots, "Receita (R$ mi)": [x["receita"] / 1e6 for x in serie], "Fonte": [x["fonte"] for x in serie], "destaque": [mes_ini <= x["mes"] <= mes for x in serie]})
             st.altair_chart(alt.Chart(dfs).mark_bar().encode(
                 x=alt.X("Mês:N", sort=rots, axis=alt.Axis(labelAngle=-60, title=None)), y=alt.Y("Receita (R$ mi):Q", title="R$ milhões"),
                 color=alt.condition("datum.destaque", alt.value(NAVY), alt.value("#9A9CC4")), tooltip=["Mês", alt.Tooltip("Receita (R$ mi):Q", format=",.2f"), "Fonte"]).properties(height=220), width="stretch")
             if any(x["fonte"].startswith("API") for x in serie):
                 _cap("Meses cinza-claros com fonte “API (a conferir)” ainda não têm DRE oficial confirmado.")
-        with st.expander("DRE do mês (linha a linha)"):
+        with st.expander(f"DRE do mês de referência, {_rot(mes)} (linha a linha)"):
             rb = v["01"]
             rows = []
             for cod, nome, val in dre["linhas"]:
@@ -308,11 +416,36 @@ if aba_res.open or _TODAS:
 
 
 # ------------------------------------------------------------------ 2) OBRAS
-if aba_ob.open or _TODAS:
+def _obras_do_periodo():
+    """Tabela de Obras do periodo: o mes de referencia (ctx) ou a SOMA dos meses com DRE oficial (PDF). -> (ob, proj, meses somados, meses sem DRE)."""
+    if UM_MES:
+        return ob, proj, 1, []
+    ms_p = PER.meses_entre(mes_ini, mes)
+    pares = _obras_meses(conn, tuple(ms_p), CARIMBO)
+    oks = [(o, px) for o, px in pares if o]
+    falt = [m for m, (o, _) in zip(ms_p, pares) if not o]
+    soma = P.somar_obras([o for o, _ in oks])
+    if not soma:
+        return None, None, 0, falt
+    proj_s = P.somar_projecoes([px for _, px in oks])
+    com_proj = {x["codigo"] for x in (proj_s or {}).get("linhas", []) if x.get("codigo") and x.get("receita_proj")}
+    soma.update(P.agrupar_demais_obras(soma, com_proj))
+    soma["nome_cheio"] = _nomes_obras(conn, CARIMBO)
+    folha_f = P.folha_do_mes(conn, mes)
+    soma["colab"] = P.colab_por_linha_obras(soma["linhas"], folha_f) if folha_f else {}
+    return soma, proj_s, len(oks), falt
+
+
+_ob_mes, _proj_mes = ob, proj
+if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj passam a ser os do PERIODO (e voltam ao do mes no fim)
+    ob, proj, _n_ob, _falt_ob = _obras_do_periodo()
     with aba_ob:
         if not ob:
-            _info("Falta o DRE oficial em PDF deste mês.")
+            _info("Falta o DRE oficial em PDF " + ("deste mês." if UM_MES else "de qualquer mês deste período."))
         else:
+            if not UM_MES:
+                _cap(f"Soma de {_n_ob} {'mês' if _n_ob == 1 else 'meses'} com DRE oficial em {PER_ROT}." + (f" Sem DRE oficial (fora da soma): {', '.join(_rot(m) for m in _falt_ob)}." if _falt_ob else "")
+                     + " Colaboradores = os do mês de referência; faturamento e custo por colaborador = média mensal do período.")
             colab_info = _colaboradores()
             dfp_pj, _fora_pj = _pagos_df()
             pj_linhas = DD.pj_por_obra(dfp_pj, mes)                                   # cada PJ aparece em todas as obras em que recebeu (com o %)
@@ -331,8 +464,8 @@ if aba_ob.open or _TODAS:
                 hc = clt + pj_n
                 regs.append({"Obra": l["obra"], "Nome": RPP._nome_obra(l, nome_cheio), "Receita": l["receita"], "Custos": abs(l["custo"]), "BDI previsto": pr["bdi_proj"] if pr else None,
                              "BDI real": l["bdi"], "Desvio BDI": (l["bdi"] - pr["bdi_proj"]) / abs(pr["bdi_proj"]) if pr and abs(pr["bdi_proj"]) > 0.005 else None,
-                             "CLT": clt, "PJ": pj_n, "Colab.": hc, "Fat./colab.": (l["receita"] / hc) if hc and l["obra"] != "DEM" else None,
-                             "Custo/colab.": (abs(l["custo"]) / hc) if hc and l["obra"] != "DEM" else None,
+                             "CLT": clt, "PJ": pj_n, "Colab.": hc, "Fat./colab.": (l["receita"] / _n_ob / hc) if hc and l["obra"] != "DEM" else None,
+                             "Custo/colab.": (abs(l["custo"]) / _n_ob / hc) if hc and l["obra"] != "DEM" else None,
                              "Margem": l["margem"], "receita_proj": pr["receita_proj"] if pr else None})
             base = pd.DataFrame(regs)
             main = base[base["Obra"] != "DEM"]
@@ -345,7 +478,7 @@ if aba_ob.open or _TODAS:
             k[0].metric("Receita realizada", _mi(tr), _delta(tr, rec_p), border=True)
             k[1].metric("Custos", _mi(tc), _delta(tc, cus_p), delta_color="inverse", border=True)
             k[2].metric("BDI", _mi(tb), _delta(tb, bdi_p), border=True)
-            k[3].metric("Obras com prejuízo", f"{neg} de {len(main)}", "BDI negativo no mês", delta_color="off", border=True)
+            k[3].metric("Obras com prejuízo", f"{neg} de {len(main)}", "BDI negativo no período" if not UM_MES else "BDI negativo no mês", delta_color="off", border=True)
             if len(main):
                 mx, mn = main.loc[main["BDI real"].idxmax()], main.loc[main["BDI real"].idxmin()]
                 k[4].metric("Maior BDI", str(mx["Nome"] or mx["Obra"])[:22], _mi(mx["BDI real"], True), border=True)
@@ -370,7 +503,7 @@ if aba_ob.open or _TODAS:
                 e1, e2, e3, e4 = st.columns(4)
                 e1.metric("Colaboradores", int(sel["Colab."]), f"{int(sel['CLT'])} CLT + {int(sel['PJ'])} PJ", delta_color="off", border=True)
                 e2.metric("Faturamento por colaborador", _mi(sel["Fat./colab."]) if pd.notna(sel["Fat./colab."]) else "–", border=True)
-                e3.metric("Custo por colaborador", _mi(sel["Custos"] / sel["Colab."]) if sel["Colab."] else "–", border=True)
+                e3.metric("Custo por colaborador", _mi(sel["Custos"] / _n_ob / sel["Colab."]) if sel["Colab."] else "–", border=True)
                 po = pes["folha"]["por_obra"].get(sel["Obra"]) if pes else None
                 e4.metric("Custo da folha CLT por colaborador", _m(po["custo"] / po["colab"]) if po and po["colab"] else "–", border=True)
             _cap("Colaboradores = CLT da folha do mês + PJ alocado na obra onde mais recebeu em “Salários PJ” (contas pagas). Obras sem projeção não têm BDI previsto.")
@@ -402,17 +535,20 @@ if aba_ob.open or _TODAS:
 
             _md(f"**Principais credores · {nomes_ob.get(cod_sel, cod_sel) if cod_sel and cod_sel != 'DEM' else ('demais obras' if cod_sel == 'DEM' else 'todas as obras')}**")
             dd_ob = DD.despesas_df(dfp_ob, fora_ob)
+            _pj_nomes = DD.credores_pj(dfp_ob)                                         # contabilidade 21/10: quem e' colaborador PJ ja' esta na lista de colaboradores, nao em credores
+            dd_ob = DD.sem_credores(dd_ob, _pj_nomes)
             if cod_sel == "DEM":
                 alvo = [c for c in dd_ob["obra"].unique() if c not in proprias and c not in nao_obra] if len(dd_ob) else []
             else:
                 alvo = [cod_sel] if cod_sel else None
             cr_ob = DD.credores_da_obra(dd_ob, alvo, mes)
             if cr_ob["linhas"]:
-                st.dataframe(pd.DataFrame({"Credor": [x["chave"] for x in cr_ob["linhas"]], "Acumulado no ano": [_m(x["acumulado"]) for x in cr_ob["linhas"]],
+                st.dataframe(pd.DataFrame({"Credor": [x["chave"] for x in cr_ob["linhas"]], f"Acumulado {ACUM}": [_m(x["acumulado"]) for x in cr_ob["linhas"]],
                                            "%": [F.pct_br(x["acumulado"] / cr_ob["total"]) if cr_ob["total"] else "–" for x in cr_ob["linhas"]],
                                            _rot(mes): [_m(x["mes"]) if abs(x["mes"]) > 0.005 else "–" for x in cr_ob["linhas"]]}), hide_index=True, width="stretch")
                 _cap(("Todos os credores." if cr_ob["n"] <= len(cr_ob["linhas"]) else f"Top {len(cr_ob['linhas'])} de {cr_ob['n']} credores.")
-                           + " Contas pagas, sem pessoal e encargos (estão na lista de colaboradores e na aba Pessoas). Obra pelo centro de custo do lançamento.")
+                           + f" Contas pagas em {PER_ROT}, sem pessoal e encargos (estão na lista de colaboradores e na aba Pessoas) e sem os credores que são colaboradores PJ"
+                           + (f" ({len(_pj_nomes)} fora da lista)" if _pj_nomes else "") + ". Obra pelo centro de custo do lançamento.")
             else:
                 _cap("Sem contas pagas para esta seleção (ou falta o de-para de centros de custo → obra).")
 
@@ -439,24 +575,25 @@ if aba_ob.open or _TODAS:
                 _md("**Obras com maior prejuízo no mês**")
                 st.dataframe(pd.DataFrame([{"Obra": x["obra"], "Nome": RPP._nome_obra(x, nome_cheio), "BDI": _m(x["bdi"]), "Margem": F.pct_br(x["margem"]) if x["margem"] is not None else "–"}
                                            for x in ob["top_prejuizo"]]), hide_index=True, width="stretch")
+ob, proj = _ob_mes, _proj_mes
 
 
 # ------------------------------------------------------------------ 3) ADMINISTRACAO
 if aba_adm.open or _TODAS:
     with aba_adm:
-        if not adm:
-            _info("Falta sincronizar as contas pagas do mês e/ou importar o Orçamento ADM.")
+        ap = _adm_periodo(conn, mes_ini, mes, CARIMBO)
+        if not ap:
+            _info("Falta sincronizar as contas pagas do período e/ou importar o Orçamento ADM.")
         else:
-            o = adm.get("orcamento")
-            ac = adm.get("acumulado")
-            so = adm.get("serie_orc") or []
-            if o:
-                ot = o["total"]
+            o, ac, so = ap["orc_mes"], ap["orc_per"], ap["serie_orc"]
+            linhas_mes, linhas_per = ap["linhas_mes"], ap["linhas_per"]
+            grp_sel = None
+            if o or ac:
                 k = st.columns(5)
-                k[0].metric(f"Orçado {_rot(mes)}", _mi(ot["orcado"]), border=True)
-                k[1].metric(f"Realizado {_rot(mes)}", _mi(ot["realizado"]), _delta(ot["realizado"], ot["orcado"]), delta_color="inverse", border=True)
-                k[2].metric("Orçado no ano", _mi(ac["total"]["orcado"]) if ac else "–", border=True)
-                k[3].metric("Realizado no ano", _mi(ac["total"]["realizado"]) if ac else "–", _delta(ac["total"]["realizado"], ac["total"]["orcado"]) if ac else None, delta_color="inverse", border=True)
+                k[0].metric(f"Orçado {_rot(mes)}", _mi(o["total"]["orcado"]) if o else "–", border=True)
+                k[1].metric(f"Realizado {_rot(mes)}", _mi(o["total"]["realizado"]) if o else "–", _delta(o["total"]["realizado"], o["total"]["orcado"]) if o else None, delta_color="inverse", border=True)
+                k[2].metric(f"Orçado no período", _mi(ac["total"]["orcado"]) if ac else "–", PER_ROT, delta_color="off", border=True)
+                k[3].metric("Realizado no período", _mi(ac["total"]["realizado"]) if ac else "–", _delta(ac["total"]["realizado"], ac["total"]["orcado"]) if ac else None, delta_color="inverse", border=True)
                 acima_n = sum(1 for x in so if x["realizado"] > x["orcado"])
                 k[4].metric("Meses acima do orçado", f"{acima_n} de {len(so)}" if so else "–", "realizado > orçado", delta_color="off", border=True)
                 if len(so) > 1:
@@ -472,39 +609,51 @@ if aba_adm.open or _TODAS:
                         y=alt.Y("v:Q", title="R$ milhões"),
                         color=alt.Color("Série:N", scale=alt.Scale(domain=["Orçado", "Realizado", "Realizado acima do orçado"], range=[CINZA, NAVY, RUIM]), legend=alt.Legend(orient="bottom", title=None)),
                         tooltip=["Mês", "Série", alt.Tooltip("v:Q", title="R$ mi", format=",.2f")]).properties(height=260), width="stretch")
-                # por grupo de despesa (orcado x realizado, mes e acumulado no ano); clicar filtra os credores abaixo
+                # por grupo de despesa (orcado x realizado, mes e periodo); clicar filtra os credores E as contas abaixo
                 _md("**Por grupo de despesa**")
-                gm = {g["codigo"]: g for g in o["grupos"]}
+                gm = {g["codigo"]: g for g in (o["grupos"] if o else [])}
                 ga = {g["codigo"]: g for g in (ac["grupos"] if ac else [])}
                 linhas_grp = []
-                for cod in sorted(gm):
-                    g1_, g2_ = gm[cod], ga.get(cod)
-                    linhas_grp.append({"Código": cod, "Grupo": ("   " * cod.count(".")) + (g1_["conta"] or cod),
-                                       f"Orçado {_rot(mes)}": g1_["orcado"], f"Realizado {_rot(mes)}": g1_["realizado"], f"Desvio {_rot(mes)}": g1_["desvio"],
-                                       "Orçado no ano": g2_["orcado"] if g2_ else None, "Realizado no ano": g2_["realizado"] if g2_ else None, "Desvio no ano": g2_["desvio"] if g2_ else None})
+                for cod in sorted(set(gm) | set(ga)):
+                    g1_, g2_ = gm.get(cod), ga.get(cod)
+                    reg = {"Código": cod, "Grupo": ("   " * cod.count(".")) + ((g1_ or g2_)["conta"] or cod)}
+                    gu = g1_ or (g2_ if UM_MES else None)
+                    reg.update({f"Orçado {_rot(mes)}": gu["orcado"] if gu else None, f"Realizado {_rot(mes)}": gu["realizado"] if gu else None, f"Desvio {_rot(mes)}": gu["desvio"] if gu else None})
+                    if not UM_MES:
+                        reg.update({f"Orçado {ACUM}": g2_["orcado"] if g2_ else None, f"Realizado {ACUM}": g2_["realizado"] if g2_ else None, f"Desvio {ACUM}": g2_["desvio"] if g2_ else None})
+                    linhas_grp.append(reg)
                 grp = pd.DataFrame(linhas_grp)
-                grp_sel = None
                 if len(grp):
                     cfg_g = {c: st.column_config.NumberColumn(c, format="localized") for c in grp.columns if c not in ("Código", "Grupo")}
-                    _cap("Clique em um grupo para filtrar os credores abaixo (clique de novo para voltar ao total). Desvio = realizado − orçado: positivo é estouro. O orçamento está consolidado das unidades.")
+                    _cap("Clique em um grupo para filtrar as contas e os credores abaixo (clique de novo para voltar ao total). Desvio = realizado − orçado: positivo é estouro. O orçamento está consolidado das unidades.")
                     ev_g = st.dataframe(grp, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="dir_adm_grp", column_config=cfg_g)
                     grp_sel = _selecionada(ev_g, grp)
-                _md("**Contas que mais passaram do orçado**")
-                st.dataframe(pd.DataFrame([{"Conta": f"{x['codigo']} · {x['conta']}", "Orçado": _m(x["orcado"]), "Realizado": _m(x["realizado"]), "Desvio": _m(x["desvio"])} for x in o["acima"]]),
-                             hide_index=True, width="stretch")
-            else:
-                grp_sel = None
-            linhas_adm = adm.get("linhas") or []
-            if linhas_adm:
+                filtro_g = grp_sel["Código"] if grp_sel else None
+                base_c = ac or o
+                _no_g = lambda c: (not filtro_g) or c == filtro_g or c.startswith(filtro_g + ".")                       # noqa: E731
+                if filtro_g:
+                    cs = [x for x in base_c["contas"] if _no_g(x["codigo"])]
+                    _md(f"**Contas do grupo {filtro_g} — orçado × realizado ({PER_ROT})**")
+                    _cap("Maiores estouros primeiro; desvio negativo = gastou menos que o orçado.")
+                else:
+                    cs = base_c["acima"]
+                    _md(f"**Contas que mais passaram do orçado ({PER_ROT})**")
+                if cs:
+                    st.dataframe(pd.DataFrame([{"Conta": f"{x['codigo']} · {x['conta']}", "Orçado": _m(x["orcado"]), "Realizado": _m(x["realizado"]), "Desvio": _m(x["desvio"])} for x in cs]),
+                                 hide_index=True, width="stretch")
+                else:
+                    _cap("Nenhuma conta com orçamento neste filtro.")
+            if linhas_per or linhas_mes:
                 filtro_cod = grp_sel["Código"] if grp_sel else None
                 _no_grupo = lambda c: (not filtro_cod) or c == filtro_cod or c.startswith(filtro_cod + ".")      # noqa: E731
-                df_l = pd.DataFrame(linhas_adm)
-                df_l = df_l[df_l["plano_cod"].map(_no_grupo)]
-                df_a = pd.DataFrame(adm.get("linhas_ano") or linhas_adm)
-                df_a = df_a[df_a["plano_cod"].map(_no_grupo)]
+                chaves_dir = _outros_dir(conn, CARIMBO)
+                df_l = DD.marcar_outros_dir(pd.DataFrame(linhas_mes, columns=["plano_cod", "plano_nome", "credor", "unidade", "valor"]), chaves_dir)
+                df_l = df_l[df_l["plano_cod"].map(_no_grupo)] if len(df_l) else df_l
+                df_a = DD.marcar_outros_dir(pd.DataFrame(linhas_per or linhas_mes, columns=["plano_cod", "plano_nome", "credor", "unidade", "valor"]), chaves_dir)
+                df_a = df_a[df_a["plano_cod"].map(_no_grupo)] if len(df_a) else df_a
                 _md("#### Quem recebeu: unidade → credor → contas" + (f" · grupo {filtro_cod}" if filtro_cod else ""))
                 if not len(df_l) and not len(df_a):
-                    _info("Nenhum pagamento da administração neste grupo no ano.")
+                    _info("Nenhum pagamento da administração neste grupo no período.")
                 else:
                     un_mes = df_l.groupby("unidade")["valor"].sum() if len(df_l) else pd.Series(dtype=float)
                     un_ano = df_a.groupby("unidade")["valor"].sum() if len(df_a) else pd.Series(dtype=float)
@@ -514,9 +663,9 @@ if aba_adm.open or _TODAS:
                     un = un.sort_values(["ano", "mes"], ascending=False).reset_index(drop=True)
                     tot_u = float(un["ano"].sum())
                     _cap(f"Pago nas unidades da administração (contas pagas, inclui pessoal). 1) Clique em uma unidade (ou deixe sem seleção para ver todas). 2) Clique em um credor para ver as contas dele. "
-                               f"Mês = {_rot(mes)}; ano = jan–{mes[5:]}.")
-                    un_m = pd.DataFrame({"Unidade": un["unidade"], _rot(mes): un["mes"].map(lambda x: _m(x) if abs(x) > 0.005 else "–"), f"Jan–{mes[5:]}": un["ano"].map(_m),
-                                         "% do ano": un["ano"].map(lambda x: F.pct_br(x / tot_u) if tot_u else "–")})
+                         f"Mês = {_rot(mes)}; período = {PER_ROT}.")
+                    un_m = pd.DataFrame({"Unidade": un["unidade"], _rot(mes): un["mes"].map(lambda x: _m(x) if abs(x) > 0.005 else "–"), ACUM: un["ano"].map(_m),
+                                         "% do período": un["ano"].map(lambda x: F.pct_br(x / tot_u) if tot_u else "–")})
                     ev_u = st.dataframe(un_m, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="dir_adm_un")
                     su = _selecionada(ev_u, un)
                     if su:
@@ -524,37 +673,47 @@ if aba_adm.open or _TODAS:
                         df_a = df_a[df_a["unidade"] == su["unidade"]]
                         _md(f"Credores em **{su['unidade']}**")
                     bc = st.text_input("Pesquisar credor", key="dir_adm_busca")
-                    c_mes = df_l.groupby("credor")["valor"].sum() if len(df_l) else pd.Series(dtype=float)
-                    c_ano = df_a.groupby("credor")["valor"].sum() if len(df_a) else pd.Series(dtype=float)
+                    c_mes = df_l.groupby("credor_exib")["valor"].sum() if len(df_l) else pd.Series(dtype=float)
+                    c_ano = df_a.groupby("credor_exib")["valor"].sum() if len(df_a) else pd.Series(dtype=float)
                     cr = pd.DataFrame({"credor": sorted(set(c_mes.index) | set(c_ano.index))})
                     cr["mes"] = cr["credor"].map(lambda c: float(c_mes.get(c, 0.0)))
                     cr["ano"] = cr["credor"].map(lambda c: float(c_ano.get(c, 0.0)))
                     cr = _busca(cr.sort_values(["ano", "mes"], ascending=False), bc, ["credor"]).reset_index(drop=True)
                     tot_c = float(df_a["valor"].sum())
-                    cr_m = pd.DataFrame({"Credor": cr["credor"], _rot(mes): cr["mes"].map(lambda x: _m(x) if abs(x) > 0.005 else "–"), f"Jan–{mes[5:]}": cr["ano"].map(_m),
+                    cr_m = pd.DataFrame({"Credor": cr["credor"], _rot(mes): cr["mes"].map(lambda x: _m(x) if abs(x) > 0.005 else "–"), ACUM: cr["ano"].map(_m),
                                          "% do filtro": cr["ano"].map(lambda x: F.pct_br(x / tot_c) if tot_c else "–")}).head(60)
                     ev_c = st.dataframe(cr_m, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="dir_adm_cr")
                     sc = _selecionada(ev_c, cr)
+                    if chaves_dir and len(df_a) and (df_a["credor_exib"] == "Outros credores/Dir").any():
+                        _cap("“Outros credores/Dir” junta numa linha só os credores do grupo definido pela contabilidade (clique na linha para ver quem são).")
                     if sc:
-                        ct_a = df_a[df_a["credor"] == sc["credor"]].groupby(["plano_cod", "plano_nome"], as_index=False)["valor"].sum().sort_values("valor", ascending=False)
-                        ct_m = df_l[df_l["credor"] == sc["credor"]].groupby("plano_cod")["valor"].sum()
+                        outros_sel = sc["credor"] == "Outros credores/Dir"
+                        d_a, d_l = df_a[df_a["credor_exib"] == sc["credor"]], df_l[df_l["credor_exib"] == sc["credor"]]
+                        if outros_sel and len(d_a):
+                            _md("Quem está em **Outros credores/Dir**")
+                            q_a = d_a.groupby("credor")["valor"].sum().sort_values(ascending=False)
+                            q_l = d_l.groupby("credor")["valor"].sum() if len(d_l) else pd.Series(dtype=float)
+                            st.dataframe(pd.DataFrame({"Credor": q_a.index, _rot(mes): [(_m(q_l.get(c)) if abs(float(q_l.get(c, 0.0))) > 0.005 else "–") for c in q_a.index], ACUM: q_a.map(_m).values}),
+                                         hide_index=True, width="stretch")
+                        ct_a = d_a.groupby(["plano_cod", "plano_nome"], as_index=False)["valor"].sum().sort_values("valor", ascending=False)
+                        ct_m = d_l.groupby("plano_cod")["valor"].sum() if len(d_l) else pd.Series(dtype=float)
                         _md(f"Contas pagas a **{sc['credor']}**")
                         st.dataframe(pd.DataFrame({"Conta": ct_a["plano_cod"] + " · " + ct_a["plano_nome"].fillna(""), _rot(mes): ct_a["plano_cod"].map(lambda c: _m(ct_m.get(c)) if abs(float(ct_m.get(c, 0.0))) > 0.005 else "–"),
-                                                   f"Jan–{mes[5:]}": ct_a["valor"].map(_m)}), hide_index=True, width="stretch")
+                                                   ACUM: ct_a["valor"].map(_m)}), hide_index=True, width="stretch")
                     _cap("Conferência: o Realizado do orçamento (tabela de grupos) vem do relatório de Orçamento ADM importado; aqui é o valor efetivamente pago no Sienge (contas pagas). "
-                               "Podem diferir por competência × caixa, previsões e reapropriações.")
+                         "Podem diferir por competência × caixa, previsões e reapropriações.")
             _cap("Orçamento ADM consolidado das unidades. O orçado por unidade ainda não vem do banco (só o consolidado); o realizado por unidade vem das contas pagas.")
 
 
-# ------------------------------------------------------------------ 4) DESPESAS (acumulado do ano, em cascata conta -> credor -> obra)
+# ------------------------------------------------------------------ 4) DESPESAS (acumulado do periodo, em cascata conta -> credor -> obra)
 if aba_desp.open or _TODAS:
     with aba_desp:
         dfp, fora = _pagos_df()
         if not len(dfp):
-            _info("Falta sincronizar as contas pagas do ano.")
+            _info("Falta sincronizar as contas pagas do período.")
         else:
             dd = DD.despesas_df(dfp, fora)
-            ms = DD.meses_do_ano(mes)
+            ms = PER.meses_entre(mes_ini, mes)
             rots = [m[5:] + "/" + m[2:4] for m in ms]
             tot_ano = float(dd["valor"].sum()) if len(dd) else 0.0
             dm = dd[dd["mes"] == mes]
@@ -566,11 +725,11 @@ if aba_desp.open or _TODAS:
             k = st.columns(4)
             k[0].metric(f"Pago em {_rot(mes)}", _mi(tot_mes), "exceto contas de pessoas", delta_color="off", border=True)
             k[1].metric(f"Top 5 de {_rot(mes)}", F.pct_br(top5 / tot_mes) if tot_mes else "–", "do total do mês", delta_color="off", border=True)
-            k[2].metric(f"Pago jan–{ms[-1][5:]}", _mi(tot_ano), "exceto contas de pessoas", delta_color="off", border=True)
-            k[3].metric(f"Top 12 jan–{ms[-1][5:]}", F.pct_br(top12 / tot_ano) if tot_ano else "–", "do total do período", delta_color="off", border=True)
+            k[2].metric(f"Pago {ACUM}", _mi(tot_ano), "exceto contas de pessoas", delta_color="off", border=True)
+            k[3].metric(f"Top 12 {ACUM}", F.pct_br(top12 / tot_ano) if tot_ano else "–", "do total do período", delta_color="off", border=True)
             e1, e2 = st.columns(2)
             with e1:
-                _md(f"**Top 12 contas — acumulado jan–{ms[-1][5:]}**")
+                _md(f"**Top 12 contas — acumulado {ACUM}**")
                 top = contas_ano[:12]
                 df_top = pd.DataFrame({"Conta": [x[0] for x in top], "Acumulado": [x[1] for x in top]})
                 _cap("Clique em uma conta para detalhar (evolução, credores e obras); clique de novo para voltar ao total.")
@@ -591,7 +750,7 @@ if aba_desp.open or _TODAS:
                 cr_df = pd.DataFrame({"Credor": [x["chave"] for x in cr["linhas"]], "ac": [x["acumulado"] for x in cr["linhas"]], "mes": [x["mes"] for x in cr["linhas"]]})
                 cr_sel = None
                 if len(cr_df):
-                    ev_cr = st.dataframe(pd.DataFrame({"Credor": cr_df["Credor"], f"Jan–{ms[-1][5:]}": cr_df["ac"].map(_m), "% do filtro": cr_df["ac"].map(lambda x: F.pct_br(x / cr["total"]) if cr["total"] else "–"),
+                    ev_cr = st.dataframe(pd.DataFrame({"Credor": cr_df["Credor"], ACUM: cr_df["ac"].map(_m), "% do filtro": cr_df["ac"].map(lambda x: F.pct_br(x / cr["total"]) if cr["total"] else "–"),
                                                        _rot(mes): cr_df["mes"].map(lambda x: _m(x) if abs(x) > 0.005 else "–")}),
                                          hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="dir_desp_cr")
                     cr_sel = _selecionada(ev_cr, cr_df)
@@ -600,7 +759,7 @@ if aba_desp.open or _TODAS:
                 ob_ = DD.agrupar(dd, "cc", mes, conta=conta, credor=cred)
                 _md(f"**Por obra / centro de custo · {cred or conta or 'todas as contas'}**")
                 if ob_["linhas"]:
-                    st.dataframe(pd.DataFrame({"Obra / centro de custo": [x["chave"] for x in ob_["linhas"]], f"Jan–{ms[-1][5:]}": [_m(x["acumulado"]) for x in ob_["linhas"]],
+                    st.dataframe(pd.DataFrame({"Obra / centro de custo": [x["chave"] for x in ob_["linhas"]], ACUM: [_m(x["acumulado"]) for x in ob_["linhas"]],
                                                "%": [F.pct_br(x["acumulado"] / ob_["total"]) if ob_["total"] else "–" for x in ob_["linhas"]],
                                                _rot(mes): [_m(x["mes"]) if abs(x["mes"]) > 0.005 else "–" for x in ob_["linhas"]]}), hide_index=True, width="stretch")
                     _cap("Obra pelo centro de custo do lançamento no pagamento." + ("" if ob_["n"] <= len(ob_["linhas"]) else f" Top {len(ob_['linhas'])} de {ob_['n']}."))
@@ -613,16 +772,16 @@ if aba_pes.open or _TODAS:
         info = _colaboradores()
         pj = info["pj"]
         clt = info["clt"]
-        ms = DD.meses_do_ano(mes)
+        ms = PER.meses_entre(mes_ini, mes)
         n_mes = (clt + pj["total"]) if clt is not None and (pj["total"] or len(dfp)) else None
         hc_hist = list(hist["headcount"]) if hist and hist.get("headcount") else []
-        idx = int(mes[5:])
-        if n_mes is None and len(hc_hist) >= idx:
-            n_mes = hc_hist[idx - 1]
-        # headcount mensal: historico do painel (jan..) e, onde falta, o do app (CLT da folha + PJ pago)
-        hc_serie = hc_hist[:idx - 1] if len(hc_hist) >= idx - 1 else []
-        soma_antes = sum(hc_serie) if len(hc_serie) == idx - 1 and idx > 1 else None
-        if not pes and not len(dfp) and not hc_hist:
+        hc_por_mes = {f"{hist['ate'][:4]}-{i + 1:02d}": v for i, v in enumerate(hc_hist)} if hist else {}      # historico do painel: janeiro em diante, do ano do historico
+        if n_mes is None and mes in hc_por_mes:
+            n_mes = hc_por_mes[mes]
+        # headcount dos meses do periodo ANTES do mes de referencia (para o R$/colab. acumulado): so' conta se todos tem historico
+        _antes = [m for m in ms if m < mes]
+        soma_antes = sum(hc_por_mes[m] for m in _antes) if _antes and all(m in hc_por_mes for m in _antes) else None
+        if not pes and not len(dfp) and not hc_por_mes:
             _info("Faltam os recibos da folha e as contas pagas deste mês.")
         else:
             rec_ref = rec
@@ -638,28 +797,54 @@ if aba_pes.open or _TODAS:
             c1, c2 = st.columns(2)
             with c1:
                 _md("**Colaboradores ativos**")
-                serie_hc = list(hc_hist[:idx]) if len(hc_hist) >= idx else (hc_serie + ([n_mes] if n_mes else []))
-                if len(serie_hc) >= 1:
-                    rots_hc = [m[5:] + "/" + m[2:4] for m in ms[:len(serie_hc)]]
-                    st.altair_chart(_barras_mes(rots_hc, serie_hc, titulo_y="colaboradores", destaque=len(serie_hc) - 1, divisor=1, altura=220), width="stretch")
+                _hc = [(m, hc_por_mes.get(m, n_mes if m == mes else None)) for m in ms]
+                _hc = [(m, x) for m, x in _hc if x is not None]
+                if _hc:
+                    rots_hc = [m[5:] + "/" + m[2:4] for m, _ in _hc]
+                    st.altair_chart(_barras_mes(rots_hc, [x for _, x in _hc], titulo_y="colaboradores", destaque=len(_hc) - 1, divisor=1, altura=220), width="stretch")
                 _cap(f"Colaboradores = CLT pelos recibos da folha + PJ pelos credores de “Salários PJ” pagos no mês" + (f" ({pj['obra']} em obras e {pj['adm']} na administração)." if pj["total"] else "."))
             with c2:
-                _md("**Horas extras ÷ remuneração**")
+                _md("**Horas extras × receita**")
                 sf = HIST.serie_he_combinada(hist, pes["serie"] if pes else [])
-                if len(sf) >= 2:
-                    dfh = pd.DataFrame({"Mês": [_rot(x["mes"]) for x in sf], "%": [round(x["he_pct"] * 100, 1) for x in sf]})
-                    st.altair_chart(alt.Chart(dfh).mark_line(point=True, color=ORANGE).encode(x=alt.X("Mês:N", sort=list(dfh["Mês"]), axis=alt.Axis(labelAngle=-45, title=None)), y=alt.Y("%:Q", title="% HE / remuneração"),
-                                                                                           tooltip=["Mês", "%"]).properties(height=220), width="stretch")
+                ms_g = PER.meses_entre(min(mes_ini, PER.somar_meses(mes, -5)), mes)              # no minimo 6 meses no grafico, mesmo com periodo curto
+                ev_g = DD.evolucao_he_receita(sf, ctx["serie"], ms_g)
+                if sum(1 for x in ev_g if x["he_pct"] is not None) >= 2:
+                    rots_g = [_rot(x["mes"]) for x in ev_g]
+                    base_g = alt.Chart(pd.DataFrame({"Mês": rots_g})).encode(x=alt.X("Mês:N", sort=rots_g, axis=alt.Axis(labelAngle=-45, title=None)))
+                    dfp1 = pd.DataFrame([{"Mês": _rot(x["mes"]), "%": round(x["he_pct"] * 100, 1)} for x in ev_g if x["he_pct"] is not None])
+                    l_he = alt.Chart(dfp1).mark_line(point=True, color=ORANGE).encode(x=alt.X("Mês:N", sort=rots_g), y=alt.Y("%:Q", title="% HE / remuneração", axis=alt.Axis(titleColor=ORANGE)),
+                                                                                      tooltip=["Mês", alt.Tooltip("%:Q", title="HE ÷ remuneração (%)")])
+                    var_rows = []
+                    for x in ev_g:
+                        if x["var_he"] is not None:
+                            var_rows.append({"Mês": _rot(x["mes"]), "Série": "Custo de HE: variação s/ mês anterior", "Variação %": round(x["var_he"] * 100, 1)})
+                        if x["var_receita"] is not None:
+                            var_rows.append({"Mês": _rot(x["mes"]), "Série": "Receita: variação s/ mês anterior", "Variação %": round(x["var_receita"] * 100, 1)})
+                    layers = [l_he]
+                    if var_rows:
+                        l_var = alt.Chart(pd.DataFrame(var_rows)).mark_line(point=True, strokeDash=[5, 3]).encode(
+                            x=alt.X("Mês:N", sort=rots_g), y=alt.Y("Variação %:Q", title="Variação % s/ mês anterior", axis=alt.Axis(titleColor=NAVY)),
+                            color=alt.Color("Série:N", scale=alt.Scale(domain=["Custo de HE: variação s/ mês anterior", "Receita: variação s/ mês anterior"], range=["#C97A00", NAVY]),
+                                            legend=alt.Legend(orient="bottom", title=None)), tooltip=["Mês", "Série", alt.Tooltip("Variação %:Q", format=",.1f")])
+                        layers.append(l_var)
+                    st.altair_chart(alt.layer(*layers).resolve_scale(y="independent").properties(height=250), width="stretch")
+                    cp = DD.comparar_periodos(sf, ctx["serie"], mes_ini, mes)
+                    _fv = lambda x: "n/d" if x is None else F.pct_br(x, 1)                      # noqa: E731
+                    _cap(f"Período {PER_ROT} × período anterior ({PER.rotulo(cp['meses_anterior'][0], cp['meses_anterior'][-1])}): custo de HE {_fv(cp['var_he'])}"
+                         + (f" ({_mi(cp['he_anterior'])} → {_mi(cp['he_atual'])})" if cp["var_he"] is not None else "") + f"; receita {_fv(cp['var_receita'])}"
+                         + (f" ({_mi(cp['receita_anterior'])} → {_mi(cp['receita_atual'])})" if cp["var_receita"] is not None else "") + ". n/d = falta algum mês de dado num dos períodos.")
+                    _cap("Linha cheia (laranja, eixo esquerdo) = horas extras + DSR ÷ remuneração. Linhas tracejadas (eixo direito) = quanto o custo de HE e a receita variaram sobre o mês anterior — "
+                         "para ver se a HE cresce mais que o faturamento. Receita = DRE confirmado/oficial (meses em andamento ficam de fora).")
                     if {x["origem"] for x in sf} == {"historico", "app"}:
                         _cap("Atenção à comparação: os meses do histórico (painel da contabilidade) usam como base proventos menos HE, sem descontar INSS/IRRF etc.; "
-                                   "os meses com folha no app usam a remuneração líquida (menos todos os descontos), como a contabilidade pediu em 20/10/2026. Por isso pode haver um degrau entre as duas fontes.")
+                             "os meses com folha no app usam a remuneração líquida (menos todos os descontos), como a contabilidade pediu em 20/10/2026. Por isso pode haver um degrau entre as duas fontes.")
                 elif pes:
                     _cap("A série mensal de HE aparece com 2 ou mais meses de folha (ou com o histórico do painel).")
             # custos prioritarios com pessoas, por colaborador
             if len(dfp):
                 pdf_ = DD.pessoas_df(dfp)
                 _md("**Custos prioritários com pessoas — por colaborador**")
-                tabp = DD.tabela_pessoas(pdf_, mes, n_mes, soma_antes)
+                tabp = DD.tabela_pessoas(pdf_, mes, n_mes, soma_antes, meses=ms)
                 todas = st.radio("Linhas", ["Top 5", "Todas"], horizontal=True, key="dir_pes_linhas", label_visibility="collapsed")
                 tabp_v = [x for x in tabp if x["mes"] or x["acum_antes"]] if todas == "Todas" else tabp[:5]
                 if tabp_v:
@@ -675,26 +860,29 @@ if aba_pes.open or _TODAS:
                     _cap(f"Contas de pessoal de obra (2.01.02) e ADM (2.02.01), sem salários CLT/PJ e premiações. Total do mês (todas as contas): {_m(tot_m)}. "
                                "R$/colab. acumulado = acumulado até o mês anterior ÷ soma do headcount mensal desses meses" + ("." if soma_antes else " (indisponível sem o headcount dos meses anteriores)."))
                     d1, d2 = st.columns(2)
+                    pdf_cr = DD.sem_grupo_enermais(pdf_, _nucleos_grupo(conn, CARIMBO))       # contabilidade 21/10: credores do grupo ENERMAIS fora das listas
                     with d1:
-                        cr = DD.agrupar(pdf_, "credor", mes, conta=conta_p)
+                        cr = DD.agrupar(pdf_cr, "credor", mes, conta=conta_p)
                         _md(f"**Principais credores · {conta_p or 'todas as contas'}**")
                         cr_df = pd.DataFrame({"Credor": [x["chave"] for x in cr["linhas"]], "ac": [x["acumulado"] for x in cr["linhas"]], "mes": [x["mes"] for x in cr["linhas"]]})
                         cr_sel = None
                         if len(cr_df):
-                            ev_cr = st.dataframe(pd.DataFrame({"Credor": cr_df["Credor"], f"Jan–{ms[-1][5:]}": cr_df["ac"].map(_m), "%": cr_df["ac"].map(lambda x: F.pct_br(x / cr["total"]) if cr["total"] else "–"),
+                            ev_cr = st.dataframe(pd.DataFrame({"Credor": cr_df["Credor"], ACUM: cr_df["ac"].map(_m), "%": cr_df["ac"].map(lambda x: F.pct_br(x / cr["total"]) if cr["total"] else "–"),
                                                                _rot(mes): cr_df["mes"].map(lambda x: _m(x) if abs(x) > 0.005 else "–")}),
                                                  hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="dir_pes_cr")
                             cr_sel = _selecionada(ev_cr, cr_df)
-                            _cap(("Todos os credores." if cr["n"] <= len(cr["linhas"]) else f"Top {len(cr['linhas'])} de {cr['n']} credores.") + " Clique em um credor para filtrar as obras.")
+                            _cap(("Todos os credores." if cr["n"] <= len(cr["linhas"]) else f"Top {len(cr['linhas'])} de {cr['n']} credores.") + " Clique em um credor para filtrar as obras. Sem os credores do grupo ENERMAIS (as seis empresas).")
                     with d2:
                         cred_p = cr_sel["Credor"] if cr_sel else None
-                        ob_ = DD.agrupar(pdf_, "cc", mes, conta=conta_p, credor=cred_p)
-                        _md(f"**Por obra / centro de custo · {cred_p or conta_p or 'todas as contas'}**")
+                        ob_ = DD.agrupar(DD.rotular_obras(pdf_cr, _nomes_obras(conn, CARIMBO)), "obra_rot", mes, conta=conta_p, credor=cred_p, top=25)
+                        _md(f"**Por obra · {cred_p or conta_p or 'todas as contas'}**")
                         if ob_["linhas"]:
-                            st.dataframe(pd.DataFrame({"Obra / centro de custo": [x["chave"] for x in ob_["linhas"]], f"Jan–{ms[-1][5:]}": [_m(x["acumulado"]) for x in ob_["linhas"]],
+                            st.dataframe(pd.DataFrame({"Obra": [x["chave"] for x in ob_["linhas"]], ACUM: [_m(x["acumulado"]) for x in ob_["linhas"]],
                                                        "%": [F.pct_br(x["acumulado"] / ob_["total"]) if ob_["total"] else "–" for x in ob_["linhas"]],
                                                        _rot(mes): [_m(x["mes"]) if abs(x["mes"]) > 0.005 else "–" for x in ob_["linhas"]]}), hide_index=True, width="stretch")
-                            _cap("Obra pelo centro de custo do lançamento.")
+                            _cap("Os centros de custo foram ligados à obra pelo de-para (ex.: “EE - ANASTACIO - LOTE 11” e “CON - ANASTACIO - LOTE 11” somam na obra ANASTÁCIO - LOTE 11), "
+                                 "na mesma linguagem da aba Obras. Administração e centros sem de-para aparecem à parte."
+                                 + ("" if ob_["n"] <= len(ob_["linhas"]) else f" Top {len(ob_['linhas'])} de {ob_['n']}."))
             # folha CLT por empresa / obra (recibos) e PJ do mes
             if pes:
                 fo = pes["folha"]
@@ -715,7 +903,7 @@ if aba_pes.open or _TODAS:
 # ------------------------------------------------------------------ 6) INDICADORES FINANCEIROS  e  7) FINANCIAMENTOS (so' Sienge)
 if aba_ind.open or _TODAS:
     with aba_ind:
-        DI.aba_indicadores(conn, mes, CARIMBO)
+        DI.aba_indicadores(conn, mes_ini, mes, CARIMBO)
 
 if aba_fin.open or _TODAS:
     with aba_fin:

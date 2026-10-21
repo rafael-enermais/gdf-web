@@ -9,6 +9,7 @@ import streamlit as st
 import formatacao as F
 import fuso
 import indicadores_dados as I
+import periodo as PER
 
 NAVY, ORANGE, AZUL, CINZA = "#171C60", "#F99D20", "#5C6091", "#B9C3D4"
 
@@ -39,7 +40,7 @@ def _mi(v):
 
 
 def _dias(v):
-    return "–" if v is None else F.num_br(v, 1) + " dias"
+    return "–" if v is None else F.num_br(round(v), 0) + (" dia" if round(v) in (1, -1) else " dias")
 
 
 def _data(d):
@@ -55,18 +56,18 @@ def _fmt_num(v):
 
 
 @st.cache_data(ttl=1800, show_spinner="Calculando os indicadores…")
-def _ind(_conn, mes, acumulado, carimbo, dia):
-    return I.ciclo_e_capital(_conn, mes, acumulado, dia)
+def _ind(_conn, mes_ini, mes, completo, carimbo, dia):
+    return I.ciclo_e_capital(_conn, mes, False, dia, mes_ini=mes_ini, completo=completo)
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _inad(_conn, venc_ate, pago_ate, previsao, carimbo):
-    return I.inadimplencia(_conn, venc_ate, pago_ate, previsao)
+def _inad(_conn, venc_ate, pago_ate, previsao, completo, carimbo):
+    return I.inadimplencia(_conn, venc_ate, pago_ate, previsao, completo=completo)
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _receitas(_conn, pago_ate, previsao, carimbo):
-    return I.receitas_em_aberto(_conn, pago_ate, previsao)
+def _receitas(_conn, pago_ate, previsao, completo, carimbo):
+    return I.receitas_em_aberto(_conn, pago_ate, previsao, completo=completo)
 
 
 @st.cache_data(ttl=1800, show_spinner="Calculando os financiamentos…")
@@ -89,15 +90,18 @@ def _aviso_cobertura(conn, carimbo):
 
 
 @st.fragment                                    # clicar/filtrar aqui recalcula so' esta aba (nao a pagina inteira)
-def aba_indicadores(conn, mes, carimbo):
+def aba_indicadores(conn, mes_ini, mes, carimbo):
+    """`mes_ini` a `mes` = periodo escolhido no topo do painel (prazos e gasto); a posicao da inadimplencia usa hoje ou o fim do periodo."""
     dia = hoje()
     c1, c2, c3 = st.columns([1, 1, 1])
-    per = c1.radio("Período dos prazos", ["Mês", "Acumulado no ano"], horizontal=True, key="ind_per")
-    pos = c2.radio("Posição da inadimplência", ["Até hoje", "Fim do mês escolhido"], horizontal=True, key="ind_pos")
-    prev = c3.checkbox("Incluir documentos de previsão", value=False, key="ind_prev", help="Padrão: fora (como combinado com a contabilidade).")
-    acum = per != "Mês"
-    ind = _ind(conn, mes, acum, carimbo, dia)
+    pos = c1.radio("Posição da inadimplência", ["Até hoje", "Fim do período escolhido"], horizontal=True, key="ind_pos")
+    prev = c2.checkbox("Incluir documentos de previsão", value=False, key="ind_prev", help="Padrão: fora (como combinado com a contabilidade).")
+    tudo = c3.checkbox("Incluir tudo (para comparar)", value=False, key="ind_tudo",
+                       help="Padrão: prazos e gasto só com fornecedores e clientes de verdade — sem lançamentos sem credor, banco/caixa, financiamentos e empresas do grupo ENERMAIS; "
+                            "o a receber também sem clientes do grupo. Marque para ver o cálculo antigo, com tudo.")
+    ind = _ind(conn, mes_ini, mes, tudo, carimbo, dia)
     pmr, pmp, g = ind["pmr"], ind["pmp"], ind["gasto"]
+    per_txt = PER.rotulo(mes_ini, mes)
 
     st.markdown("#### Prazo médio e ciclo financeiro")
     k = st.columns(4)
@@ -108,25 +112,34 @@ def aba_indicadores(conn, mes, carimbo):
     k = st.columns(2)
     k[0].metric("Ciclo financeiro · simples (PMR − PMP)", _dias(ind["ciclo_simples"]), "negativo = recebe antes de pagar", delta_color="off", border=True)
     k[1].metric("Ciclo financeiro · ponderado (PMR − PMP)", _dias(ind["ciclo_ponderado"]), "negativo = recebe antes de pagar", delta_color="off", border=True)
-    st.caption(_t("Prazo = dias entre a emissão e o vencimento dos títulos EMITIDOS no período, sem documentos de previsão nem títulos desfeitos (cancelados, substituídos, distratos). "
-                  "Ponderado = cada título pesa pelo seu valor."))
+    st.caption(_t(f"Período: {per_txt}. Prazo = dias entre a emissão e o vencimento dos títulos EMITIDOS no período (dias arredondados), sem documentos de previsão nem títulos desfeitos "
+                  "(cancelados, substituídos, distratos). Ponderado = cada título pesa pelo seu valor."))
+    if tudo:
+        st.caption("Modo “incluir tudo”: contando também lançamentos sem credor, banco/caixa (transferências), financiamentos e empresas do grupo ENERMAIS.")
+    else:
+        fora = pmr["n_fora"] + pmp["n_fora"]
+        st.caption(_t(f"Só fornecedores e clientes de verdade: ficaram de fora {pmr['n_fora']} títulos a receber e {pmp['n_fora']} a pagar ({fora} no total) — lançamentos sem credor/cliente, de banco/caixa "
+                      "(transferências), de financiamento/capital de giro (planos 2.03 e 2.05) e de empresas do grupo ENERMAIS. Marque “Incluir tudo” para comparar."))
 
     st.markdown("#### Capital de giro")
     k = st.columns(4)
-    k[0].metric(f"Gasto do mês · {mes[5:]}/{mes[:4]}", _mi(g["mensal"]), f"{g['dias']} dias", delta_color="off", border=True)
-    k[1].metric("Gasto diário", _mi(g["diario"]), "gasto do mês ÷ dias", delta_color="off", border=True)
+    k[0].metric(f"Gasto do período · {per_txt}", _mi(g["total"]), f"{g['dias']} dias", delta_color="off", border=True)
+    k[1].metric("Gasto diário", _mi(g["diario"]), "gasto do período ÷ dias", delta_color="off", border=True)
     k[2].metric("Necessidade · ponderado", _mi(ind["ncg_ponderado"]), f"{_m(g['diario'])} × {_dias(ind['ciclo_ponderado'])}" if ind["ciclo_ponderado"] is not None else None, delta_color="off", border=True)
     k[3].metric("Necessidade · simples", _mi(ind["ncg_simples"]), f"{_m(g['diario'])} × {_dias(ind['ciclo_simples'])}" if ind["ciclo_simples"] is not None else None, delta_color="off", border=True)
-    st.caption(_t("Gasto = pagamentos feitos no mês (pagamento, adiantamento e pagamento por movimento bancário), sem previsão e sem transferências entre contas. "
-                  "Necessidade = gasto diário × ciclo financeiro; só aparece valor quando o ciclo é positivo (paga antes de receber)."))
+    st.caption(_t("Gasto = pagamentos feitos no período (pagamento, adiantamento e pagamento por movimento bancário), sem previsão e sem transferências entre contas"
+                  + ("" if tudo else ", só com os mesmos fornecedores dos prazos") + ". "
+                  "Necessidade = gasto diário × ciclo financeiro (em dias inteiros); só aparece valor quando o ciclo é positivo (paga antes de receber). "
+                  "O ponderado ficava distorcido por lançamentos sem credor com prazo zero, que puxavam o prazo de pagamento para baixo e o ciclo para cima."))
 
     st.markdown("#### Inadimplência")
     venc_ate, pago_ate = I.data_posicao(mes, dia, ate_hoje=(pos == "Até hoje"))
-    ina = _inad(conn, venc_ate, pago_ate, prev, carimbo)
+    ina = _inad(conn, venc_ate, pago_ate, prev, tudo, carimbo)
     k = st.columns(2)
     k[0].metric("Vencido a receber", _mi(ina["receber"]["total"]), f"{ina['receber']['n']} títulos", delta_color="off", border=True)
     k[1].metric("Vencido a pagar", _mi(ina["pagar"]["total"]), f"{ina['pagar']['n']} títulos", delta_color="off", border=True)
     st.caption(f"Posição: vencidos até {_data(venc_ate)} e não pagos até {_data(pago_ate)}. "
+               + ("" if tudo else "A receber sem clientes do grupo ENERMAIS. ")
                + ("Vencimento ORIGINAL (o primeiro vencimento registrado; prorrogação não esconde a dívida)." if ina["usa_vencimento_original"] else "Vencimento atual do título (o vencimento original ainda não foi ativado no banco)."))
     d1, d2 = st.columns(2)
     for col, chave, rot, quem in ((d1, "receber", "a receber", "Cliente"), (d2, "pagar", "a pagar", "Credor")):
@@ -140,7 +153,7 @@ def aba_indicadores(conn, mes, carimbo):
                              .style.format({"Valor": _fmt_num, "Vencido há mais tempo": lambda d: _data(d)}), hide_index=True, width="stretch")
 
     st.markdown("#### Receitas em aberto")
-    rec = _receitas(conn, pago_ate, prev, carimbo)
+    rec = _receitas(conn, pago_ate, prev, tudo, carimbo)
     if not rec:
         st.info("Nenhuma conta a receber em aberto na posição escolhida.")
     else:

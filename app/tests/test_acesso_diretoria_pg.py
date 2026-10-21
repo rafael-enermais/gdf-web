@@ -134,6 +134,7 @@ def test_painel_da_diretoria_cinco_abas_com_tudo(conn):
     buf = io.BytesIO(); wb.save(buf)
     P.gravar_projecao(conn, IP.ler_projecao_xlsx(buf.getvalue()), "p.xlsx", "e" * 64, "teste@x")
     H.gravar(conn, H.ler_historico(_html(), "a.html"), "2026-09", "a.html", "rafael@x")
+    assert P.credor_grupo_adicionar(conn, "FORNECEDOR TESTE", "rafael@x")["ok"]            # "Outros credores/Dir": entra numa linha so' na Administracao
     acesso.definir(conn, "diretor@empresa.com", acesso.VISUALIZADOR, True, "rafael@x")
     with patch("conexao.get_conn", return_value=conn):
         at = _app_como(conn, "diretor@empresa.com")
@@ -144,14 +145,16 @@ def test_painel_da_diretoria_cinco_abas_com_tudo(conn):
         for esperado in ("Receita (base-line)", "Custos diretos", "BDI", "Administração", "Resultado",        # Resultado
                          "Receita realizada", "Obras com prejuízo",                                           # Obras
                          "Orçado 09/2026", "Meses acima do orçado",                                           # Administracao
-                         "Pago em 09/2026", "Top 12 jan–09",                                                  # Despesas
+                         "Pago em 09/2026", "Top 12 Jan–Set/26",                                                  # Despesas
                          "Colaboradores 09/2026", "Receita por colaborador"):                                 # Pessoas
             assert esperado in rotulos, (esperado, rotulos)
         colab = next(m for m in at.metric if m.label == "Colaboradores 09/2026")
         assert colab.value == "4" and "3 CLT + 1 PJ" in colab.delta                                            # 3 CLT (folha) + 1 PJ (contas pagas)
         assert any("PJ do mês" in e.label for e in at.expander)
-        at.radio(key="dir_periodo").set_value("Acumulado no ano").run()
-        assert not at.exception, at.exception
+        for modo in ("Mês", "Últimos 3 meses", "Últimos 6 meses", "Últimos 12 meses", "Personalizado", "Ano até o mês"):      # filtro de periodo flexivel: nenhuma aba quebra
+            at.selectbox(key="dir_per_modo").select(modo).run()
+            assert not at.exception, (modo, at.exception)
+        assert any("Período:" in c.value or "período:" in c.value for c in at.caption)
         at.radio(key="dir_pes_linhas").set_value("Todas").run()
         assert not at.exception, at.exception
         # cascata da aba Obras: lista de colaboradores por obra (CLT da folha + PJ das contas pagas), com busca
@@ -194,3 +197,26 @@ def test_aba_investimentos_so_para_editor_ou_se_liberada(conn):
         assert acesso.investimentos_para_visualizador(conn) is False
         v3 = _app_como(conn, "diretor@empresa.com").run()
         assert "Investimentos" not in [t.label for t in v3.tabs]
+
+
+def test_administracao_do_painel_junta_outros_credores_dir_e_respeita_o_periodo(conn):
+    """21/10/2026: no detalhe da Administracao, os credores do grupo 'Outros credores/Dir' viram UMA linha; o periodo escolhido muda o acumulado."""
+    from test_administracao import _montar
+    _montar(conn)                                                        # 1000 (ALFA) + 400 em set; 200 (BETA) em ago, centros ADM
+    assert P.credor_grupo_adicionar(conn, "FORNECEDOR BETA", "rafael@x")["ok"]
+    acesso.definir(conn, "diretor@empresa.com", acesso.VISUALIZADOR, True, "rafael@x")
+    with patch("conexao.get_conn", return_value=conn):
+        at = _app_como(conn, "diretor@empresa.com")
+        at.session_state["dir_todas_abas"] = True
+        at.run()
+        assert not at.exception, at.exception
+        if "2026-09" in at.selectbox(key="dir_mes").options:
+            at.selectbox(key="dir_mes").select("2026-09").run()
+        assert not at.exception, at.exception
+        com_outros = [list(d.value["Credor"]) for d in at.dataframe if "Credor" in d.value.columns and "Outros credores/Dir" in set(d.value["Credor"])]
+        assert com_outros, [m.value[:50] for m in at.markdown if "Quem recebeu" in m.value]            # a tabela de credores da Administracao
+        nomes = com_outros[0]
+        assert not any("BETA" in n for n in nomes) and any("ALFA" in n for n in nomes)
+        assert any("Outros credores/Dir" in c.value for c in at.caption)
+        at.selectbox(key="dir_per_modo").select("Mês").run()                # periodo de um mes so': a mesma tela segue sem erro
+        assert not at.exception, at.exception

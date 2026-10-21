@@ -15,6 +15,9 @@ import unicodedata
 
 import pandas as pd
 
+import periodo as PER
+from grupo_enermais import nucleo as _nucleo_grupo
+
 PESSOAS = ("2.01.02", "2.02.01")                                      # pessoal de obra e pessoal ADM (o painel mostra na aba Pessoas)
 SALARIOS_E_PREMIACOES = ("2.01.02.01", "2.01.02.10", "2.01.02.11", "2.02.01.01", "2.02.01.02", "2.02.01.06")   # PJ, CLT e premiacoes: fora dos "custos prioritarios"
 CONTAS_PJ = ("2.01.02.01", "2.02.01.01")
@@ -138,13 +141,13 @@ def agrupar(df: pd.DataFrame, por: str, mes_ref: str, conta: str | None = None, 
     return {"linhas": linhas, "n": int(len(ordem)), "total": round(float(g.sum()), 2)}
 
 
-def tabela_pessoas(df_pess: pd.DataFrame, mes: str, colab_mes: int | None, colab_soma_antes: int | None) -> list:
+def tabela_pessoas(df_pess: pd.DataFrame, mes: str, colab_mes: int | None, colab_soma_antes: int | None, meses: list | None = None) -> list:
     """Linha por conta de pessoas: valor do mes, % do mes, R$/colab no mes, acumulado ate o mes anterior, R$/colab acumulado e variacao
     (R$/colab do mes ÷ R$/colab acumulado − 1). `colab_mes` = colaboradores do mes; `colab_soma_antes` = soma do headcount mensal dos meses anteriores do ano.
     Sem headcount, as colunas por colaborador ficam None."""
     if not len(df_pess):
         return []
-    antes = [m for m in meses_do_ano(mes) if m < mes]
+    antes = [m for m in (meses if meses is not None else meses_do_ano(mes)) if m < mes]       # meses do periodo escolhido (padrao: o ano) antes do mes de referencia
     set_ = df_pess[df_pess["mes"] == mes].groupby("plano_nome")["valor"].sum()
     acu = df_pess[df_pess["mes"].isin(antes)].groupby("plano_nome")["valor"].sum()
     contas = sorted(set(set_.index) | set(acu.index), key=lambda c: -float(set_.get(c, 0.0)))
@@ -228,3 +231,92 @@ def credores_da_obra(dd: pd.DataFrame, obras: list | None, mes_ref: str, top: in
         return {"linhas": [], "n": 0, "total": 0.0}
     d = dd if obras is None else dd[dd["obra"].isin(obras)]
     return agrupar(d, "credor", mes_ref, top=top)
+
+
+# ------------------------------------------------------------------ listas de credores: PJ, grupo ENERMAIS, "Outros credores/Dir"
+def credores_pj(df: pd.DataFrame) -> set:
+    """Credores que sao colaboradores PJ: quem recebeu em conta de 'Salarios PJ' no periodo carregado. Saem da lista de credores das obras (a pessoa ja' esta em colaboradores)."""
+    if not len(df):
+        return set()
+    m = df.apply(lambda r: eh_pj(r["plano_cod"], r["plano_nome"]), axis=1)
+    return set(df.loc[m, "credor"])
+
+
+def sem_credores(df: pd.DataFrame, credores) -> pd.DataFrame:
+    """Linhas sem os credores informados (comparacao exata do nome)."""
+    if not len(df) or not credores:
+        return df
+    return df[~df["credor"].isin(set(credores))].copy()
+
+
+def sem_grupo_enermais(df: pd.DataFrame, nucleos) -> pd.DataFrame:
+    """Linhas sem os credores que sao empresas do grupo ENERMAIS (nome comparado pelo nucleo: sem acento, LTDA etc.)."""
+    if not len(df) or not nucleos:
+        return df
+    alvo = set(nucleos)
+    return df[~df["credor"].map(lambda c: _nucleo_grupo(c) in alvo)].copy()
+
+
+def marcar_outros_dir(df: pd.DataFrame, chaves: list, rotulo: str = "Outros credores/Dir") -> pd.DataFrame:
+    """Coluna 'credor_exib': o proprio credor, ou `rotulo` quando o nome COMECA com uma das chaves do grupo 'Outros credores/Dir' (sem acento, maiusculas)."""
+    out = df.copy()
+    norm = lambda t: re.sub(r"\s+", " ", _sem_acento(t)).upper()                  # noqa: E731  (mesma regra do painel_db.norm_credor: espacos simples)
+    ch = [c for c in (norm(k) for k in (chaves or [])) if c]
+    out["credor_exib"] = out["credor"].map(lambda c: rotulo if any(norm(c).startswith(k) for k in ch) else c) if len(out) else []
+    return out
+
+
+def rotular_obras(df: pd.DataFrame, nomes: dict) -> pd.DataFrame:
+    """Coluna 'obra_rot' = a mesma linguagem da aba Obras: '<codigo> · <nome da obra>' para cada centro de custo ligado a uma obra pelo de-para;
+    centros da administracao -> 'Administração'; codigo DEM -> 'Demais obras'; sem de-para -> 'Sem obra (<centro de custo>)'.
+    Ex.: 'EE - ANASTACIO - LOTE 11' e 'CON - ANASTACIO - LOTE 11' caem na mesma obra."""
+    out = df.copy()
+
+    def rot(r) -> str:
+        cod = (r["obra"] or "").strip()
+        if r["grupo"] == "ADM" or cod in ("ADM", "99"):
+            return "Administração"
+        if cod == "DEM":
+            return "Demais obras"
+        if not cod or cod == "sem de-para":
+            return f"Sem obra ({r['cc']})"
+        nome = (nomes or {}).get(cod)
+        return f"{cod} · {nome}" if nome else cod
+
+    out["obra_rot"] = out.apply(rot, axis=1) if len(out) else []
+    return out
+
+
+# ------------------------------------------------------------------ Pessoas: evolucao do custo com hora extra x evolucao da receita
+def _var(d: dict, m: str):
+    a, b = d.get(m), d.get(PER.somar_meses(m, -1))
+    return None if a is None or not b or b <= 0 else round(float(a) / float(b) - 1, 4)
+
+
+def _soma(d: dict, meses: list):
+    """Soma dos meses; None se faltar algum (nao compara periodo incompleto com periodo completo)."""
+    v = [d.get(m) for m in meses]
+    return None if not v or any(x is None for x in v) else round(sum(float(x) for x in v), 2)
+
+
+def evolucao_he_receita(serie_he: list, serie_receita: list, meses: list) -> list:
+    """Mes a mes: % de HE sobre a remuneracao, custo de HE (R$), receita (R$) e a variacao % de cada um sobre o mes anterior.
+    `serie_he` = historico.serie_he_combinada; `serie_receita` = painel_db.receita_mensal. -> [{'mes','he_pct','he','var_he','receita','var_receita'}]"""
+    he = {x["mes"]: x.get("he") for x in serie_he}
+    pct = {x["mes"]: x.get("he_pct") for x in serie_he}
+    rec = {x["mes"]: x["receita"] for x in serie_receita}
+    return [{"mes": m, "he_pct": pct.get(m), "he": he.get(m), "var_he": _var(he, m), "receita": rec.get(m), "var_receita": _var(rec, m)} for m in meses]
+
+
+def comparar_periodos(serie_he: list, serie_receita: list, mes_ini: str, mes_fim: str) -> dict:
+    """Periodo escolhido x periodo anterior (mesmo tamanho): custo de HE e receita somados e a variacao %. Valor None quando falta algum mes de dado."""
+    he = {x["mes"]: x.get("he") for x in serie_he}
+    rec = {x["mes"]: x["receita"] for x in serie_receita}
+    atual = PER.meses_entre(mes_ini, mes_fim)
+    ant = PER.meses_entre(*PER.anterior(mes_ini, mes_fim))
+    out = {"meses_atual": atual, "meses_anterior": ant}
+    for nome, d in (("he", he), ("receita", rec)):
+        a, b = _soma(d, atual), _soma(d, ant)
+        out[nome + "_atual"], out[nome + "_anterior"] = a, b
+        out["var_" + nome] = round(a / b - 1, 4) if a is not None and b else None
+    return out

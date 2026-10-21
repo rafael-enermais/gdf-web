@@ -1055,3 +1055,61 @@ def test_carimbo_devolve_vazio_se_o_banco_falhar():
         def cursor(self):
             raise RuntimeError("sem banco")
     assert P.carimbo_dados(Quebrada()) == ""
+
+
+# ---------------------------------------------------------------- 21/10/2026: periodo livre em Resultado e Obras (soma de meses) e orcamento por periodo
+def _ob(linhas):
+    for l in linhas:
+        l["bdi"] = round(l["receita"] + l["custo"], 2)
+    return {"linhas": linhas, "total": {"receita": sum(l["receita"] for l in linhas), "custo": sum(l["custo"] for l in linhas)}}
+
+
+def test_somar_obras_de_varios_meses():
+    m1 = _ob([{"obra": "103", "nome": "ANASTACIO", "receita": 1000.0, "custo": -600.0}, {"obra": "DEM", "nome": "Demais obras (2)", "receita": 200.0, "custo": -250.0, "n": 2}])
+    m2 = _ob([{"obra": "103", "nome": "ANASTACIO", "receita": 500.0, "custo": -700.0}, {"obra": "104", "nome": "LOTE 3", "receita": 300.0, "custo": -100.0},
+              {"obra": "DEM", "nome": "Demais obras (3)", "receita": 100.0, "custo": -50.0, "n": 3}])
+    s = P.somar_obras([m1, None, m2])
+    por = {l["obra"]: l for l in s["linhas"]}
+    assert s["meses"] == 2 and por["103"]["receita"] == 1500.0 and por["103"]["custo"] == -1300.0 and por["103"]["bdi"] == 200.0 and por["103"]["margem"] == round(200 / 1500, 4)
+    assert por["104"]["bdi"] == 200.0 and por["DEM"]["receita"] == 300.0 and por["DEM"]["n"] == 3
+    assert s["total"]["receita"] == 2100.0 and s["total"]["custo"] == -1700.0 and s["total"]["bdi"] == 400.0           # soma de tudo, inclusive 'DEM'
+    assert s["linhas"][-1]["obra"] == "DEM"                                                                          # demais obras sempre por ultimo
+    assert P.somar_obras([]) is None and P.somar_obras([None]) is None
+    g = P.agrupar_demais_obras(s, {"104"})                                                   # a regra das 5 maiores vale sobre o periodo somado
+    assert {l["obra"] for l in g["linhas"]} >= {"103", "104", "DEM"} and g["total"] == s["total"]
+
+
+def test_somar_projecoes_e_termos():
+    p1 = {"linhas": [{"codigo": "103", "nome": "A", "receita_proj": 1000.0, "receita_real": 900.0, "bdi_proj": 300.0, "bdi_real": 250.0}], "total": {"receita_proj": 1000.0, "receita_real": 900.0, "bdi_proj": 300.0},
+          "receita_proj_total": 1000.0, "receita_real_total": 900.0}
+    p2 = {"linhas": [{"codigo": "103", "nome": "A", "receita_proj": 500.0, "receita_real": 600.0, "bdi_proj": 100.0, "bdi_real": 150.0}], "total": {"receita_proj": 500.0, "receita_real": 600.0, "bdi_proj": 100.0},
+          "receita_proj_total": 500.0, "receita_real_total": 600.0}
+    s = P.somar_projecoes([p1, None, p2])
+    x = s["linhas"][0]
+    assert s["meses"] == 2 and x["receita_proj"] == 1500.0 and x["receita_real"] == 1500.0 and x["desvio"] == 0.0 and x["bdi_real"] == 400.0 and x["desvio_bdi"] == 0.0
+    assert s["receita_proj_total"] == 1500.0 and s["total"]["bdi_proj"] == 400.0 and P.somar_projecoes([None]) is None
+    t1 = {"mes": "2026-08", "rec": 1000.0, "cus": 700.0, "bdi": 300.0, "adm_real": 100.0, "adm_orc": 90.0, "rec_p": 1100.0, "bdi_p": 330.0}
+    t2 = {"mes": "2026-09", "rec": 2000.0, "cus": 1500.0, "bdi": 500.0, "adm_real": 150.0, "adm_orc": 160.0, "rec_p": 1900.0, "bdi_p": 400.0}
+    z = P.somar_termos([t1, t2, None])
+    assert z["meses"] == ["2026-08", "2026-09"] and z["rec"] == (3000.0, 3000.0) and z["cus"] == (2200.0, 3000.0 - 730.0)
+    assert z["bdi"] == (800.0, 730.0) and z["adm"] == (250.0, 250.0) and z["res"] == (550.0, 480.0)
+    sem_orc = P.somar_termos([t1, {**t2, "adm_real": None, "adm_orc": None, "rec_p": None, "bdi_p": None}])
+    assert sem_orc["adm"] == (None, None) and sem_orc["res"] == (None, None) and sem_orc["rec"] == (3000.0, None) and sem_orc["cus"][1] is None     # falta 1 mes: n/d
+    assert P.somar_termos([]) is None
+
+
+def test_orcamento_resumo_por_periodo_e_contas_do_grupo(conn):
+    import importador_orcamento as IO
+    from orcamento_sintetico import pdf_orcamento_sintetico
+    ro = P.gravar_orcamento(conn, IO.ler_orcamento_adm_pdf(pdf_orcamento_sintetico()), "o.pdf", "9" * 64, "teste@x")
+    meses = P.orcamento_ativo(conn)["meses"]
+    tudo = P.orcamento_resumo(conn, ro["id"], meses[-1], acumulado=True)
+    so_ultimos = P.orcamento_resumo(conn, ro["id"], meses[-1], acumulado=True, mes_ini=meses[-2])
+    ultimo = P.orcamento_resumo(conn, ro["id"], meses[-1])
+    pen = P.orcamento_resumo(conn, ro["id"], meses[-2])
+    assert tudo["total"]["orcado"] > so_ultimos["total"]["orcado"] > 0
+    assert round(so_ultimos["total"]["orcado"], 2) == round(ultimo["total"]["orcado"] + pen["total"]["orcado"], 2)       # periodo = soma dos meses
+    assert so_ultimos["total"]["realizado"] == round(ultimo["total"]["realizado"] + pen["total"]["realizado"], 2)
+    assert P.orcamento_resumo(conn, ro["id"], meses[-1], acumulado=True, mes_ini=meses[-1])["total"] == ultimo["total"]
+    assert len(tudo["contas"]) >= len(tudo["acima"]) and all(c["tipo"] in ("R", "M") for c in tudo["contas"])
+    assert [c["desvio"] for c in tudo["contas"]] == sorted((c["desvio"] for c in tudo["contas"]), reverse=True)           # maiores estouros primeiro

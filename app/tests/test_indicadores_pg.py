@@ -13,8 +13,8 @@ pytestmark = pytest.mark.pg
 HOJE = dt.date(2026, 10, 20)
 
 
-def _tit(bill, inst, lado, contra, emissao, venc, valor, planos, baixas=(), previsao="N", numero="1"):
-    base = {"billId": bill, "installmentId": inst, "companyId": 5, "companyName": "CONSTRUTORA", "originId": "CP", "documentIdentificationId": "NF",
+def _tit(bill, inst, lado, contra, emissao, venc, valor, planos, baixas=(), previsao="N", numero="1", origem="CP"):
+    base = {"billId": bill, "installmentId": inst, "companyId": 5, "companyName": "CONSTRUTORA", "originId": origem, "documentIdentificationId": "NF",
             "documentNumber": numero, "issueDate": emissao, "dueDate": venc, "originalAmount": valor}
     if lado == "P":
         base.update({"forecastDocument": previsao, "creditorId": hash(contra) % 1000, "creditorName": contra, "payments": list(baixas), "paymentsCategories": planos})
@@ -62,7 +62,7 @@ def dados(conn):
 
 def test_prazo_medio_simples_e_ponderado(conn, dados):
     r = I.prazo_medio(conn, "P", "2026-09")
-    assert r["n"] == 2 and r["simples"] == 15.0 and r["ponderado"] == 17.5      # (10+20)/2 ; (10*100+20*300)/400
+    assert r["n"] == 2 and r["simples"] == 15 and r["ponderado"] == 18 and r["n_fora"] == 0     # (10+20)/2 ; (10*100+20*300)/400 = 17,5 -> 18 (dias inteiros)
     assert I.prazo_medio(conn, "R", "2026-09")["n"] == 3                         # A, B e D (a previsao C fica de fora)
     assert I.prazo_medio(conn, "R", "2026-01")["simples"] is None
 
@@ -71,8 +71,8 @@ def test_gasto_e_ciclo_financeiro(conn, dados):
     g = I.gasto_pago(conn, "2026-09", hoje=HOJE)
     assert g["mensal"] == 400.0 and g["dias"] == 30 and round(g["diario"], 2) == 13.33
     c = I.ciclo_e_capital(conn, "2026-09", hoje=HOJE)
-    assert c["pmp"]["simples"] == 15.0 and c["pmr"]["simples"] is not None
-    assert c["ciclo_simples"] == round(c["pmr"]["simples"] - 15.0, 1)
+    assert c["pmp"]["simples"] == 15 and c["pmr"]["simples"] is not None
+    assert c["ciclo_simples"] == c["pmr"]["simples"] - 15 and isinstance(c["ciclo_simples"], int)
     assert c["ncg_simples"] == round(g["diario"] * max(c["ciclo_simples"], 0), 2)
 
 
@@ -200,3 +200,48 @@ def test_historico_de_alteracao_do_vencimento(conn, dados):
         assert cur.fetchone() == (dt.date(2027, 3, 31), dt.date(2026, 9, 30))
         cur.execute("SELECT count(*) FROM pnl_vencimento_alteracao WHERE bill_id=2")
         assert cur.fetchone()[0] == 0                                                                                            # titulos sem mudanca nao geram linha
+
+
+# ---------------------------------------------------------------- 21/10/2026: so' fornecedores de verdade, grupo ENERMAIS, periodo livre
+@pytest.fixture()
+def nao_fornecedores(conn, dados):
+    """Soma ao cenario base titulos de setembro que NAO sao fornecedor/cliente de verdade: sem credor (banco), financiamento e empresas do grupo."""
+    rec = lambda cod, nome: [{"financialCategoryId": cod, "financialCategoryName": nome, "financialCategoryRate": 100, "costCenterId": 1, "costCenterName": "CC"}]  # noqa: E731
+    pagar = [
+        _tit(20, 1, "P", "", "2026-09-05", "2026-09-05", 5000.0, rec("2010104", "Material"), baixas=[_pg(1, "2026-09-05", 5000.0)], origem="BC"),          # banco, sem credor
+        _tit(21, 1, "P", "BANCO Y", "2026-09-06", "2026-09-06", 4000.0, rec("2030405", "Banco Y | Capital de Giro | Ct. 1"), baixas=[_pg(1, "2026-09-06", 4000.0)]),   # financiamento
+        _tit(22, 1, "P", "ENERMAIS ENERGIA LTDA", "2026-09-07", "2026-09-07", 3000.0, rec("2010104", "Material"), baixas=[_pg(1, "2026-09-07", 3000.0)]),         # grupo
+    ]
+    receber = [_tit(30, 1, "R", "ENERMAIS CONSTRUTORA LTDA - CNPJ 12.345.678/0001-90", "2026-09-02", "2026-09-02", 8000.0, rec("1010101", "Receita"), numero="NF-G")]
+    _gravar(conn, "P", pagar)
+    _gravar(conn, "R", receber)
+
+
+def test_prazos_e_gasto_so_com_fornecedores_de_verdade(conn, nao_fornecedores):
+    r = I.prazo_medio(conn, "P", "2026-09")
+    assert r["n"] == 2 and r["n_fora"] == 3 and r["simples"] == 15 and r["ponderado"] == 18            # igual ao cenario base: o resto ficou de fora
+    tudo = I.prazo_medio(conn, "P", "2026-09", completo=True)
+    assert tudo["n"] == 5 and tudo["ponderado"] < 18 and tudo["simples"] < 15                           # prazo zero puxava a media para baixo
+    assert I.prazo_medio(conn, "R", "2026-09")["n_fora"] == 1 and I.prazo_medio(conn, "R", "2026-09", completo=True)["n"] == 4
+    assert I.gasto_pago(conn, "2026-09", HOJE)["total"] == 400.0                                         # so' FORN 1 e FORN 2
+    assert I.gasto_pago(conn, "2026-09", HOJE, completo=True)["total"] == 400.0 + 5000 + 4000 + 3000
+    c, c_tudo = I.ciclo_e_capital(conn, "2026-09", hoje=HOJE), I.ciclo_e_capital(conn, "2026-09", hoje=HOJE, completo=True)
+    assert c["completo"] is False and c_tudo["completo"] is True and c["ciclo_ponderado"] != c_tudo["ciclo_ponderado"]
+
+
+def test_periodo_livre_prazos_e_gasto(conn, dados):
+    um = I.prazo_medio(conn, "P", "2026-09", mes_ini="2026-08")
+    assert um["n"] == 3                                                                                   # agosto (FORN 3) + setembro (FORN 1 e 2)
+    g = I.gasto_pago(conn, "2026-10", HOJE, mes_ini="2026-09")
+    assert g["total"] == 400.0 and g["dias"] == (HOJE - dt.date(2026, 9, 1)).days + 1                    # a parcela do caminhao (financiamento, paga em 01/10) fica de fora...
+    assert I.gasto_pago(conn, "2026-10", HOJE, mes_ini="2026-09", completo=True)["total"] == 400.0 + 1000.0   # ...e entra no "incluir tudo"
+    assert I.ciclo_e_capital(conn, "2026-10", hoje=HOJE, mes_ini="2026-09")["mes_ini"] == "2026-09"
+
+
+def test_a_receber_sem_clientes_do_grupo(conn, nao_fornecedores):
+    r = I.receitas_em_aberto(conn, HOJE)
+    assert [x["cliente"] for x in r] == ["CLIENTE A", "CLIENTE D"]                                      # grupo ENERMAIS fora (mesmo com ' - CNPJ ...' no nome)
+    assert "ENERMAIS CONSTRUTORA LTDA - CNPJ 12.345.678/0001-90" in [x["cliente"] for x in I.receitas_em_aberto(conn, HOJE, completo=True)]
+    v, p = I.data_posicao("2026-10", HOJE)
+    assert I.inadimplencia(conn, v, p)["receber"]["total"] == 1000.0
+    assert I.inadimplencia(conn, v, p, completo=True)["receber"]["total"] == 9000.0

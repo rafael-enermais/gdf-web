@@ -782,6 +782,105 @@ def agrupar_demais_obras(ob: dict, com_projecao, n: int = 5) -> dict:
     return {**ob, "linhas": ficam}
 
 
+def somar_obras(obs: list) -> dict | None:
+    """Soma a tabela de Obras de varios meses (cada item = resultado de `obras_do_dre`, SEM reagrupar): receita e custo por obra; as obras que ja vinham em 'DEM'
+    (sem codigo proprio no de-para) seguem somadas em 'DEM'. BDI e margem refeitos sobre as somas. A regra das 5 maiores etc. (`agrupar_demais_obras`) vale depois, sobre o periodo.
+    None se a lista e' vazia. Devolve o mesmo formato de `obras_do_dre` (+ 'meses' = quantos meses entraram)."""
+    obs = [o for o in (obs or []) if o]
+    if not obs:
+        return None
+    por, dem = {}, {"receita": 0.0, "custo": 0.0, "n": 0}
+    for ob in obs:
+        for l in ob["linhas"]:
+            if l["obra"] == "DEM":
+                dem["receita"] += l["receita"]
+                dem["custo"] += l["custo"]
+                dem["n"] = max(dem["n"], l.get("n", 0))
+                continue
+            a = por.setdefault(l["obra"], {"obra": l["obra"], "nome": "", "receita": 0.0, "custo": 0.0})
+            a["receita"] += l["receita"]
+            a["custo"] += l["custo"]
+            a["nome"] = l.get("nome") or a["nome"]
+    linhas = [{**a, "receita": round(a["receita"], 2), "custo": round(a["custo"], 2)} for a in por.values()]
+    if dem["n"] or abs(dem["receita"]) > 0.005 or abs(dem["custo"]) > 0.005:
+        linhas.append({"obra": "DEM", "nome": f"Demais obras ({dem['n']})", "receita": round(dem["receita"], 2), "custo": round(dem["custo"], 2), "n": dem["n"]})
+    for l in linhas:
+        l["bdi"] = round(l["receita"] + l["custo"], 2)
+        l["margem"] = round(l["bdi"] / l["receita"], 4) if abs(l["receita"]) > 0.005 else None
+    linhas.sort(key=lambda l: (l["obra"] == "DEM", -l["receita"]))
+    rt, ct = round(sum(l["receita"] for l in linhas), 2), round(sum(l["custo"] for l in linhas), 2)
+    proprias = [l for l in linhas if l["obra"] != "DEM"]
+    return {"linhas": linhas, "total": {"receita": rt, "custo": ct, "bdi": round(rt + ct, 2), "margem": round((rt + ct) / rt, 4) if abs(rt) > 0.005 else None},
+            "top_lucro": sorted(proprias, key=lambda l: -l["bdi"])[:5], "top_prejuizo": sorted((l for l in proprias if l["bdi"] < 0), key=lambda l: l["bdi"])[:5],
+            "meses": len(obs), "importacao_id": None, "arquivo": f"{len(obs)} meses somados"}
+
+
+def somar_projecoes(projs: list) -> dict | None:
+    """Soma a projecao x realizado (`projecao_x_realizado`) de varios meses, por obra. None se nenhum mes tem projecao. 'meses' = quantos meses entraram."""
+    projs = [p for p in (projs or []) if p]
+    if not projs:
+        return None
+    por = {}
+    for p in projs:
+        for x in p["linhas"]:
+            a = por.setdefault(x["codigo"], {"codigo": x["codigo"], "nome": x.get("nome") or "", "receita_proj": 0.0, "receita_real": 0.0, "bdi_proj": 0.0, "bdi_real": 0.0})
+            for k in ("receita_proj", "receita_real", "bdi_proj", "bdi_real"):
+                a[k] += x[k]
+    linhas = []
+    for a in por.values():
+        a = {k: (round(v, 2) if isinstance(v, float) else v) for k, v in a.items()}
+        a["desvio"] = round(a["receita_real"] - a["receita_proj"], 2)
+        a["desvio_pct"] = round(a["desvio"] / a["receita_proj"], 4) if abs(a["receita_proj"]) > 0.005 else None
+        a["desvio_bdi"] = round(a["bdi_real"] - a["bdi_proj"], 2)
+        linhas.append(a)
+    soma = lambda f: round(sum(f(p) for p in projs), 2)          # noqa: E731
+    return {"linhas": linhas, "total": {"receita_proj": soma(lambda p: p["total"]["receita_proj"]), "receita_real": soma(lambda p: p["total"]["receita_real"]),
+                                        "bdi_proj": soma(lambda p: p["total"]["bdi_proj"])},
+            "receita_proj_total": soma(lambda p: p["receita_proj_total"]), "receita_real_total": soma(lambda p: p["receita_real_total"]), "meses": len(projs)}
+
+
+def termos_do_mes(conn, mes: str) -> dict | None:
+    """Os cinco termos do Resultado de UM mes com DRE CONFIRMADO: receita, custos diretos, BDI (do DRE por obra quando existe), administracao (orcamento ADM: realizado e
+    orcado) e a projecao (receita e BDI previstos). None se o mes nao tem DRE confirmado. Valores None quando falta a fonte (sem orcamento, sem projecao)."""
+    conf = confirmacao_ativa(conn, mes) if confirmacao_instalada(conn) else None
+    if not conf:
+        return None
+    v = dre_de_folhas(conf["valores"] or {})["valores"]
+    ob = obras_do_dre(conn, mes) if mes in meses_com_dre(conn) else None
+    out = {"mes": mes, "rec": ob["total"]["receita"] if ob else v["01"], "cus": abs(ob["total"]["custo"]) if ob else abs(v["04"]), "bdi": ob["total"]["bdi"] if ob else v["05"],
+           "adm_real": None, "adm_orc": None, "rec_p": None, "bdi_p": None}
+    orc = orcamento_ativo(conn) if orcamento_instalado(conn) else None
+    if orc and mes in orc["meses"]:
+        t = orcamento_resumo(conn, orc["id"], mes)["total"]
+        out["adm_real"], out["adm_orc"] = t["realizado"], t["orcado"]
+    if ob:
+        proj = projecao_do_mes(conn, mes)
+        if proj:
+            px = projecao_x_realizado(proj, ob, nomes_obras_extra(conn))
+            if abs(px["receita_proj_total"]) > 0.005:
+                out["rec_p"], out["bdi_p"] = px["receita_proj_total"], px["total"]["bdi_proj"]
+    return out
+
+
+def somar_termos(lista: list) -> dict | None:
+    """Soma os termos de varios meses (`termos_do_mes`) no formato do painel: {chave: (realizado, previsto)} para rec, cus, bdi, adm, res. Administracao e resultado
+    so' existem se TODOS os meses tem orcamento ADM; previsto so' se TODOS os meses tem projecao (senao None: n/d)."""
+    lista = [t for t in (lista or []) if t]
+    if not lista:
+        return None
+    tem = lambda k: all(t[k] is not None for t in lista)          # noqa: E731
+    soma = lambda k: round(sum(t[k] for t in lista), 2)           # noqa: E731
+    rec, cus, bdi = soma("rec"), soma("cus"), soma("bdi")
+    adm_real = soma("adm_real") if tem("adm_real") else None
+    adm_orc = soma("adm_orc") if tem("adm_orc") else None
+    rec_p = soma("rec_p") if tem("rec_p") else None
+    bdi_p = soma("bdi_p") if tem("bdi_p") else None
+    cus_p = round(rec_p - bdi_p, 2) if rec_p is not None and bdi_p is not None else None
+    return {"rec": (rec, rec_p), "cus": (cus, cus_p), "bdi": (bdi, bdi_p), "adm": (adm_real, adm_orc),
+            "res": (round(bdi - adm_real, 2) if adm_real is not None else None, round(bdi_p - adm_orc, 2) if bdi_p is not None and adm_orc is not None else None),
+            "meses": [t["mes"] for t in lista]}
+
+
 def resultado_por_obra_api(conn, mes: str, sem_previsao: bool = False, sem_distrato: bool = True, sem_desfeitos: bool = True) -> dict:
     """Mesmo calculo do resultado_por_conta, agrupado pelo codigo da obra do de-para: {codigo_obra: {linha_dre: valor}} (+ 'sem de-para')."""
     ini = f"{mes}-01"
@@ -976,7 +1075,7 @@ def gravar_confirmacao(conn, mes: str, fontes: dict, valores: dict, usuario: str
 
 # ---------------------------------------------------------------- Administracao (aba do painel): despesas das unidades ADM, credores e de-para "Outros credores/Dir"
 def norm_credor(s) -> str:
-    """Nome do credor para comparar: MAIUSCULAS, sem acento e com espacos simples ('Credor  Exemplo Gama' == 'CREDOR EXEMPLO GAMA')."""
+    """Nome do credor para comparar: MAIUSCULAS, sem acento e com espacos simples ('Credor  Beta Ltda' == 'CREDOR BETA LTDA')."""
     import re
     import unicodedata
     t = unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode()
@@ -1313,12 +1412,13 @@ def folha_colaboradores(conn, mes: str) -> list:
 
 
 def folha_serie(conn) -> list:
-    """[{'mes','colab','salarios','he_pct'}] dos meses com folha importada (para o grafico HE / salarios)."""
+    """[{'mes','colab','salarios','he_pct','he_valor' (HE + DSR s/ HE em R$)}] dos meses com folha importada (para o grafico HE / salarios)."""
     out = []
     for m in folha_meses(conn):
         f = folha_do_mes(conn, m)
         if f:
-            out.append({"mes": m, "colab": f["total"]["colab"], "salarios": f["total"]["salarios"], "he_pct": f["total"]["he_pct"]})
+            out.append({"mes": m, "colab": f["total"]["colab"], "salarios": f["total"]["salarios"], "he_pct": f["total"]["he_pct"],
+                        "he_valor": round(f["total"]["hora_extra"] + f["total"]["dsr_he"], 2)})
     return out
 
 
@@ -1462,13 +1562,15 @@ def orcamento_ativo(conn) -> dict | None:
     return {"id": r[0], "arquivo": r[1], "quem": r[2], "quando": r[3], "inicio": r[4], "meses": meses}
 
 
-def orcamento_resumo(conn, importacao_id: int, mes: str, acumulado: bool = False, top: int = 8) -> dict:
+def orcamento_resumo(conn, importacao_id: int, mes: str, acumulado: bool = False, top: int = 8, mes_ini: str | None = None) -> dict:
     """Orcado x realizado das DESPESAS (codigo 2.*) no mes ou acumulado do inicio do periodo ate o mes. Desvio = realizado - orcado (positivo = gastou mais
-    que o orcado). Devolve {'total': {...}, 'grupos': [linhas T de 2 e 3 niveis], 'acima': [contas que mais passaram], 'abaixo': [contas que mais sobraram]}."""
+    que o orcado). `mes_ini` (so' com acumulado) limita o inicio do periodo: de `mes_ini` a `mes`; sem ele, do primeiro mes do orcamento.
+    Devolve {'total': {...}, 'grupos': [linhas T de 2 e 3 niveis], 'acima': [contas que mais passaram], 'abaixo': [contas que mais sobraram], 'contas': [todas as contas]}."""
     with conn.cursor() as cur:
         if acumulado:
             cur.execute("""SELECT codigo, max(conta), tipo, sum(orcado), sum(realizado) FROM pnl_orcamento_linha
-                           WHERE importacao_id=%s AND mes <= %s::date AND (codigo = '2' OR codigo LIKE '2.%%') GROUP BY codigo, tipo""", (importacao_id, f"{mes}-01"))
+                           WHERE importacao_id=%s AND mes <= %s::date AND mes >= %s::date AND (codigo = '2' OR codigo LIKE '2.%%') GROUP BY codigo, tipo""",
+                        (importacao_id, f"{mes}-01", f"{mes_ini or '0001-01'}-01" if mes_ini else "0001-01-01"))
         else:
             cur.execute("""SELECT codigo, max(conta), tipo, sum(orcado), sum(realizado) FROM pnl_orcamento_linha
                            WHERE importacao_id=%s AND mes = %s::date AND (codigo = '2' OR codigo LIKE '2.%%') GROUP BY codigo, tipo""", (importacao_id, f"{mes}-01"))
@@ -1482,7 +1584,8 @@ def orcamento_resumo(conn, importacao_id: int, mes: str, acumulado: bool = False
     grupos = sorted((r for r in regs if r["tipo"] == "T" and r["codigo"].count(".") in (1, 2)), key=lambda r: r["codigo"])
     contas = [r for r in regs if r["tipo"] in ("R", "M") and (abs(r["orcado"]) > 0.005 or abs(r["realizado"]) > 0.005)]
     return {"total": total, "grupos": grupos, "acima": sorted((r for r in contas if r["desvio"] > 0.005), key=lambda r: -r["desvio"])[:top],
-            "abaixo": sorted((r for r in contas if r["desvio"] < -0.005), key=lambda r: r["desvio"])[:top]}
+            "abaixo": sorted((r for r in contas if r["desvio"] < -0.005), key=lambda r: r["desvio"])[:top],
+            "contas": sorted(contas, key=lambda r: (-r["desvio"], r["codigo"]))}
 
 
 def orcamento_serie_mensal(conn, importacao_id: int) -> list:

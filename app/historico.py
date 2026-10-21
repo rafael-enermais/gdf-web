@@ -173,11 +173,11 @@ def resumo(h: dict) -> dict:
 
 def serie_he_combinada(res_hist: dict | None, serie_app: list) -> list:
     """HE + DSR / remuneracao mes a mes: meses do historico do painel da contabilidade + meses com folha no app (o app vale onde existe).
-    -> [{'mes': 'AAAA-MM', 'he_pct': 0.49, 'origem': 'historico'|'app'}] em ordem de mes. A base do historico (proventos - HE) e' a mesma definicao confirmada."""
+    -> [{'mes': 'AAAA-MM', 'he_pct': 0.49, 'he': R$ de HE (+DSR no app) ou None, 'origem': 'historico'|'app'}] em ordem de mes. A base do historico (proventos - HE) e' a mesma definicao confirmada."""
     por_mes = {}
     for x in (res_hist or {}).get("serie_he", []):
-        por_mes[x["mes"]] = {"mes": x["mes"], "he_pct": x["pct"], "origem": "historico"}
+        por_mes[x["mes"]] = {"mes": x["mes"], "he_pct": x["pct"], "he": x.get("he"), "origem": "historico"}
     for x in serie_app or []:
         if x.get("he_pct") is not None:
-            por_mes[x["mes"]] = {"mes": x["mes"], "he_pct": x["he_pct"], "origem": "app"}
+            por_mes[x["mes"]] = {"mes": x["mes"], "he_pct": x["he_pct"], "he": x.get("he_valor"), "origem": "app"}
     return [por_mes[m] for m in sorted(por_mes)]

@@ -131,3 +131,70 @@ def test_agrupar_demais_obras_cinco_lucros_cinco_prejuizos_e_com_projecao():
     assert round(sum(l["receita"] for l in r["linhas"]), 2) == round(sum(l["receita"] for l in ob["linhas"]), 2)       # totais nao mudam
     assert round(sum(l["custo"] for l in r["linhas"]), 2) == round(sum(l["custo"] for l in ob["linhas"]), 2)
     assert len(ob["linhas"]) == 17 and ob["linhas"][-1]["obra"] == "DEM"           # a entrada nao e alterada
+
+
+# ---------------------------------------------------------------- 21/10/2026: pedidos da contabilidade (PJ nas obras, grupo ENERMAIS, Outros/Dir, obras na aba Pessoas, HE x receita)
+def test_credores_pj_saem_da_lista_das_obras():
+    df = DD.para_df(BASE + [_l("2026-09", "2.01.01.04", "Material | Obra", "PJ UM", "CC 1", "103", "OBRA", 90.0)])     # o PJ UM tambem recebeu por material
+    pj = DD.credores_pj(df)
+    assert pj == {"PJ UM", "PJ DOIS", "PJ TRES", "PJ ESTORNO"}
+    desp = DD.sem_credores(DD.despesas_df(df, ["2.01.02", "2.02.01"]), pj)
+    assert "PJ UM" not in set(desp["credor"]) and {"FORN A", "FORN B"} <= set(desp["credor"])
+    assert DD.sem_credores(df, set()) is df and DD.credores_pj(DD.para_df([])) == set()
+
+
+def test_credores_do_grupo_enermais_fora_das_listas():
+    df = DD.para_df([_l("2026-09", "2.01.02.03", "Horas Extras | Obra", "ENERMAIS CONSTRUTORA LTDA", "CC 1", "103", "OBRA", 10.0),
+                     _l("2026-09", "2.01.02.03", "Horas Extras | Obra", "Enermais Soluções Ltda - CNPJ 1", "CC 1", "103", "OBRA", 20.0),
+                     _l("2026-09", "2.01.02.03", "Horas Extras | Obra", "COLAB X", "CC 1", "103", "OBRA", 30.0)])
+    nuc = ["ENERMAIS CONSTRUTORA", "ENERMAIS SOLUCOES"]
+    assert list(DD.sem_grupo_enermais(df, nuc)["credor"]) == ["COLAB X"]
+    assert DD.sem_grupo_enermais(df, []) is df
+
+
+def test_outros_credores_dir_vira_uma_linha_so():
+    ch = ["CREDOR DIR UM", "CREDOR DIR DOIS"]
+    df = DD.para_df([_l("2026-09", "2.03.01", "Honorários", "Credor Dir Um", "SEDE", "ADM", "ADM", 100.0),
+                     _l("2026-09", "2.03.01", "Honorários", "CREDOR DIR DOIS LTDA", "SEDE", "ADM", "ADM", 50.0),
+                     _l("2026-09", "2.03.01", "Honorários", "FORN A", "SEDE", "ADM", "ADM", 10.0),
+                     _l("2026-09", "2.03.01", "Honorários", "Credor  Dir Dois Ltda", "SEDE", "ADM", "ADM", 5.0)])      # espaco duplo no nome do Sienge
+    m = DD.marcar_outros_dir(df, ch)
+    assert list(m["credor_exib"]) == ["Outros credores/Dir", "Outros credores/Dir", "FORN A", "Outros credores/Dir"]
+    assert m.groupby("credor_exib")["valor"].sum()["Outros credores/Dir"] == 155.0
+    assert list(DD.marcar_outros_dir(df, [])["credor_exib"]) == list(df["credor"])
+    assert len(DD.marcar_outros_dir(DD.para_df([]), ch)) == 0
+
+
+def test_pessoas_por_obra_na_mesma_linguagem_da_aba_obras():
+    nomes = {"103": "ANASTÁCIO - LOTE 11"}
+    df = DD.para_df([_l("2026-09", "2.01.02.03", "Horas Extras | Obra", "COLAB X", "EE - ANASTACIO - LOTE 11", "103", "OBRA", 400.0),
+                     _l("2026-09", "2.01.02.03", "Horas Extras | Obra", "COLAB Y", "CON - ANASTACIO - LOTE 11", "103", "OBRA", 600.0),
+                     _l("2026-09", "2.01.02.03", "Horas Extras | ADM", "COLAB Z", "SEDE", "ADM", "ADM", 50.0),
+                     _l("2026-09", "2.01.02.03", "Horas Extras | Obra", "COLAB W", "CC SOLTO", "", "", 30.0),
+                     _l("2026-09", "2.01.02.03", "Horas Extras | Obra", "COLAB V", "CC OUTRAS", "DEM", "OBRA", 20.0)])
+    ob = DD.agrupar(DD.rotular_obras(df, nomes), "obra_rot", "2026-09")
+    assert ob["linhas"][0] == {"chave": "103 · ANASTÁCIO - LOTE 11", "acumulado": 1000.0, "mes": 1000.0}      # dois centros de custo, uma obra
+    assert {x["chave"] for x in ob["linhas"]} == {"103 · ANASTÁCIO - LOTE 11", "Administração", "Sem obra (CC SOLTO)", "Demais obras"}
+    assert DD.rotular_obras(df, {}).iloc[0]["obra_rot"] == "103"                                              # sem nome no de-para: so' o codigo
+
+
+def test_tabela_pessoas_conta_so_os_meses_do_periodo_escolhido():
+    pes = DD.pessoas_df(DD.para_df(BASE))
+    ano = DD.tabela_pessoas(pes, "2026-09", 10, 40)
+    per = DD.tabela_pessoas(pes, "2026-09", 10, 40, meses=["2026-09"])                    # periodo de um mes so': nada "antes"
+    assert next(x for x in ano if x["conta"] == "Horas Extras")["acum_antes"] == 400.0
+    assert next(x for x in per if x["conta"] == "Horas Extras")["acum_antes"] == 0.0
+
+
+def test_he_x_receita_variacao_sobre_o_mes_anterior_e_periodo_x_periodo():
+    he = [{"mes": "2026-06", "he_pct": 0.04, "he": 100.0}, {"mes": "2026-07", "he_pct": 0.05, "he": 150.0}, {"mes": "2026-08", "he_pct": 0.05, "he": 150.0},
+          {"mes": "2026-09", "he_pct": 0.06, "he": 300.0}]
+    rec = [{"mes": m, "receita": r} for m, r in (("2026-06", 1000.0), ("2026-07", 1000.0), ("2026-08", 1200.0), ("2026-09", 1500.0))]
+    ev = DD.evolucao_he_receita(he, rec, ["2026-06", "2026-07", "2026-08", "2026-09"])
+    assert ev[0]["var_he"] is None and ev[1]["var_he"] == 0.5 and ev[1]["var_receita"] == 0.0
+    assert ev[3]["var_he"] == 1.0 and ev[3]["var_receita"] == 0.25 and ev[3]["he_pct"] == 0.06
+    cp = DD.comparar_periodos(he, rec, "2026-08", "2026-09")                              # ago-set x jun-jul
+    assert cp["he_atual"] == 450.0 and cp["he_anterior"] == 250.0 and cp["var_he"] == 0.8
+    assert cp["receita_atual"] == 2700.0 and cp["receita_anterior"] == 2000.0 and cp["var_receita"] == 0.35
+    sem = DD.comparar_periodos(he, rec, "2026-09", "2026-10")                             # outubro sem dado: nao compara periodo incompleto
+    assert sem["var_he"] is None and sem["var_receita"] is None

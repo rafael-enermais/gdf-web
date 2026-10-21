@@ -6,6 +6,9 @@ Sem streamlit: so' SQL + contas simples (testavel). Regras (combinadas com a con
   - Capital de giro: gasto = baixas a pagar em dinheiro do mes (pagamento, adiantamento, pagamento via movimento bancario), sem previsao.
   - Inadimplencia: titulos vencidos e ainda nao pagos NA DATA DE POSICAO (hoje, ou fim do mes escolhido), sem previsao. O vencimento usado e' o
     ORIGINAL do Sienge quando a coluna existe (renegociacao nao esconde a divida); senao o vencimento do titulo.
+  - Fornecedores de verdade (21/10/2026, Rafael): por padrao PMR/PMP e gasto IGNORAM o que nao e' operacao com fornecedor/cliente: lancamentos sem credor/cliente e os
+    de movimento bancario/caixa (transferencias, tarifas), titulos de financiamento/capital de giro (planos 2.03 e 2.05) e operacoes com empresas do grupo ENERMAIS
+    (grupo_enermais.py). A caixa "incluir tudo" volta ao calculo anterior para comparar. Dias saem em numero inteiro.
   - Financiamentos: planos 2.03.02 (juros), 2.03.04 (capital de giro bancario) e os planos 2.05 que a contabilidade separou (PLANOS_2_05_FINANCIAMENTO). Saldo = parcelas ainda nao pagas.
   - Investimentos (aba a parte, 13/10/2026 -> 20/10/2026): o restante do 2.05 ja' puxado. O contrato vai para o grupo do seu principal; os juros (2.03.02) seguem o contrato.
 """
@@ -16,6 +19,7 @@ import datetime as dt
 import re
 
 import painel_db as P
+from grupo_enermais import nucleos_do_grupo, sql_nucleo
 
 # baixas a pagar que sao saida de caixa: 1 Pagamento, 10 Adiantamento, 1002 Movimento bancario: Pagamento (cancelamento/substituicao/abatimento nao sao dinheiro; 1030 e' transferencia)
 TIPOS_CAIXA_PAGAR = (1, 10, 1002)
@@ -72,42 +76,77 @@ def coluna_vencimento(conn) -> str:
 
 
 # ---------------------------------------------------------------- prazos medios, ciclo e capital de giro
-def prazo_medio(conn, lado: str, mes: str, acumulado: bool = False) -> dict:
-    """Prazo medio (dias entre emissao e vencimento) dos titulos EMITIDOS no mes (ou de janeiro ate o mes). {'n','simples','ponderado'} (None se nao ha titulos)."""
-    ini, _, prox = _limites(mes)
-    if acumulado:
-        ini = dt.date(ini.year, 1, 1)
+ORIGENS_BANCO = ("BC", "CX")                    # lancamentos de banco/caixa (transferencias, tarifas): nao sao titulos de fornecedor/cliente
+PLANOS_FINANCEIROS = ("2.03", "2.05")           # financiamento, juros, capital de giro e investimentos: emprestimo nao e' compra a prazo
+
+
+def _so_fornecedores(grupo: list) -> tuple:
+    """(sql, params) que tira do titulo `t` o que nao e' fornecedor/cliente: sem nome, banco/caixa, financiamento (so' a pagar) e empresas do grupo."""
+    origens = ", ".join(f"'{o}'" for o in ORIGENS_BANCO)
+    planos = " OR ".join(f"rf.plano_cod LIKE '{p}%%'" for p in PLANOS_FINANCEIROS)
+    sql = (f"AND COALESCE(trim(t.contraparte_nome),'') <> '' AND COALESCE(upper(t.origem),'') NOT IN ({origens}) "
+           f"AND NOT (t.lado='P' AND EXISTS (SELECT 1 FROM pnl_v_rateio rf WHERE rf.lado=t.lado AND rf.bill_id=t.bill_id AND rf.installment_id=t.installment_id AND ({planos}))) "
+           f"AND {sql_nucleo('t.contraparte_nome')} <> ALL(%(grupo)s)")
+    return sql, {"grupo": list(grupo) or ["(sem grupo)"]}
+
+
+def _limites_periodo(mes_ini: str, mes_fim: str) -> tuple:
+    ini, _, _ = _limites(mes_ini)
+    _, fim, prox = _limites(mes_fim)
+    return ini, fim, prox
+
+
+def prazo_medio(conn, lado: str, mes: str, acumulado: bool = False, mes_ini: str | None = None, completo: bool = False) -> dict:
+    """Prazo medio (dias entre emissao e vencimento) dos titulos EMITIDOS entre `mes_ini` e `mes` (so' o mes; ou de janeiro quando acumulado=True).
+    Padrao: so' fornecedores/clientes de verdade (veja o topo do arquivo); completo=True conta tudo. Dias em numero inteiro.
+    -> {'n','simples','ponderado','n_fora'} (n_fora = titulos que ficaram de fora; simples/ponderado None se nao ha titulos)."""
+    if mes_ini is None:
+        mes_ini = f"{mes[:4]}-01" if acumulado else mes
+    ini, _, prox = _limites_periodo(mes_ini, mes)
+    filtro, par = ("", {}) if completo else _so_fornecedores(nucleos_do_grupo(conn))
+    par.update({"lado": lado, "ini": ini, "prox": prox})
     with conn.cursor() as cur:
-        cur.execute(f"""SELECT count(*), avg(d), sum(d * v) / NULLIF(sum(v), 0) FROM (
-                          SELECT GREATEST(t.data_vencimento - t.data_emissao, 0)::float AS d, t.valor_original::float AS v FROM pnl_titulo t
-                          WHERE t.lado=%s AND t.data_emissao >= %s AND t.data_emissao < %s AND t.data_vencimento IS NOT NULL AND t.valor_original > 0
-                            {_prev(False)} {_desfeitos()}) x""", (lado, ini, prox))
-        n, simples, pond = cur.fetchone()
-    return {"n": int(n or 0), "simples": None if simples is None else round(float(simples), 1), "ponderado": None if pond is None else round(float(pond), 1)}
+        cur.execute(f"""SELECT count(*) FILTER (WHERE ok), avg(d) FILTER (WHERE ok), sum(d * v) FILTER (WHERE ok) / NULLIF(sum(v) FILTER (WHERE ok), 0), count(*) FILTER (WHERE NOT ok)
+                        FROM (SELECT GREATEST(t.data_vencimento - t.data_emissao, 0)::float AS d, t.valor_original::float AS v,
+                                     (true {filtro}) AS ok
+                              FROM pnl_titulo t
+                              WHERE t.lado=%(lado)s AND t.data_emissao >= %(ini)s AND t.data_emissao < %(prox)s AND t.data_vencimento IS NOT NULL AND t.valor_original > 0
+                                {_prev(False)} {_desfeitos()}) x""", par)
+        n, simples, pond, fora = cur.fetchone()
+    return {"n": int(n or 0), "n_fora": int(fora or 0), "simples": None if simples is None else int(round(float(simples))),
+            "ponderado": None if pond is None else int(round(float(pond)))}
 
 
-def gasto_pago(conn, mes: str, hoje: dt.date | None = None) -> dict:
-    """Gasto do mes = baixas a pagar em dinheiro (sem previsao). Diario = mensal / dias (no mes corrente, dias decorridos). {'mensal','diario','dias'}."""
-    ini, fim, prox = _limites(mes)
+def gasto_pago(conn, mes: str, hoje: dt.date | None = None, mes_ini: str | None = None, completo: bool = False) -> dict:
+    """Gasto do periodo (`mes_ini` a `mes`; padrao so' o mes) = baixas a pagar em dinheiro, sem previsao; por padrao so' com fornecedores de verdade (como os prazos).
+    Diario = total / dias (no periodo em andamento, dias decorridos ate hoje). {'mensal' (= total do periodo), 'total', 'diario', 'dias'}."""
+    mes_ini = mes_ini or mes
+    ini, fim, prox = _limites_periodo(mes_ini, mes)
+    filtro, par = ("", {}) if completo else _so_fornecedores(nucleos_do_grupo(conn))
+    par.update({"ini": ini, "prox": prox})
     with conn.cursor() as cur:
         cur.execute(f"""SELECT COALESCE(sum(b.liquido), 0) FROM pnl_v_baixa b
                         LEFT JOIN pnl_titulo t ON t.lado=b.lado AND t.bill_id=b.bill_id AND t.installment_id=b.installment_id
-                        WHERE b.lado='P' AND b.tipo_oper_id IN {TIPOS_CAIXA_PAGAR} AND b.data_pagamento >= %s AND b.data_pagamento < %s
-                          {_prev(False)}""", (ini, prox))
-        mensal = float(cur.fetchone()[0] or 0)
+                        WHERE b.lado='P' AND b.tipo_oper_id IN {TIPOS_CAIXA_PAGAR} AND b.data_pagamento >= %(ini)s AND b.data_pagamento < %(prox)s
+                          {_prev(False)} {filtro}""", par)
+        total = float(cur.fetchone()[0] or 0)
     hoje = hoje or dt.date.today()
-    dias = fim.day if hoje > fim or hoje < ini else hoje.day
-    return {"mensal": round(mensal, 2), "diario": round(mensal / dias, 2) if dias else 0.0, "dias": dias}
+    ate = fim if hoje > fim else max(hoje, ini)
+    dias = (ate - ini).days + 1
+    return {"mensal": round(total, 2), "total": round(total, 2), "diario": round(total / dias, 2) if dias else 0.0, "dias": dias}
 
 
-def ciclo_e_capital(conn, mes: str, acumulado: bool = False, hoje: dt.date | None = None) -> dict:
-    """PMR, PMP, ciclo (PMR - PMP) e necessidade de capital de giro nos cenarios simples e ponderado."""
-    pmr, pmp = prazo_medio(conn, "R", mes, acumulado), prazo_medio(conn, "P", mes, acumulado)
-    gasto = gasto_pago(conn, mes, hoje)
-    out = {"pmr": pmr, "pmp": pmp, "gasto": gasto}
+def ciclo_e_capital(conn, mes: str, acumulado: bool = False, hoje: dt.date | None = None, mes_ini: str | None = None, completo: bool = False) -> dict:
+    """PMR, PMP, ciclo (PMR - PMP) e necessidade de capital de giro nos cenarios simples e ponderado (dias inteiros; NCG = gasto diario x ciclo, so' se positivo)."""
+    if mes_ini is None:
+        mes_ini = f"{mes[:4]}-01" if acumulado else mes
+    pmr = prazo_medio(conn, "R", mes, mes_ini=mes_ini, completo=completo)
+    pmp = prazo_medio(conn, "P", mes, mes_ini=mes_ini, completo=completo)
+    gasto = gasto_pago(conn, mes, hoje, mes_ini=mes_ini, completo=completo)
+    out = {"pmr": pmr, "pmp": pmp, "gasto": gasto, "completo": completo, "mes_ini": mes_ini, "mes_fim": mes}
     for cen in ("simples", "ponderado"):
         r, p = pmr[cen], pmp[cen]
-        ciclo = None if r is None or p is None else round(r - p, 1)
+        ciclo = None if r is None or p is None else r - p
         out["ciclo_" + cen] = ciclo
         out["ncg_" + cen] = None if ciclo is None else round(gasto["diario"] * max(ciclo, 0), 2)
     return out
@@ -117,13 +156,18 @@ def ciclo_e_capital(conn, mes: str, acumulado: bool = False, hoje: dt.date | Non
 FAIXAS = (("1 a 30 dias", 1, 30), ("31 a 60 dias", 31, 60), ("61 a 90 dias", 61, 90), ("Mais de 90 dias", 91, 10 ** 6))
 
 
-def _abertos_sql(venc: str, incluir_previsao: bool) -> str:
+def _sem_clientes_do_grupo(completo: bool) -> str:
+    """Tira do A RECEBER os clientes que sao empresas do grupo ENERMAIS (nao e' cobranca de cliente de verdade). Usa o parametro %(grupo)s."""
+    return "" if completo else f"AND NOT (t.lado='R' AND {sql_nucleo('t.contraparte_nome')} = ANY(%(grupo)s))"
+
+
+def _abertos_sql(venc: str, incluir_previsao: bool, completo: bool = True) -> str:
     """CTE comum: titulos vencidos (vencimento <= %(venc_ate)s) e ainda nao quitados ate %(pago_ate)s, com o valor em aberto."""
     return f"""WITH pg AS (SELECT lado, bill_id, installment_id, sum(bruto) AS v FROM pnl_v_baixa WHERE data_pagamento <= %(pago_ate)s GROUP BY 1,2,3)
                SELECT t.lado, t.contraparte_nome, t.numero_doc, {venc} AS venc, t.valor_original - COALESCE(pg.v, 0) AS aberto
                FROM pnl_titulo t LEFT JOIN pg ON pg.lado=t.lado AND pg.bill_id=t.bill_id AND pg.installment_id=t.installment_id
                WHERE t.lado IN ('P','R') AND {venc} <= %(venc_ate)s AND t.valor_original - COALESCE(pg.v, 0) > 0.01
-                 {_prev(incluir_previsao)} {_desfeitos()}"""
+                 {_prev(incluir_previsao)} {_desfeitos()} {_sem_clientes_do_grupo(completo)}"""
 
 
 def data_posicao(mes: str, hoje: dt.date | None = None, ate_hoje: bool = True) -> tuple:
@@ -136,11 +180,11 @@ def data_posicao(mes: str, hoje: dt.date | None = None, ate_hoje: bool = True) -
     return fim, fim
 
 
-def inadimplencia(conn, venc_ate: dt.date, pago_ate: dt.date, incluir_previsao: bool = False, topo: int = 15) -> dict:
-    """Vencidos e nao pagos na posicao: totais a receber e a pagar, por faixa de atraso e por cliente/credor."""
+def inadimplencia(conn, venc_ate: dt.date, pago_ate: dt.date, incluir_previsao: bool = False, topo: int = 15, completo: bool = False) -> dict:
+    """Vencidos e nao pagos na posicao: totais a receber e a pagar, por faixa de atraso e por cliente/credor. Por padrao o a receber nao inclui clientes do grupo ENERMAIS."""
     venc = coluna_vencimento(conn)
     with conn.cursor() as cur:
-        cur.execute(_abertos_sql(venc, incluir_previsao), {"venc_ate": venc_ate, "pago_ate": pago_ate})
+        cur.execute(_abertos_sql(venc, incluir_previsao, completo), {"venc_ate": venc_ate, "pago_ate": pago_ate, "grupo": nucleos_do_grupo(conn) or ["(sem grupo)"]})
         linhas = cur.fetchall()
     out = {"venc_ate": venc_ate, "pago_ate": pago_ate, "usa_vencimento_original": venc.startswith("COALESCE")}
     for lado, nome in (("R", "receber"), ("P", "pagar")):
@@ -161,16 +205,18 @@ def inadimplencia(conn, venc_ate: dt.date, pago_ate: dt.date, incluir_previsao: 
     return out
 
 
-def receitas_em_aberto(conn, pago_ate: dt.date, incluir_previsao: bool = False, limite: int = 500) -> list:
-    """Contas a receber ainda nao recebidas na posicao (vencidas e a vencer): cliente, nota, vencimento (original quando existe), valor em aberto."""
+def receitas_em_aberto(conn, pago_ate: dt.date, incluir_previsao: bool = False, limite: int = 500, completo: bool = False) -> list:
+    """Contas a receber ainda nao recebidas na posicao (vencidas e a vencer): cliente, nota, vencimento (original quando existe), valor em aberto.
+    Por padrao sem clientes do grupo ENERMAIS (completo=True mostra todos)."""
     venc = coluna_vencimento(conn)
     sql = f"""WITH pg AS (SELECT lado, bill_id, installment_id, sum(bruto) AS v FROM pnl_v_baixa WHERE data_pagamento <= %s GROUP BY 1,2,3)
               SELECT t.contraparte_nome, t.numero_doc, {venc} AS venc, t.valor_original - COALESCE(pg.v, 0) AS aberto
               FROM pnl_titulo t LEFT JOIN pg ON pg.lado=t.lado AND pg.bill_id=t.bill_id AND pg.installment_id=t.installment_id
-              WHERE t.lado='R' AND t.valor_original - COALESCE(pg.v, 0) > 0.01 {_prev(incluir_previsao)} {_desfeitos()}
-              ORDER BY venc NULLS LAST, t.contraparte_nome LIMIT %s"""
+              WHERE t.lado='R' AND t.valor_original - COALESCE(pg.v, 0) > 0.01 {_prev(incluir_previsao)} {_desfeitos()} {_sem_clientes_do_grupo(completo)}
+              ORDER BY venc NULLS LAST, t.contraparte_nome LIMIT %(limite)s"""
+    sql = sql.replace("data_pagamento <= %s", "data_pagamento <= %(pago_ate)s")
     with conn.cursor() as cur:
-        cur.execute(sql, (pago_ate, limite))
+        cur.execute(sql, {"pago_ate": pago_ate, "limite": limite, "grupo": nucleos_do_grupo(conn) or ["(sem grupo)"]})
         return [{"cliente": c or "(sem nome)", "nota": n or "", "vencimento": v, "valor": round(float(a), 2), "atraso": max((pago_ate - v).days, 0) if v else 0}
                 for c, n, v, a in cur.fetchall()]
 
