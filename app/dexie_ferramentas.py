@@ -25,6 +25,7 @@ import painel_db as P
 import periodo as PER
 from fuso import agora_br
 
+MAX_SERIE = 24                   # meses por serie (cada mes monta um DRE)
 MAX_MESES = 36                    # janela maxima de uma consulta (protege tempo e custo)
 MAX_LINHAS_TABELA = 200           # linhas guardadas para a tela/Excel
 MAX_ITENS_LISTA = 40              # itens de lista que seguem para o modelo (o resto vira um aviso "N omitidos")
@@ -159,21 +160,42 @@ def resultado_periodo(conn, e) -> tuple:
     return res, _tabela(linhas)
 
 
+def _dre_resolvido(conn, mes: str) -> tuple:
+    """DRE do mes pela mesma prioridade do app: confirmado > oficial (PDF) > reconstruido pela API (a conferir). Devolve (dre, origem)."""
+    conf = _tenta(conn, P.confirmacao_ativa, mes) if P.confirmacao_instalada(conn) else None
+    if conf:
+        return P.dre_de_folhas(conf["valores"] or {}), "DRE confirmado pela contabilidade"
+    imp = _tenta(conn, P.dre_importacao_ativa, mes)
+    if imp:
+        contas = [{"plano_cod": c, "plano_nome": "", "valor": v} for c, v in P.dre_contas_importadas(conn, imp["id"]).items()]
+        return P.dre_do_mes(contas), "DRE oficial (PDF), ainda nao confirmado"
+    return P.dre_do_mes(P.resultado_por_conta(conn, mes, sem_previsao=True) or []), "Reconstruido pela API do Sienge (a conferir)"
+
+
 def dre_mes(conn, e) -> tuple:
     """DRE gerencial do mes (linhas e valores): confirmado > oficial (PDF) > reconstruido pela API (a conferir)."""
     mes = _mes(e.get("mes"))
-    conf = _tenta(conn, P.confirmacao_ativa, mes) if P.confirmacao_instalada(conn) else None
-    if conf:
-        d, origem = P.dre_de_folhas(conf["valores"] or {}), "DRE confirmado pela contabilidade"
-    else:
-        imp = _tenta(conn, P.dre_importacao_ativa, mes)
-        if imp:
-            contas = [{"plano_cod": c, "plano_nome": "", "valor": v} for c, v in P.dre_contas_importadas(conn, imp["id"]).items()]
-            d, origem = P.dre_do_mes(contas), "DRE oficial (PDF), ainda nao confirmado"
-        else:
-            d, origem = P.dre_do_mes(P.resultado_por_conta(conn, mes, sem_previsao=True) or []), "Reconstruido pela API do Sienge (a conferir)"
+    d, origem = _dre_resolvido(conn, mes)
     linhas = [{"codigo": c, "linha": n, "valor": v} for c, n, v in d["linhas"] if abs(v or 0) > 0.004 or c in ("01", "05", "11", "14")]
     return {"mes": mes, "origem": origem, "linhas": linhas}, _tabela(linhas)
+
+
+def serie_mensal(conn, e) -> tuple:
+    """Serie mes a mes (receita bruta, custos operacionais diretos, BDI e margem) pelo DRE de cada mes, qualquer fonte (confirmado, PDF ou API a conferir), numa so consulta."""
+    ini, fim = _intervalo(e.get("mes_ini"), e.get("mes_fim"))
+    meses = PER.meses_entre(ini, fim)
+    if len(meses) > MAX_SERIE:
+        raise ErroEntrada(f"Serie longa demais (maximo {MAX_SERIE} meses por consulta).")
+    linhas = []
+    for m in meses:
+        d, origem = _dre_resolvido(conn, m)
+        v = d.get("valores") or {}
+        rec, cus, bdi = v.get("01") or 0.0, abs(v.get("04") or 0.0), v.get("05") or 0.0
+        if abs(rec) < 0.005 and cus < 0.005 and origem.startswith("Reconstruido"):
+            continue                                     # mes sem nenhum dado (futuro ou nao carregado)
+        linhas.append({"mes": m, "receita": round(rec, 2), "custo_direto": round(cus, 2), "bdi": round(bdi, 2),
+                       "margem_bdi_pct": round(100.0 * bdi / rec, 1) if abs(rec) > 0.005 else None, "origem": origem})
+    return {"periodo": f"{ini} a {fim}", "meses_com_dados": len(linhas), "serie": linhas}, _tabela(linhas)
 
 
 def obras_mes(conn, e) -> tuple:
@@ -342,7 +364,9 @@ TOOLS = [
     _t("visao_geral", "Mostra o que existe no banco: meses com dados do Sienge, DRE confirmado, DRE oficial (PDF), folha, projecao, orcamento ADM e as ultimas sincronizacoes. Chame primeiro para saber quais meses existem."),
     _t("resultado_periodo", "Resultado da Diretoria (Receita - Custos diretos = BDI - Administracao = Resultado), realizado e previsto, mes a mes e somado. So' meses com DRE confirmado entram na soma.",
        {"mes_ini": _INI, "mes_fim": _FIM}, ["mes_ini", "mes_fim"]),
-    _t("dre_mes", "DRE gerencial de UM mes (linhas e valores) e a origem do dado (confirmado, PDF oficial ou reconstruido pela API). Para varios meses use resultado_periodo ou receita_mensal.", {"mes": _MES}, ["mes"]),
+    _t("dre_mes", "DRE gerencial de UM mes (linhas e valores) e a origem do dado (confirmado, PDF oficial ou reconstruido pela API). Para varios meses use serie_mensal (receita/custo/BDI por mes) ou resultado_periodo.", {"mes": _MES}, ["mes"]),
+    _t("serie_mensal", "Receita bruta, custos operacionais diretos, BDI e margem de CADA mes do periodo numa so consulta (maximo 24 meses), com a origem de cada mes (confirmado, PDF ou API a conferir). Use para graficos e comparacoes mes a mes; depois chame montar_grafico (x = mes).",
+       {"mes_ini": _INI, "mes_fim": _FIM}, ["mes_ini", "mes_fim"]),
     _t("obras_mes", "Receita, custo, BDI e margem por obra no mes, com as maiores lucros e prejuizos (DRE oficial por obra).", {"mes": _MES, "limite": _LIM}, ["mes"]),
     _t("despesas", "Contas pagas no periodo (mesma base da aba Despesas), agrupadas por conta, credor, obra, centro_de_custo ou mes.",
        {"mes_ini": _INI, "mes_fim": _FIM, "agrupar_por": {"type": "string", "enum": list(_AGRUPAR), "description": "Como agrupar (padrao: conta)."}, "limite": _LIM,
@@ -362,7 +386,7 @@ TOOLS = [
        {"tipo": {"type": "string", "enum": ["DRE", "FOLHA", "PROJECAO", "ORCAMENTO", "HISTORICO"]}, "limite": _LIM}),
 ]
 
-FUNCOES = {"visao_geral": visao_geral, "resultado_periodo": resultado_periodo, "dre_mes": dre_mes, "obras_mes": obras_mes, "despesas": despesas, "administracao": administracao,
+FUNCOES = {"visao_geral": visao_geral, "resultado_periodo": resultado_periodo, "dre_mes": dre_mes, "serie_mensal": serie_mensal, "obras_mes": obras_mes, "despesas": despesas, "administracao": administracao,
            "pessoas": pessoas, "conhecimento": conhecimento, "indicadores": indicadores, "financiamentos": financiamentos, "receita_mensal": receita_mensal, "sincronizacoes": sincronizacoes, "logs": logs,
            "importacoes": importacoes}
 

@@ -250,6 +250,8 @@ def test_ferramentas_leem_o_banco_real(conn):
     assert "aviso" in r and r["meses_sem_dre_confirmado"] == ["2026-08", "2026-09"]                # nada confirmado: o Dexie diz isso, nao inventa
     m, tab = FERR.executar(conn, "dre_mes", {"mes": "2026-09"})
     assert m["linhas"] and "oficial" in m["origem"] and tab
+    sm, tab = FERR.executar(conn, "serie_mensal", {"mes_ini": "2026-08", "mes_fim": "2026-09"})
+    assert sm["serie"] and {"mes", "receita", "custo_direto", "bdi", "origem"} <= set(tab[0])
     o, _ = FERR.executar(conn, "obras_mes", {"mes": "2026-09"})
     assert "erro" not in o and (o.get("obras") or o.get("aviso"))
     assert "aviso" in FERR.executar(conn, "obras_mes", {"mes": "2025-01"})[0]
@@ -728,3 +730,24 @@ def test_prompt_manda_usar_serie_pronta_e_nao_dre_mes_em_laco():
     s = DC.montar_system("ana@x", date(2026, 10, 13))
     assert "resultado_periodo" in s and "Nunca chame dre_mes mês a mês" in s and "MESMA rodada" in s
     assert DC.MAX_ITERACOES >= 8
+
+
+def test_serie_mensal_junta_os_meses_numa_consulta_e_pula_mes_sem_dado(monkeypatch):
+    """O grafico mensal precisa de UMA tabela com todos os meses (antes a IA chamava dre_mes mes a mes e a ultima tabela era so um mes)."""
+    dados = {"2026-01": ({"01": 1000.0, "04": -600.0, "05": 400.0}, "DRE confirmado pela contabilidade"),
+             "2026-02": ({"01": 2000.0, "04": -1500.0, "05": 500.0}, "Reconstruido pela API do Sienge (a conferir)"),
+             "2026-03": ({}, "Reconstruido pela API do Sienge (a conferir)")}                      # mes sem nada: nao entra
+    monkeypatch.setattr(FERR, "_dre_resolvido", lambda conn, m: ({"valores": dados[m][0]}, dados[m][1]))
+    r, tab = FERR.serie_mensal(None, {"mes_ini": "2026-01", "mes_fim": "2026-03"})
+    assert [l["mes"] for l in tab] == ["2026-01", "2026-02"] and r["meses_com_dados"] == 2
+    assert tab[0]["custo_direto"] == 600.0 and tab[0]["bdi"] == 400.0 and tab[0]["margem_bdi_pct"] == 40.0
+    assert "API" in tab[1]["origem"] and tab[1]["margem_bdi_pct"] == 25.0
+    with pytest.raises(FERR.ErroEntrada):
+        FERR.serie_mensal(None, {"mes_ini": "2024-01", "mes_fim": "2026-12"})                       # mais de 24 meses
+
+
+def test_serie_mensal_esta_nas_ferramentas_e_no_prompt():
+    from datetime import date
+    assert "serie_mensal" in [t["name"] for t in DC.TOOLS] and "serie_mensal" in FERR.FUNCOES
+    s = DC.montar_system("ana@x", date(2026, 10, 13))
+    assert "serie_mensal" in s and "montar_grafico" in s

@@ -31,7 +31,13 @@ from conexao import get_conn, sidebar_rodape
 from fuso import agora_br
 
 NAVY, ORANGE, AZUL = "#171C60", "#F99D20", "#5C6091"
-ALTURA_CHAT = 520
+ALTURA_CHAT = 520          # altura minima (px) do quadro da conversa; o CSS abaixo a ajusta a altura da janela
+
+# O quadro da conversa acompanha a altura da tela (some o vazio embaixo em tela grande; em tela pequena nao passa de um minimo legivel).
+st.markdown("""<style>
+.st-key-dexie_chat_box, .st-key-dexie_chat_box > [data-testid="stVerticalBlock"]{
+  height: max(22rem, calc(100vh - 22rem)) !important; max-height: none !important; }
+</style>""", unsafe_allow_html=True)
 
 usuario = usuario_atual()
 conn = get_conn()
@@ -135,7 +141,7 @@ with c_chat:
         md = "\n\n".join(f"**{'Você' if m['role'] == 'user' else DC.NOME}:** {m['content']}" for m in S["dexie_hist"])
         topo[1].download_button("Baixar conversa", md.encode("utf-8"), "conversa_dexie.md", "text/markdown", key="dexie_baixar")
 
-    historico = st.container(height=ALTURA_CHAT, border=True)       # altura fixa: rola por dentro; a caixa de digitacao fica embaixo
+    historico = st.container(height=ALTURA_CHAT, border=True, key="dexie_chat_box")       # rola por dentro; altura vem do CSS acima (adaptativa)
     with historico:
         if not S["dexie_hist"]:
             st.markdown(f"Oi! Eu sou a {DC.NOME}. Posso consultar os números do GDF, explicar contabilidade e a reforma tributária, montar gráficos e relatórios. Algumas ideias:")
@@ -202,7 +208,7 @@ with c_painel:
         aba_t, aba_g, aba_r = st.tabs(["Tabela", "Gráfico", "Relatório"])
         with aba_t:
             st.caption(f"Consulta: {estado.get('ultima_ferramenta')} · {len(tab)} linhas")
-            st.dataframe(pd.DataFrame(tab), hide_index=True, width="stretch")
+            st.dataframe(pd.DataFrame(tab), hide_index=True, width="stretch", height=int(min(max(len(tab) * 35 + 38, 110), 560)))   # altura pelo numero de linhas (sem vazio)
             st.download_button("Baixar em Excel", _excel(tab), "consulta_dexie.xlsx",
                                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dexie_excel")
         with aba_g:
