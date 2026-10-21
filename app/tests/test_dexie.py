@@ -591,3 +591,24 @@ def test_tela_relatorio_pdf_da_ultima_consulta(conn):
         assert not at.exception, at.exception
         assert at.session_state["dexie_pdf"][:5] == b"%PDF-"
         assert any(l["acao"] == "DEXIE_RELATORIO" for l in P.ultimos_logs(conn, acao="DEXIE_RELATORIO"))
+
+
+# ------------------------------------------------------------------ devolucao dos blocos do modelo a API (bug visto ao vivo: erro na 2a chamada)
+def test_bloco_de_raciocinio_volta_inteiro_e_texto_vazio_nao_volta():
+    pensa = SimpleNamespace(type="thinking", thinking="hum", signature="assinatura-x")
+    c = ClienteFalso(_resp(pensa, _txt(""), _uso("t1", "conhecimento"), tool=True), _resp(_txt("Pronto.")))
+    with patch("dexie_ferramentas.executar", return_value=({"ok": 1}, None)):
+        r = DC.responder(c, None, "m", [], "oi", None, _estado())
+    assert r["ok"] and r["texto"] == "Pronto."
+    assistente = c.chamadas[1]["messages"][-2]["content"]
+    assert pensa in assistente                                                              # raciocinio devolvido como a API entregou
+    assert not any(isinstance(b, dict) and b.get("type") == "text" and not b["text"].strip() for b in assistente)   # nunca texto vazio
+
+
+def test_erro_vai_para_o_registro_tecnico_mas_nao_para_a_tela():
+    class BadRequestError(Exception):
+        status_code = 400
+    c = ClienteFalso(BadRequestError("messages.1.content.0: sk-ant-api03-ABCDEFGH1234 invalido"))
+    r = DC.responder(c, None, "m", [], "oi", None, _estado())
+    assert "BadRequestError 400" in r["erro"] and "sk-ant" not in r["erro"] and "invalido" in r["erro"]
+    assert "BadRequest" not in r["texto"] and "invalido" not in r["texto"]

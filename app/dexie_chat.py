@@ -152,6 +152,30 @@ def _bloco_para_dict(b) -> dict:
     return {"type": "text", "text": getattr(b, "text", "") or ""}
 
 
+def _conteudo_assistente(content) -> list:
+    """Conteudo do turno do assistente para devolver a API na rodada seguinte: a API nao aceita bloco de texto vazio e, quando o modelo 'pensa',
+    exige devolver o bloco de raciocinio inteiro (com assinatura). Por isso: blocos de texto so' se tiverem texto; tool_use limpo; qualquer outro
+    tipo (raciocinio) volta como a API entregou (objeto do SDK, que ele mesmo sabe serializar)."""
+    saida = []
+    for b in content or []:
+        tipo = getattr(b, "type", None)
+        if tipo == "text":
+            if (getattr(b, "text", "") or "").strip():
+                saida.append({"type": "text", "text": b.text})
+        elif tipo == "tool_use":
+            saida.append(_bloco_para_dict(b))
+        else:
+            saida.append(b)
+    return saida or [{"type": "text", "text": "…"}]
+
+
+def _diagnostico(exc) -> str:
+    """Resumo tecnico do erro SO' para o registro interno (Historico e logs, visivel a quem edita): classe, codigo HTTP e inicio da mensagem, sem chaves."""
+    msg = re.sub(r"sk-[A-Za-z0-9_\-]{8,}", "[chave]", limpar_texto(str(exc)))[:240]
+    status = getattr(exc, "status_code", None)
+    return f"{type(exc).__name__}{' ' + str(status) if status else ''}: {msg}"
+
+
 def _texto(content) -> str:
     return "".join(getattr(b, "text", "") or "" for b in content if getattr(b, "type", None) == "text").strip()
 
@@ -192,12 +216,12 @@ def responder(client, conn, modelo: str, historico: list, pergunta: str, usuario
             if resp.stop_reason != "tool_use":
                 texto = limpar_resposta(_texto(resp.content))
                 if not texto:                                       # resposta em branco: pede uma vez para responder em texto
-                    msgs.append({"role": "assistant", "content": [_bloco_para_dict(b) for b in resp.content] or [{"type": "text", "text": "…"}]})
+                    msgs.append({"role": "assistant", "content": _conteudo_assistente(resp.content)})
                     msgs.append({"role": "user", "content": "Responda agora em texto, de forma curta, com o que você já consultou."})
                     resp = client.messages.create(model=modelo, max_tokens=MAX_TOKENS, system=system, tools=TOOLS, messages=msgs)
                     texto = limpar_resposta(_texto(resp.content))
                 return {"texto": texto or "Não consegui montar uma resposta. Reformule a pergunta.", "ferramentas": usadas, "ok": bool(texto)}
-            msgs.append({"role": "assistant", "content": [_bloco_para_dict(b) for b in resp.content]})
+            msgs.append({"role": "assistant", "content": _conteudo_assistente(resp.content)})
             retornos = []
             for b in resp.content:
                 if getattr(b, "type", None) != "tool_use":
@@ -208,7 +232,7 @@ def responder(client, conn, modelo: str, historico: list, pergunta: str, usuario
             msgs.append({"role": "user", "content": retornos})
         return {"texto": "Precisei de consultas demais para essa pergunta. Peça um recorte menor (um mês, uma obra) ou divida em partes.", "ferramentas": usadas, "ok": False}
     except Exception as exc:                                        # noqa: BLE001
-        return {"texto": _mensagem_erro(exc), "ferramentas": usadas, "ok": False}
+        return {"texto": _mensagem_erro(exc), "ferramentas": usadas, "ok": False, "erro": _diagnostico(exc)}
 
 
 def _executar_ferramenta(conn, nome: str, entrada, estado: dict) -> dict:
