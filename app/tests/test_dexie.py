@@ -904,6 +904,81 @@ def test_tela_anotacao_sugerida_so_guarda_ao_confirmar_e_descartar_nao_guarda(co
 
 
 @pg
+def test_anotacoes_reativar_com_as_travas(conn):
+    a = APR.guardar(conn, "ana@x", "regra", "Regra de teste um", "Texto da regra de teste, longo o bastante para valer.")
+    assert APR.desativar(conn, "ana@x", a["id"], "teste")
+    r = APR.reativar(conn, "Ana@X", a["id"])
+    assert r["status"] == "ativo" and r["id"] == a["id"] and r["revisado_por"] == "ana@x"
+    with pytest.raises(APR.ErroAnotacao):
+        APR.reativar(conn, "ana@x", a["id"])                                       # ja esta ativa
+    novo = APR.editar(conn, "ana@x", a["id"], "definicao", "Regra de teste um", "Texto novo da regra de teste, também longo.", "fonte x")
+    assert novo["tipo"] == "definicao" and novo["fonte"] == "fonte x"
+    with pytest.raises(APR.ErroAnotacao):
+        APR.reativar(conn, "ana@x", a["id"])                                       # a versao antiga foi substituida por uma ativa
+    assert APR.desativar(conn, "ana@x", novo["id"], "x")
+    b = APR.guardar(conn, "ana@x", "regra", "Regra de teste um", "Outra regra com o mesmo título, longa o bastante.")
+    with pytest.raises(APR.ErroAnotacao):
+        APR.reativar(conn, "ana@x", novo["id"])                                    # ja existe ativa com o mesmo titulo
+    assert APR.desativar(conn, "ana@x", b["id"], "x") and len(APR.listar(conn, None)) == 3     # nada apagado
+
+
+@pg
+def test_tela_aba_anotacoes_tabela_filtros_e_editor_da_linha(conn):
+    a = APR.guardar(conn, "ana@x", "regra", "Juros em Financiamentos", "Os juros 2.03.02 ficam em Financiamentos, não em Despesas.", "contabilidade")
+    b = APR.guardar(conn, "ana@x", "definicao", "Obra ADM", "ADM e DEM são rubricas administrativas, não obras de produção.")
+    APR.desativar(conn, "ana@x", b["id"], "teste")
+    with patch("conexao.get_conn", return_value=conn):
+        at = _tela(conn).run()
+        assert not at.exception, at.exception
+        assert any("1 ativa(s) · 1 desativada(s)" in c.value for c in at.caption)
+        assert len(at.dataframe) >= 1
+        tab = [d for d in at.dataframe if "Resumo" in d.value.columns]
+        assert len(tab) == 1 and list(tab[0].value["Título"]) == ["Juros em Financiamentos"]        # padrao: so' ativas
+        at.selectbox(key="dexie_an_situacao").select("Todas").run()
+        tab = [d for d in at.dataframe if "Resumo" in d.value.columns][0]
+        assert set(tab.value["Título"]) == {"Juros em Financiamentos", "Obra ADM"}
+        at.text_input(key="dexie_an_busca").set_value("rubricas").run()
+        tab = [d for d in at.dataframe if "Resumo" in d.value.columns][0]
+        assert list(tab.value["Título"]) == ["Obra ADM"]
+        at.text_input(key="dexie_an_busca").set_value("zzz").run()
+        assert any("Nenhuma anotação com esse filtro" in c.value for c in at.caption)
+        assert not at.exception, at.exception
+
+
+def _tela_com_linha_escolhida(conn, situacao=None):
+    """Tela da Dexie como se a pessoa tivesse clicado na 1a linha da tabela de anotacoes (cada cenario usa uma tela nova)."""
+    at = _tela(conn)
+    at.session_state["dexie_an_tabela"] = {"selection": {"rows": [0], "columns": []}}
+    if situacao:
+        at.session_state["dexie_an_situacao"] = situacao
+    return at.run()
+
+
+@pg
+def test_tela_editor_da_linha_salva_versao_nova_desativa_e_reativa(conn):
+    a = APR.guardar(conn, "ana@x", "regra", "Juros em Financiamentos", "Os juros 2.03.02 ficam em Financiamentos, não em Despesas.", "contabilidade")
+    with patch("conexao.get_conn", return_value=conn):
+        at = _tela_com_linha_escolhida(conn)
+        assert not at.exception, at.exception
+        at.text_area(key=f"dexie_ex_{a['id']}").set_value("Juros 2.03.02 e capital de giro 2.03.04 ficam em Financiamentos, fora de Despesas.")
+        at.selectbox(key=f"dexie_ety_{a['id']}").select("definicao")
+        at.text_input(key=f"dexie_ef_{a['id']}").set_value("Suellen, 21/10")
+        [b for b in at.button if b.label == "Salvar nova versão"][0].click().run()
+        assert not at.exception, at.exception
+        ativas = APR.listar(conn)
+        assert len(ativas) == 1 and ativas[0]["tipo"] == "definicao" and ativas[0]["fonte"] == "Suellen, 21/10" and "capital de giro" in ativas[0]["texto"] and ativas[0]["substitui_id"] == a["id"]
+        assert [x["status"] for x in APR.listar(conn, None)].count("desativado") == 1               # a versao antiga ficou guardada
+        at = _tela_com_linha_escolhida(conn)                                                         # desativar
+        [b for b in at.button if b.label == "Desativar"][0].click().run()
+        assert not at.exception, at.exception
+        assert APR.listar(conn) == []
+        at = _tela_com_linha_escolhida(conn, "Desativadas")                                          # reativar (a linha 0 e' a mais nova)
+        [b for b in at.button if b.label == "Reativar esta anotação"][0].click().run()
+        assert not at.exception, at.exception
+        assert len(APR.listar(conn)) == 1
+
+
+@pg
 def test_tela_aba_anotacoes_adiciona_e_sem_sql33_avisa(conn):
     with patch("conexao.get_conn", return_value=conn):
         at = _tela(conn).run()

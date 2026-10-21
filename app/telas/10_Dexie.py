@@ -99,39 +99,90 @@ def _grafico(tab: list, g: dict):
     estilo.altair(c, width="stretch")
 
 
+_ROTULO_TIPO = {"regra": "Regra da casa", "definicao": "Definição", "conhecimento": "Conhecimento"}
+
+
+def _resumo(t: str, n: int = 90) -> str:
+    t = " ".join(str(t or "").split())
+    return t if len(t) <= n else t[: n - 1].rstrip() + "…"
+
+
+def _editor_anotacao(conn, usuario, a):
+    """Editor da anotacao escolhida na tabela: ver, editar (versao nova, a antiga fica guardada), desativar ou reativar. Nada se apaga."""
+    ativa = a["status"] == "ativo"
+    st.markdown(f"**{_sem_latex(a['titulo'])}** · {_ROTULO_TIPO.get(a['tipo'], a['tipo'])} · {'ativa' if ativa else 'desativada'}")
+    quem = "sugerida pela Dexie" if a["origem"] == "dexie" else "digitada"
+    extra = "" if ativa else f" · desativada por {a['revisado_por'] or '—'}: {a['motivo'] or '—'}"
+    st.caption(_sem_latex(f"Guardada em {a['criado_em']} por {a['criado_por']} ({quem}){' · substitui a anotação nº ' + str(a['substitui_id']) if a['substitui_id'] else ''}{extra}"))
+    if not ativa:
+        st.markdown(_sem_latex(a["texto"]))
+        if st.button("Reativar esta anotação", key=f"dexie_reativa_{a['id']}"):
+            try:
+                APR.reativar(conn, usuario, a["id"])
+                P.registrar_log(conn, "DEXIE_ANOTACAO", "INFO", usuario, None, {"acao": "reativar", "titulo": a["titulo"][:80]})
+                st.rerun()
+            except APR.ErroAnotacao as exc:
+                st.error(str(exc))
+        return
+    with st.form(f"dexie_edita_{a['id']}"):
+        tipo = st.selectbox("Tipo", list(APR.TIPOS), index=list(APR.TIPOS).index(a["tipo"]), format_func=lambda t: _ROTULO_TIPO[t], key=f"dexie_ety_{a['id']}")
+        nt = st.text_input("Título", value=a["titulo"], max_chars=APR.MAX_TITULO, key=f"dexie_et_{a['id']}")
+        nx = st.text_area("Texto (a regra ou definição, sem valores de período nem dados pessoais)", value=a["texto"], max_chars=APR.MAX_TEXTO, height=140, key=f"dexie_ex_{a['id']}")
+        nf = st.text_input("Fonte (opcional)", value=a["fonte"] or "", max_chars=APR.MAX_FONTE, key=f"dexie_ef_{a['id']}")
+        c1, c2 = st.columns(2)
+        salvar = c1.form_submit_button("Salvar nova versão", type="primary")
+        desat = c2.form_submit_button("Desativar")
+    if salvar:
+        try:
+            APR.editar(conn, usuario, a["id"], tipo, nt, nx, nf)
+            P.registrar_log(conn, "DEXIE_ANOTACAO", "INFO", usuario, None, {"acao": "editar", "titulo": nt[:80]})
+            st.session_state.pop("dexie_an_tabela", None)               # a linha escolhida mudou de numero: limpa a selecao
+            st.rerun()
+        except APR.ErroAnotacao as exc:
+            st.error(str(exc))
+    if desat:
+        if APR.desativar(conn, usuario, a["id"], "desativada na tela"):
+            P.registrar_log(conn, "DEXIE_ANOTACAO", "INFO", usuario, None, {"acao": "desativar", "titulo": a["titulo"][:80]})
+        st.session_state.pop("dexie_an_tabela", None)
+        st.rerun()
+
+
 def _anotacoes(conn, usuario):
-    """Aba 'Anotacoes': o que a Dexie aprendeu (aprovado pela equipe). Adicionar, editar (versao nova) e desativar; nada se apaga."""
+    """Aba 'Anotacoes': o que a Dexie aprendeu (aprovado pela equipe). Visao geral em tabela (busca/filtros), clique na linha para editar
+    (versao nova), desativar ou reativar; adicionar. Nada se apaga."""
     if not APR.instalado(conn):
         st.info("As anotações ainda não estão ativas: falta rodar o **SQL-33** no Supabase (arquivo `sql/v2_dexie_aprendizado.sql`). Enquanto isso a Dexie funciona normal, só não guarda anotações.")
         return
     st.caption("Regras da casa, definições e conhecimento que a equipe aprovou. A Dexie consulta isto nas conversas, mas não muda regra de segurança nem executa nada por causa daqui. Ela só sugere; vale depois do seu clique.")
-    ativas = APR.listar(conn, "ativo")
+    todas = APR.listar(conn, None)
+    ativas = [x for x in todas if x["status"] == "ativo"]
     if not ativas:
         st.caption("Nenhuma anotação ativa ainda. Ensine uma regra à Dexie na conversa ou adicione abaixo.")
-    for a in ativas[:40]:
-        with st.expander(f"{a['titulo']} · {a['tipo']}"):
-            st.markdown(_sem_latex(a["texto"]))
-            st.caption(_sem_latex(f"Fonte: {a['fonte'] or '—'} · guardada em {a['criado_em']} por {a['criado_por']} ({'sugerida pela Dexie' if a['origem'] == 'dexie' else 'digitada'})"))
-            with st.form(f"dexie_edita_{a['id']}"):
-                nt = st.text_input("Título", value=a["titulo"], max_chars=APR.MAX_TITULO, key=f"dexie_et_{a['id']}")
-                nx = st.text_area("Texto", value=a["texto"], max_chars=APR.MAX_TEXTO, key=f"dexie_ex_{a['id']}")
-                c1, c2 = st.columns(2)
-                salvar = c1.form_submit_button("Salvar nova versão")
-                desat = c2.form_submit_button("Desativar")
-            if salvar:
-                try:
-                    APR.editar(conn, usuario, a["id"], a["tipo"], nt, nx, a["fonte"])
-                    P.registrar_log(conn, "DEXIE_ANOTACAO", "INFO", usuario, None, {"acao": "editar", "titulo": nt[:80]})
-                    st.rerun()
-                except APR.ErroAnotacao as exc:
-                    st.error(str(exc))
-            if desat:
-                if APR.desativar(conn, usuario, a["id"], "desativada na tela"):
-                    P.registrar_log(conn, "DEXIE_ANOTACAO", "INFO", usuario, None, {"acao": "desativar", "titulo": a["titulo"][:80]})
-                st.rerun()
+    if todas:
+        f1, f2, f3 = st.columns([3, 2, 2])
+        busca = f1.text_input("Buscar", placeholder="palavra do título, texto ou fonte", key="dexie_an_busca", label_visibility="collapsed")
+        situacao = f2.selectbox("Situação", ["Ativas", "Desativadas", "Todas"], key="dexie_an_situacao", label_visibility="collapsed")
+        tipo_f = f3.selectbox("Tipo", ["Todos os tipos"] + list(APR.TIPOS), format_func=lambda t: _ROTULO_TIPO.get(t, t), key="dexie_an_tipo", label_visibility="collapsed")
+        termo = busca.strip().lower()
+        vistas = [x for x in todas
+                  if (situacao == "Todas" or (x["status"] == "ativo") == (situacao == "Ativas"))
+                  and (tipo_f.startswith("Todos") or x["tipo"] == tipo_f)
+                  and (not termo or termo in f"{x['titulo']} {x['texto']} {x['fonte'] or ''}".lower())]
+        st.caption(f"{len(ativas)} ativa(s) · {len(todas) - len(ativas)} desativada(s) (versões antigas ficam guardadas) · mostrando {len(vistas)}. Clique numa linha para ver e editar.")
+        if vistas:
+            df = pd.DataFrame([{"Nº": x["id"], "Título": x["titulo"], "Tipo": _ROTULO_TIPO.get(x["tipo"], x["tipo"]), "Resumo": _resumo(x["texto"]),
+                                "Fonte": x["fonte"] or "—", "Situação": "Ativa" if x["status"] == "ativo" else "Desativada", "Guardada em": x["criado_em"]} for x in vistas])
+            ev = st.dataframe(df, hide_index=True, width="stretch", height=int(min(max(len(df) * 35 + 38, 110), 300)),
+                              on_select="rerun", selection_mode="single-row", key="dexie_an_tabela")
+            linhas = list(ev.selection.rows) if ev is not None and ev.selection else []
+            if linhas and linhas[0] < len(vistas):
+                with st.container(border=True):
+                    _editor_anotacao(conn, usuario, vistas[linhas[0]])
+        else:
+            st.caption("Nenhuma anotação com esse filtro.")
     with st.expander("Adicionar anotação"):
         with st.form("dexie_nova_anotacao", clear_on_submit=True):
-            tipo = st.selectbox("Tipo", list(APR.TIPOS), format_func=lambda t: {"regra": "Regra da casa", "definicao": "Definição", "conhecimento": "Conhecimento"}[t])
+            tipo = st.selectbox("Tipo", list(APR.TIPOS), format_func=lambda t: _ROTULO_TIPO[t])
             titulo = st.text_input("Título", max_chars=APR.MAX_TITULO)
             texto = st.text_area("Texto (a regra ou definição, sem valores de período nem dados pessoais)", max_chars=APR.MAX_TEXTO)
             fonte = st.text_input("Fonte (opcional)", max_chars=APR.MAX_FONTE)

@@ -134,6 +134,32 @@ def editar(conn, usuario: str, anotacao_id: int, tipo, titulo, texto, fonte=None
     return guardar(conn, usuario, a["tipo"], a["titulo"], a["texto"], a["fonte"], origem="pessoa", substitui_id=int(anotacao_id))
 
 
+def reativar(conn, usuario: str, anotacao_id: int) -> dict:
+    """Volta uma anotacao DESATIVADA a valer (nada e' apagado). Recusa se ja existe ativa com o mesmo titulo ou se uma versao mais nova a substituiu."""
+    if not usuario or not instalado(conn):
+        raise ErroAnotacao("O banco ainda nao tem a tabela de anotacoes (SQL-33) ou nao sei quem esta reativando.")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT titulo FROM dexie_aprendizado WHERE id=%s AND status='desativado'", (int(anotacao_id),))
+            linha = cur.fetchone()
+            if not linha:
+                raise ErroAnotacao("Essa anotacao nao esta desativada.")
+            cur.execute("SELECT count(*) FROM dexie_aprendizado WHERE status='ativo' AND lower(titulo)=lower(%s)", (linha[0],))
+            if cur.fetchone()[0]:
+                raise ErroAnotacao("Ja existe uma anotacao ativa com este titulo; edite a ativa em vez de reativar esta.")
+            cur.execute("SELECT count(*) FROM dexie_aprendizado WHERE status='ativo' AND substitui_id=%s", (int(anotacao_id),))
+            if cur.fetchone()[0]:
+                raise ErroAnotacao("Esta versao foi substituida por uma mais nova que esta ativa; edite a nova.")
+            cur.execute(f"UPDATE dexie_aprendizado SET status='ativo', revisado_por=%s, revisado_em=now(), motivo='reativada na tela' WHERE id=%s RETURNING {_COLS}",
+                        (usuario.strip().lower(), int(anotacao_id)))
+            return dict(zip(_CHAVES, cur.fetchone()))
+    except ErroAnotacao:
+        raise
+    except Exception as exc:                                # noqa: BLE001
+        _desfaz(conn)
+        raise ErroAnotacao("Nao consegui reativar agora; tente de novo ou avise o responsavel pelo app.") from exc
+
+
 def titulos_para_o_prompt(conn) -> list:
     """Ate MAX_ATIVAS_NO_PROMPT titulos ativos [{'titulo','tipo'}] (so' o titulo vai ao prompt; o texto vem pela ferramenta)."""
     return [{"titulo": a["titulo"], "tipo": a["tipo"]} for a in listar(conn, "ativo", MAX_ATIVAS_NO_PROMPT)]
