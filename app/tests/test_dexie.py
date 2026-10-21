@@ -948,7 +948,7 @@ def test_tela_aba_anotacoes_tabela_filtros_e_editor_da_linha(conn):
 def _tela_com_linha_escolhida(conn, situacao=None):
     """Tela da Dexie como se a pessoa tivesse clicado na 1a linha da tabela de anotacoes (cada cenario usa uma tela nova)."""
     at = _tela(conn)
-    at.session_state["dexie_an_tabela"] = {"selection": {"rows": [0], "columns": []}}
+    at.session_state["dexie_an_tabela_0"] = {"selection": {"rows": [0], "columns": []}}
     if situacao:
         at.session_state["dexie_an_situacao"] = situacao
     return at.run()

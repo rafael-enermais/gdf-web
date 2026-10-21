@@ -102,6 +102,15 @@ def _grafico(tab: list, g: dict):
 _ROTULO_TIPO = {"regra": "Regra da casa", "definicao": "Definição", "conhecimento": "Conhecimento"}
 
 
+def _chave_tabela_anotacoes() -> str:
+    return f"dexie_an_tabela_{st.session_state.get('dexie_an_geracao', 0)}"
+
+
+def _limpa_selecao_anotacoes():
+    """Troca a chave da tabela: ela volta sem linha marcada (o clique antigo apontava para um numero de linha que mudou)."""
+    st.session_state["dexie_an_geracao"] = st.session_state.get("dexie_an_geracao", 0) + 1
+
+
 def _resumo(t: str, n: int = 90) -> str:
     t = " ".join(str(t or "").split())
     return t if len(t) <= n else t[: n - 1].rstrip() + "…"
@@ -120,6 +129,7 @@ def _editor_anotacao(conn, usuario, a):
             try:
                 APR.reativar(conn, usuario, a["id"])
                 P.registrar_log(conn, "DEXIE_ANOTACAO", "INFO", usuario, None, {"acao": "reativar", "titulo": a["titulo"][:80]})
+                _limpa_selecao_anotacoes()
                 st.rerun()
             except APR.ErroAnotacao as exc:
                 st.error(str(exc))
@@ -136,14 +146,14 @@ def _editor_anotacao(conn, usuario, a):
         try:
             APR.editar(conn, usuario, a["id"], tipo, nt, nx, nf)
             P.registrar_log(conn, "DEXIE_ANOTACAO", "INFO", usuario, None, {"acao": "editar", "titulo": nt[:80]})
-            st.session_state.pop("dexie_an_tabela", None)               # a linha escolhida mudou de numero: limpa a selecao
+            _limpa_selecao_anotacoes()                                       # a linha escolhida mudou de numero: tabela nova, sem linha marcada
             st.rerun()
         except APR.ErroAnotacao as exc:
             st.error(str(exc))
     if desat:
         if APR.desativar(conn, usuario, a["id"], "desativada na tela"):
             P.registrar_log(conn, "DEXIE_ANOTACAO", "INFO", usuario, None, {"acao": "desativar", "titulo": a["titulo"][:80]})
-        st.session_state.pop("dexie_an_tabela", None)
+        _limpa_selecao_anotacoes()
         st.rerun()
 
 
@@ -172,8 +182,8 @@ def _anotacoes(conn, usuario):
         if vistas:
             df = pd.DataFrame([{"Nº": x["id"], "Título": x["titulo"], "Tipo": _ROTULO_TIPO.get(x["tipo"], x["tipo"]), "Resumo": _resumo(x["texto"]),
                                 "Fonte": x["fonte"] or "—", "Situação": "Ativa" if x["status"] == "ativo" else "Desativada", "Guardada em": x["criado_em"]} for x in vistas])
-            ev = st.dataframe(df, hide_index=True, width="stretch", height=int(min(max(len(df) * 35 + 38, 110), 300)),
-                              on_select="rerun", selection_mode="single-row", key="dexie_an_tabela")
+            ev = st.dataframe(df, hide_index=True, width="stretch", height=int(min(max(len(df) * 35 + 40, 75), 300)),
+                              on_select="rerun", selection_mode="single-row", key=_chave_tabela_anotacoes())
             linhas = list(ev.selection.rows) if ev is not None and ev.selection else []
             if linhas and linhas[0] < len(vistas):
                 with st.container(border=True):
