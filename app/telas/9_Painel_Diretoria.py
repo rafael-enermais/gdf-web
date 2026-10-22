@@ -73,18 +73,19 @@ def _pagos(_conn, mes_ini: str, mes: str, carimbo: str):
 
 @st.cache_data(ttl=1800, show_spinner="Somando os meses do período…")
 def _termos_meses(_conn, meses_t: tuple, carimbo: str) -> list:
-    """Termos do Resultado de cada mes (None onde nao ha DRE confirmado)."""
+    """Termos do Resultado de cada mes (DRE confirmado > PDF > API padrao; None onde nao ha dado)."""
     return [P.termos_do_mes(_conn, m) for m in meses_t]
 
 
 @st.cache_data(ttl=1800, show_spinner="Somando as obras do período…")
 def _obras_meses(_conn, meses_t: tuple, carimbo: str):
-    """Para cada mes: (tabela de obras SEM reagrupar, projecao x realizado) ou (None, None) se nao ha DRE oficial (PDF) naquele mes."""
+    """Para cada mes: (tabela de obras SEM reagrupar, projecao x realizado) ou (None, None) se nao ha dado no mes. A tabela vem da fonte do mes
+    (PDF oficial se a contabilidade confirmou com PDF; senao a API do Sienge, que e' o padrao)."""
     extra = P.nomes_obras_extra(_conn)
-    com_dre = set(P.meses_com_dre(_conn))
+    com_obras = set(P.meses_com_obras(_conn))
     saida = []
     for m in meses_t:
-        ob_m = P.obras_do_dre(_conn, m) if m in com_dre else None
+        ob_m = P.obras_do_mes(_conn, m) if m in com_obras else None
         px = None
         if ob_m:
             pj_ = P.projecao_do_mes(_conn, m)
@@ -326,7 +327,7 @@ def _termos_periodo():
 def _formula(modo: str, termos=None):
     termos = termos if termos is not None else _termos(modo)
     if not termos:
-        _info("Não há DRE confirmado em nenhum mês deste período." if modo == "per" else
+        _info("Não há dados de DRE (confirmado, PDF ou API do Sienge) em nenhum mês deste período." if modo == "per" else
               "O acumulado do ano aparece quando o histórico do painel da contabilidade cobre o mês escolhido (Importações (V2) → Histórico do painel).")
         return
     rot = [("rec", "Receita (base-line)", True), ("cus", "Custos diretos", False), ("bdi", "BDI", True), ("adm", "Administração", False), ("res", "Resultado", True)]
@@ -368,11 +369,11 @@ if aba_res.open or _TODAS:
                 if _t_per:
                     _formula("per", _t_per)
                 else:
-                    _warn(f"Nenhum mês de {PER_ROT} tem DRE confirmado pela contabilidade; abaixo, o resultado do mês de referência ({_rot(mes)}).")
+                    _warn(f"Nenhum mês de {PER_ROT} tem dados de DRE (confirmado, PDF ou API do Sienge); abaixo, o resultado do mês de referência ({_rot(mes)}).")
                     _formula("mes")
                 if _t_per:
-                    _cap(f"Soma de {len(_t_per['meses'])} {'mês' if len(_t_per['meses']) == 1 else 'meses'} com DRE confirmado em {PER_ROT}: {', '.join(_rot(m) for m in _t_per['meses'])}."
-                         + (f" Fora da soma por falta de DRE confirmado: {', '.join(_rot(m) for m in _falt)}." if _falt else "")
+                    _cap(f"Soma de {len(_t_per['meses'])} {'mês' if len(_t_per['meses']) == 1 else 'meses'} com dados em {PER_ROT}: {', '.join(_rot(m) for m in _t_per['meses'])}. Fonte de cada mês: confirmado pela contabilidade, PDF ou API do Sienge (padrão)."
+                         + (f" Fora da soma por falta de dados: {', '.join(_rot(m) for m in _falt)}." if _falt else "")
                          + " Administração/Resultado só aparecem se todos os meses somados têm Orçamento ADM; previsto só se todos têm projeção.")
         g1, g2 = st.columns(2)
         with g1:
@@ -432,7 +433,7 @@ if aba_res.open or _TODAS:
 
 # ------------------------------------------------------------------ 2) OBRAS
 def _obras_do_periodo():
-    """Tabela de Obras do periodo: o mes de referencia (ctx) ou a SOMA dos meses com DRE oficial (PDF). -> (ob, proj, meses somados, meses sem DRE)."""
+    """Tabela de Obras do periodo: o mes de referencia (ctx) ou a SOMA dos meses com dado (PDF oficial ou API). -> (ob, proj, meses somados, meses sem dado)."""
     if UM_MES:
         return ob, proj, 1, []
     ms_p = PER.meses_entre(mes_ini, mes)
@@ -456,10 +457,10 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
     ob, proj, _n_ob, _falt_ob = _obras_do_periodo()
     with aba_ob:
         if not ob:
-            _info("Falta o DRE oficial em PDF " + ("deste mês." if UM_MES else "de qualquer mês deste período."))
+            _info("Sem dados por obra " + ("neste mês (nenhum título emitido carregado pela API e nenhum PDF importado)." if UM_MES else "em nenhum mês deste período."))
         else:
             if not UM_MES:
-                _cap(f"Soma de {_n_ob} {'mês' if _n_ob == 1 else 'meses'} com DRE oficial em {PER_ROT}." + (f" Sem DRE oficial (fora da soma): {', '.join(_rot(m) for m in _falt_ob)}." if _falt_ob else "")
+                _cap(f"Soma de {_n_ob} {'mês' if _n_ob == 1 else 'meses'} com dados por obra em {PER_ROT} (PDF oficial ou API do Sienge)." + (f" Sem dados (fora da soma): {', '.join(_rot(m) for m in _falt_ob)}." if _falt_ob else "")
                      + " Colaboradores = os do mês de referência; faturamento e custo por colaborador = média mensal do período.")
             colab_info = _colaboradores()
             dfp_pj, _fora_pj = _pagos_df()

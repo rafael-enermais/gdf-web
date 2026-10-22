@@ -775,24 +775,26 @@ def dre_por_obra_importado(conn, importacao_id: int) -> dict:
     return out
 
 
-def obras_do_dre(conn, mes: str) -> dict | None:
-    """Tabela da aba Obras a partir do DRE oficial (PDF) do mes: por obra, receita bruta (linha 01), custos diretos (linha 04), BDI real = receita + custos
-    (custos ja vem negativo) e margem = BDI / receita. Obras que nao tem codigo proprio no de-para viram uma linha 'DEM' (demais obras).
-    Devolve None se o mes nao tem DRE importado. Sem de-para no banco, todas as obras do PDF aparecem separadas."""
-    imp = dre_importacao_ativa(conn, mes)
-    if not imp:
-        return None
-    pdf = dre_por_obra_importado(conn, imp["id"])
-    proprios = None
+def _codigos_obra_proprios(conn):
+    """Codigos de obra do de-para de centros de custo (sem DEM/ADM) ou None se nao ha de-para no banco."""
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT DISTINCT codigo_obra FROM pnl_centro_grupo WHERE COALESCE(codigo_obra,'') NOT IN ('', 'DEM', 'ADM')")
             achados = {r[0] for r in cur.fetchall()}
-        proprios = achados or None
+        return achados or None
     except Exception:
-        proprios = None
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return None
+
+
+def _montar_obras(por_obra: dict, proprios, importacao_id, arquivo: str, fonte: str) -> dict:
+    """Monta a tabela da aba Obras: por obra, receita bruta (linha 01), custos diretos (linha 04), BDI real = receita + custos (custos ja vem negativo) e
+    margem = BDI / receita. `por_obra` = {cod: {'nome': ..., 'linhas': {linha_dre: valor}}}. Obra sem codigo proprio no de-para vira a linha 'DEM'."""
     linhas, dem = [], {"receita": 0.0, "custo": 0.0, "n": 0}
-    for cod, o in pdf.items():
+    for cod, o in por_obra.items():
         rec, cus = o["linhas"].get("01", 0.0), o["linhas"].get("04", 0.0)
         if abs(rec) < 0.005 and abs(cus) < 0.005:
             continue
@@ -809,8 +811,67 @@ def obras_do_dre(conn, mes: str) -> dict | None:
     rt, ct = round(sum(l["receita"] for l in linhas), 2), round(sum(l["custo"] for l in linhas), 2)
     total = {"receita": rt, "custo": ct, "bdi": round(rt + ct, 2), "margem": round((rt + ct) / rt, 4) if abs(rt) > 0.005 else None}
     proprias = [l for l in linhas if l["obra"] != "DEM"]
-    return {"importacao_id": imp["id"], "arquivo": imp["arquivo"], "linhas": linhas, "total": total,
+    return {"importacao_id": importacao_id, "arquivo": arquivo, "fonte": fonte, "linhas": linhas, "total": total,
             "top_lucro": sorted(proprias, key=lambda l: -l["bdi"])[:5], "top_prejuizo": sorted((l for l in proprias if l["bdi"] < 0), key=lambda l: l["bdi"])[:5]}
+
+
+def obras_do_dre(conn, mes: str) -> dict | None:
+    """Tabela da aba Obras a partir do DRE oficial (PDF) do mes. Devolve None se o mes nao tem DRE importado.
+    Sem de-para no banco, todas as obras do PDF aparecem separadas."""
+    imp = dre_importacao_ativa(conn, mes)
+    if not imp:
+        return None
+    return _montar_obras(dre_por_obra_importado(conn, imp["id"]), _codigos_obra_proprios(conn), imp["id"], imp["arquivo"], "PDF")
+
+
+def nomes_obras_depara(conn) -> dict:
+    """{codigo_obra: nome} do de-para de centros de custo (o nome mais frequente por codigo). Sem a tabela devolve {}."""
+    out: dict = {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT codigo_obra, obra_nome FROM pnl_centro_grupo WHERE codigo_obra IS NOT NULL AND obra_nome IS NOT NULL GROUP BY 1, 2 ORDER BY count(*) DESC, 2")
+            for cod, nome in cur.fetchall():
+                out.setdefault(cod, str(nome).strip())
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    return out
+
+
+def obras_da_api(conn, mes: str) -> dict | None:
+    """Mesma tabela da aba Obras, mas calculada pela API do Sienge (titulos emitidos no mes, regras padrao: sem previsao, sem NF desfeita, sem titulo
+    desfeito, sem centros ADM). Obras sem codigo proprio no de-para ('sem de-para' inclusive) entram em 'Demais obras'. None se nao ha dado no mes."""
+    api = resultado_por_obra_api(conn, mes, sem_previsao=True, sem_distrato=True, sem_desfeitos=True)
+    if not api:
+        return None
+    nomes = nomes_obras_depara(conn)
+    por_obra = {cod: {"nome": nomes.get(cod, ""), "linhas": {"01": v.get("01", 0.0), "04": v.get("04", 0.0)}} for cod, v in api.items()}
+    ob = _montar_obras(por_obra, _codigos_obra_proprios(conn), None, "API do Sienge (titulos emitidos no mes)", "API")
+    return ob if ob["linhas"] else None
+
+
+def fonte_obras(conn, mes: str) -> str | None:
+    """De onde vem a tabela de Obras do mes: 'PDF' ou 'API' (None se nao ha dado). Regra: a confirmacao do mes manda (PDF so' se os CUSTOS DIRETOS
+    04.* foram confirmados todos em PDF e o PDF existe); sem confirmacao, o PDF importado vale se existir; sem PDF, a API e' o padrao."""
+    imp = dre_importacao_ativa(conn, mes)
+    conf = confirmacao_ativa(conn, mes) if confirmacao_instalada(conn) else None
+    if conf:
+        fontes = conf["fontes"] or {}
+        custos = [f for k, f in fontes.items() if k.startswith("04.")]
+        return "PDF" if imp and custos and all(f == "PDF" for f in custos) else "API"
+    return "PDF" if imp else "API"
+
+
+def obras_do_mes(conn, mes: str) -> dict | None:
+    """Tabela de Obras do mes pela fonte de `fonte_obras` (PDF oficial ou API do Sienge). None se nao ha dado."""
+    return obras_do_dre(conn, mes) if fonte_obras(conn, mes) == "PDF" else obras_da_api(conn, mes)
+
+
+def meses_com_obras(conn) -> list:
+    """Meses ('AAAA-MM') que podem ter tabela de Obras: com PDF importado ou com titulos emitidos (API)."""
+    return sorted(set(meses_com_dre(conn)) | set(meses_com_emissao(conn)))
 
 
 SEMPRE_EM_DEMAIS = ("1026", "1050", "2014", "3009", "5013", "6003")       # contabilidade 13/10: sempre em "Demais obras"
@@ -895,23 +956,65 @@ def somar_projecoes(projs: list) -> dict | None:
             "receita_proj_total": soma(lambda p: p["receita_proj_total"]), "receita_real_total": soma(lambda p: p["receita_real_total"]), "meses": len(projs)}
 
 
-def termos_do_mes(conn, mes: str) -> dict | None:
-    """Os cinco termos do Resultado de UM mes com DRE CONFIRMADO: receita, custos diretos, BDI (do DRE por obra quando existe), administracao (orcamento ADM: realizado e
-    orcado) e a projecao (receita e BDI previstos). None se o mes nao tem DRE confirmado. Valores None quando falta a fonte (sem orcamento, sem projecao)."""
-    conf = confirmacao_ativa(conn, mes) if confirmacao_instalada(conn) else None
-    if not conf:
+def cobertura_emissao_ini(conn) -> str | None:
+    """Primeiro mes ('AAAA-MM') com a rotina diaria de emissao funcionando (antes disso a base so' tem residuos de titulos antigos)."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_char(min(mes), 'YYYY-MM') FROM pnl_sync WHERE lado='R' AND tipo_data='I' AND status <> 'ERRO'")
+            return cur.fetchone()[0]
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         return None
-    v = dre_de_folhas(conf["valores"] or {})["valores"]
-    ob = obras_do_dre(conn, mes) if mes in meses_com_dre(conn) else None
-    out = {"mes": mes, "rec": ob["total"]["receita"] if ob else v["01"], "cus": abs(ob["total"]["custo"]) if ob else abs(v["04"]), "bdi": ob["total"]["bdi"] if ob else v["05"],
+
+
+def contas_api_padrao(conn, mes: str) -> list:
+    """Contas do mes reconstruidas pela API com as regras padrao (as mesmas da tela Resultado): sem previsao, sem NF desfeita, sem titulo desfeito
+    e so' centros de obra (sem ADM) quando o de-para existe."""
+    return resultado_por_conta(conn, mes, sem_previsao=True, so_obras=centro_grupo_instalado(conn), sem_distrato=True, sem_desfeitos=True)
+
+
+def dre_resolvido(conn, mes: str) -> dict | None:
+    """DRE do mes pela prioridade unica do app: 1) CONFIRMADO (a fonte que a contabilidade escolheu por linha); 2) DRE oficial (PDF) importado, ainda sem
+    confirmacao; 3) API do Sienge com as regras padrao (padrao para meses novos: ninguem precisa gerar PDF). Devolve {'dre', 'fonte', 'origem', 'conf', 'imp'}
+    com fonte em 'confirmado' | 'pdf' | 'api', ou None se o mes nao tem dado (API vazia ou mes anterior a rotina de emissao, que so' tem residuos)."""
+    conf = confirmacao_ativa(conn, mes) if confirmacao_instalada(conn) else None
+    if conf:
+        return {"dre": dre_de_folhas(conf["valores"] or {}), "fonte": "confirmado", "origem": "DRE confirmado pela contabilidade", "conf": conf, "imp": None}
+    imp = dre_importacao_ativa(conn, mes)
+    if imp:
+        contas = [{"plano_cod": c, "plano_nome": "", "valor": v} for c, v in dre_contas_importadas(conn, imp["id"]).items()]
+        return {"dre": dre_do_mes(contas), "fonte": "pdf", "origem": "DRE oficial (PDF), ainda nao confirmado", "conf": None, "imp": imp}
+    ini = cobertura_emissao_ini(conn)
+    if ini and mes < ini:
+        return None
+    dre = dre_do_mes(contas_api_padrao(conn, mes) or [])
+    if abs(dre["valores"]["01"]) < 0.005 and abs(dre["valores"]["04"]) < 0.005:
+        return None
+    return {"dre": dre, "fonte": "api", "origem": "API do Sienge (padrao, a conferir)", "conf": None, "imp": None}
+
+
+def termos_do_mes(conn, mes: str) -> dict | None:
+    """Os cinco termos do Resultado de UM mes: receita, custos diretos e BDI (= receita - custos) do DRE do mes (`dre_resolvido`: confirmado > PDF > API),
+    administracao (orcamento ADM: realizado e orcado) e a projecao (receita e BDI previstos). A tabela de obras (projecao x realizado) vem da mesma fonte
+    (`obras_do_mes`). None se o mes nao tem dado. Valores None quando falta a fonte (sem orcamento, sem projecao). 'fonte' diz de onde vieram os numeros."""
+    r = dre_resolvido(conn, mes)
+    if not r:
+        return None
+    v = r["dre"]["valores"]
+    rec, cus = round(v["01"], 2), round(abs(v["04"]), 2)
+    out = {"mes": mes, "rec": rec, "cus": cus, "bdi": round(rec - cus, 2), "fonte": r["fonte"],
            "adm_real": None, "adm_orc": None, "rec_p": None, "bdi_p": None}
     orc = orcamento_ativo(conn) if orcamento_instalado(conn) else None
     if orc and mes in orc["meses"]:
         t = orcamento_resumo(conn, orc["id"], mes)["total"]
         out["adm_real"], out["adm_orc"] = t["realizado"], t["orcado"]
-    if ob:
-        proj = projecao_do_mes(conn, mes)
-        if proj:
+    proj = projecao_do_mes(conn, mes)
+    if proj:
+        ob = obras_do_mes(conn, mes)
+        if ob:
             px = projecao_x_realizado(proj, ob, nomes_obras_extra(conn))
             if abs(px["receita_proj_total"]) > 0.005:
                 out["rec_p"], out["bdi_p"] = px["receita_proj_total"], px["total"]["bdi_proj"]

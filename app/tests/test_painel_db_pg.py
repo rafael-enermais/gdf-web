@@ -458,8 +458,9 @@ def test_tela_resultado_confirma_dre_escolhendo_fonte_por_linha(conn):
     with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", side_effect=_uploader_por_chave({})):
         at = _tela(conn).run()
         assert not at.exception, at.exception
-        assert at.selectbox(key="pn2_fonte_2026-09_01.01").value == "PDF"               # com PDF importado, o padrao e' o PDF
-        at.selectbox(key="pn2_fonte_2026-09_01.01").select("API").run()                 # a contabilidade escolhe a API so' para a receita
+        assert at.selectbox(key="pn2_fonte_2026-09_01.01").value == "API"               # o padrao e' a API, mesmo com PDF importado
+        assert at.selectbox(key="pn2_fonte_2026-09_04.01").value == "API"
+        at.selectbox(key="pn2_fonte_2026-09_04.01").select("PDF").run()                 # a contabilidade confere o custo pelo PDF so' nessa linha
         at.text_input(key="pn2_conf_obs_2026-09").input("receita pela API").run()
         at.button(key="pn2_confirmar_2026-09").click().run()
         assert not at.exception, at.exception
@@ -507,7 +508,7 @@ def test_tela_resultado_ajuste_manual_de_uma_linha(conn):
         at.button(key="pn2_confirmar_2026-09").click().run()
         assert not at.exception, at.exception
     c = P.confirmacao_ativa(conn, "2026-09")
-    assert c["fontes"]["01.01"] == "MANUAL" and c["valores"]["01.01"] == 1777.77 and c["fontes"]["04.01"] == "PDF"
+    assert c["fontes"]["01.01"] == "MANUAL" and c["valores"]["01.01"] == 1777.77 and c["fontes"]["04.01"] == "API"
     assert c["resumo"]["manuais"]["01.01"]["manual"] == 1777.77
 
 

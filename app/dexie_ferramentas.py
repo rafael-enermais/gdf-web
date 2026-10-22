@@ -141,7 +141,7 @@ def visao_geral(conn, _e) -> tuple:
 
 
 def resultado_periodo(conn, e) -> tuple:
-    """Resultado da Diretoria (Receita - Custos = BDI - Administracao = Resultado) mes a mes e somado, so' dos meses com DRE confirmado."""
+    """Resultado da Diretoria (Receita - Custos = BDI - Administracao = Resultado) mes a mes e somado, dos meses com dado (DRE confirmado > PDF > API do Sienge, padrao). Cada mes diz a fonte."""
     ini, fim = _intervalo(e.get("mes_ini"), e.get("mes_fim"))
     meses = PER.meses_entre(ini, fim)
     termos = [_tenta(conn, P.termos_do_mes, m) for m in meses]
@@ -153,25 +153,26 @@ def resultado_periodo(conn, e) -> tuple:
         res = round(t["bdi"] - t["adm_real"], 2) if t["adm_real"] is not None else None
         linhas.append({"mes": m, "receita": t["rec"], "custos_diretos": t["cus"], "bdi": t["bdi"], "administracao": t["adm_real"], "resultado": res,
                        "receita_prevista": t["rec_p"], "bdi_previsto": t["bdi_p"], "adm_orcada": t["adm_orc"]})
-    res = {"periodo": f"{ini} a {fim}", "meses_somados": [l["mes"] for l in linhas], "meses_sem_dre_confirmado": [m for m, t in zip(meses, termos) if not t]}
+    res = {"periodo": f"{ini} a {fim}", "meses_somados": [l["mes"] for l in linhas], "meses_sem_dados": [m for m, t in zip(meses, termos) if not t],
+           "fonte_por_mes": {m: t["fonte"] for m, t in zip(meses, termos) if t},
+           "meses_sem_dre_confirmado": [m for m, t in zip(meses, termos) if not t or t["fonte"] != "confirmado"]}
     if soma:
         nomes = {"rec": "receita", "cus": "custos_diretos", "bdi": "bdi", "adm": "administracao", "res": "resultado"}
         res["total_do_periodo"] = {nomes[k]: {"realizado": soma[k][0], "previsto": soma[k][1]} for k in nomes}
+        if any(t and t["fonte"] != "confirmado" for t in termos):
+            res["aviso"] = ("Meses ainda NAO confirmados pela contabilidade entram com o valor do PDF oficial (se houver) ou da API do Sienge (padrao, a conferir); "
+                            "veja fonte_por_mes. BDI = receita bruta - custos diretos.")
     else:
-        res["aviso"] = "Nenhum mes do periodo tem DRE confirmado pela contabilidade."
+        res["aviso"] = "Nenhum mes do periodo tem dados (nem DRE confirmado/PDF nem titulos emitidos pela API)."
     return res, _tabela(linhas)
 
 
 def _dre_resolvido(conn, mes: str) -> tuple:
-    """DRE do mes pela mesma prioridade do app: confirmado > oficial (PDF) > reconstruido pela API (a conferir). Devolve (dre, origem)."""
-    conf = _tenta(conn, P.confirmacao_ativa, mes) if P.confirmacao_instalada(conn) else None
-    if conf:
-        return P.dre_de_folhas(conf["valores"] or {}), "DRE confirmado pela contabilidade"
-    imp = _tenta(conn, P.dre_importacao_ativa, mes)
-    if imp:
-        contas = [{"plano_cod": c, "plano_nome": "", "valor": v} for c, v in P.dre_contas_importadas(conn, imp["id"]).items()]
-        return P.dre_do_mes(contas), "DRE oficial (PDF), ainda nao confirmado"
-    return P.dre_do_mes(P.resultado_por_conta(conn, mes, sem_previsao=True) or []), "Reconstruido pela API do Sienge (a conferir)"
+    """DRE do mes pela regra unica do app (painel_db.dre_resolvido): confirmado > oficial (PDF) > API do Sienge (padrao). Devolve (dre, origem)."""
+    r = P.dre_resolvido(conn, mes)
+    if not r:
+        return P.dre_do_mes([]), "Sem dados no mes (nem DRE nem titulos emitidos)"
+    return r["dre"], r["origem"]
 
 
 def dre_mes(conn, e) -> tuple:
@@ -193,7 +194,7 @@ def serie_mensal(conn, e) -> tuple:
         d, origem = _dre_resolvido(conn, m)
         v = d.get("valores") or {}
         rec, cus, bdi = v.get("01") or 0.0, abs(v.get("04") or 0.0), v.get("05") or 0.0
-        if abs(rec) < 0.005 and cus < 0.005 and origem.startswith("Reconstruido"):
+        if abs(rec) < 0.005 and cus < 0.005:
             continue                                     # mes sem nenhum dado (futuro ou nao carregado)
         linhas.append({"mes": m, "receita": round(rec, 2), "custo_direto": round(cus, 2), "bdi": round(bdi, 2),
                        "margem_bdi_pct": round(100.0 * bdi / rec, 1) if abs(rec) > 0.005 else None, "origem": origem})
@@ -201,14 +202,11 @@ def serie_mensal(conn, e) -> tuple:
 
 
 def _termos_app(conn, mes: str) -> dict:
-    """Receita, custo, BDI e administracao do mes como o APP calcula hoje (DRE confirmado com DRE por obra > PDF > API a conferir)."""
+    """Receita, custo, BDI e administracao do mes como o APP calcula hoje (DRE confirmado > PDF > API padrao; BDI = receita - custos)."""
     t = _tenta(conn, P.termos_do_mes, mes)
     if t:
-        return {"rec": t["rec"], "cus": t["cus"], "bdi": t["bdi"], "adm": t["adm_real"], "origem": "confirmado"}
-    d, origem = _dre_resolvido(conn, mes)
-    v = d.get("valores") or {}
-    return {"rec": v.get("01") or 0.0, "cus": abs(v.get("04") or 0.0), "bdi": v.get("05") or 0.0, "adm": None,
-            "origem": "pdf" if origem.startswith("DRE oficial") else "api"}
+        return {"rec": t["rec"], "cus": t["cus"], "bdi": t["bdi"], "adm": t["adm_real"], "origem": t["fonte"]}
+    return {"rec": 0.0, "cus": 0.0, "bdi": 0.0, "adm": None, "origem": "sem dados"}
 
 
 def _linhas_conferencia(periodo: str, painel: dict, app: list, tol: float = 1.0) -> list:
@@ -276,16 +274,16 @@ def _norm_busca(s) -> str:
 
 
 def obras_mes(conn, e) -> tuple:
-    """Receita, custos, BDI e margem por obra no mes (DRE oficial por obra)."""
+    """Receita, custos, BDI e margem por obra no mes (PDF oficial ou API do Sienge, conforme a fonte confirmada do mes)."""
     mes = _mes(e.get("mes"))
-    ob = _tenta(conn, P.obras_do_dre, mes) if mes in (_tenta(conn, P.meses_com_dre) or []) else None
+    ob = _tenta(conn, P.obras_do_mes, mes)
     if not ob:
-        return {"mes": mes, "aviso": "Nao ha DRE oficial por obra importado para este mes."}, None
+        return {"mes": mes, "aviso": "Nao ha dado por obra neste mes (sem PDF importado e sem titulos emitidos pela API)."}, None
     nomes = _tenta(conn, P.nomes_obras_extra) or {}
     linhas = [{"obra": l["obra"], "nome": (nomes.get(l["obra"]) or l["nome"] or ""), "receita": l["receita"], "custo": l["custo"], "bdi": l["bdi"], "margem": l["margem"]}
               for l in ob["linhas"]]
     n = _limite(e.get("limite"), 30, 60)
-    res = {"mes": mes, "arquivo": ob["arquivo"], "total": ob["total"], "obras": linhas[:n], "maiores_lucros": [{"obra": l["obra"], "bdi": l["bdi"]} for l in ob["top_lucro"]],
+    res = {"mes": mes, "fonte": ob.get("fonte"), "arquivo": ob["arquivo"], "total": ob["total"], "obras": linhas[:n], "maiores_lucros": [{"obra": l["obra"], "bdi": l["bdi"]} for l in ob["top_lucro"]],
            "maiores_prejuizos": [{"obra": l["obra"], "bdi": l["bdi"]} for l in ob["top_prejuizo"]]}
     return res, _tabela(linhas)
 

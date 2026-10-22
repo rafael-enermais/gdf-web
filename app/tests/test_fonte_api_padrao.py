@@ -1,0 +1,92 @@
+# -*- coding: utf-8 -*-
+"""Regra unica de fonte do DRE (v0.37.0): confirmado > PDF importado (sem confirmacao) > API do Sienge (padrao). A tabela de obras segue a mesma fonte.
+Caso real de out/2026: a contabilidade marcou tudo como API, mas o painel da Diretoria continuava lendo o PDF antigo."""
+import hashlib
+
+import pytest
+
+import painel_db as P
+from dados_sienge import income
+from test_painel_db_pg import _ingerir, _pdf_lido
+
+pytestmark = pytest.mark.pg
+MES = "2026-09"
+
+
+@pytest.fixture()
+def base(conn):
+    """Set/26 com a API carregada (pagar + receber) e um PDF de DRE importado (os dois caem em valores diferentes de custo)."""
+    _ingerir(conn, lado="P", tipo="I")
+    _ingerir(conn, regs=income(), lado="R", tipo="I")
+    b, dre = _pdf_lido()
+    P.gravar_dre(conn, dre, "dre.pdf", hashlib.sha256(b).hexdigest(), "teste@x")
+    return conn
+
+
+def _confirmar(conn, fonte_por_linha: dict):
+    """Grava uma confirmacao com a fonte indicada por linha (valores vindos da fonte), como a tela faz."""
+    from dre_mapa import LINHAS
+    api = P.dre_do_mes(P.contas_api_padrao(conn, MES))["valores"]
+    imp = P.dre_importacao_ativa(conn, MES)
+    pdf = P.dre_do_mes([{"plano_cod": c, "plano_nome": "", "valor": x} for c, x in P.dre_contas_importadas(conn, imp["id"]).items()])["valores"]
+    folhas = [k for k, _, t in LINHAS if t == "folha"]
+    fontes = {k: fonte_por_linha.get(k, fonte_por_linha.get("*", "API")) for k in folhas}
+    valores = {k: (api if f == "API" else pdf)[k] for k, f in fontes.items()}
+    P.gravar_confirmacao(conn, MES, fontes, valores, "teste@x", None, None, imp["id"])
+
+
+def test_api_e_pdf_do_teste_realmente_diferem(base):
+    api = P.dre_do_mes(P.contas_api_padrao(base, MES))["valores"]
+    imp = P.dre_importacao_ativa(base, MES)
+    pdf = P.dre_do_mes([{"plano_cod": c, "plano_nome": "", "valor": x} for c, x in P.dre_contas_importadas(base, imp["id"]).items()])["valores"]
+    assert abs(api["04"] - pdf["04"]) > 0.01                       # sem isso os testes abaixo nao provariam nada
+
+
+def test_sem_confirmacao_com_pdf_usa_o_pdf(base):
+    r = P.dre_resolvido(base, MES)
+    assert r["fonte"] == "pdf" and P.fonte_obras(base, MES) == "PDF"
+    t = P.termos_do_mes(base, MES)
+    assert t["fonte"] == "pdf" and t["cus"] == abs(r["dre"]["valores"]["04"])
+
+
+def test_confirmacao_em_api_manda_no_custo_da_diretoria_apesar_do_pdf(base):
+    _confirmar(base, {"*": "API"})
+    api = P.dre_do_mes(P.contas_api_padrao(base, MES))["valores"]
+    pdf_cus = abs(P.obras_do_dre(base, MES)["total"]["custo"])
+    t = P.termos_do_mes(base, MES)
+    assert t["fonte"] == "confirmado"
+    assert t["cus"] == abs(api["04"]) and t["cus"] != pdf_cus       # o bug de out/2026: antes saia o custo do PDF
+    assert t["rec"] == api["01"] and t["bdi"] == round(api["01"] - abs(api["04"]), 2)
+    assert P.fonte_obras(base, MES) == "API"
+    ob = P.obras_do_mes(base, MES)
+    assert ob["fonte"] == "API" and ob["total"]["custo"] == pytest.approx(api["04"], abs=0.01)
+
+
+def test_confirmacao_em_pdf_mantem_o_pdf(base):
+    _confirmar(base, {"*": "PDF"})
+    t = P.termos_do_mes(base, MES)
+    assert t["fonte"] == "confirmado" and t["cus"] == abs(P.obras_do_dre(base, MES)["total"]["custo"])
+    assert P.fonte_obras(base, MES) == "PDF" and P.obras_do_mes(base, MES)["fonte"] == "PDF"
+
+
+def test_confirmacao_mista_com_custos_em_pdf_usa_obras_do_pdf(base):
+    _confirmar(base, {"*": "API", "04.01": "PDF", "04.02": "PDF", "04.03": "PDF", "04.04": "PDF"})
+    assert P.fonte_obras(base, MES) == "PDF"                       # so' custos 04.* em PDF decidem a tabela por obra
+    _confirmar(base, {"*": "PDF", "04.01": "API"})
+    assert P.fonte_obras(base, MES) == "API"                       # um custo em API ja basta para a tabela vir da API
+
+
+def test_mes_novo_sem_pdf_nem_confirmacao_usa_a_api(conn):
+    _ingerir(conn, lado="P", tipo="I")
+    _ingerir(conn, regs=income(), lado="R", tipo="I")
+    r = P.dre_resolvido(conn, MES)
+    assert r["fonte"] == "api" and "API" in r["origem"]
+    t = P.termos_do_mes(conn, MES)
+    assert t and t["fonte"] == "api" and t["cus"] > 0 and P.fonte_obras(conn, MES) == "API"
+    assert MES in P.meses_com_obras(conn)
+
+
+def test_mes_sem_dado_nenhum_devolve_none(conn):
+    _ingerir(conn, lado="P", tipo="I")
+    _ingerir(conn, regs=income(), lado="R", tipo="I")
+    assert P.dre_resolvido(conn, "2027-03") is None and P.termos_do_mes(conn, "2027-03") is None

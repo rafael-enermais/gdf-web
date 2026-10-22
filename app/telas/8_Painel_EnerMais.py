@@ -224,8 +224,9 @@ if aba_desp.open or _TODAS:                                   # so' a aba aberta
     # ------------------------------------------------------------------ resultado (previa)
 if aba_res.open or _TODAS:                                   # so' a aba aberta e' executada (sem isso as 10 abas rodavam a cada clique)
     with aba_res:
-        st.markdown("**DRE oficial** = o PDF do Sienge *Demonstrativo de Resultado – Agrupado por Obra – DRE GERENCIAL* (versão com a composição das contas), lido pelo app. "
-                    "**Conferência** = o app recalcula o mesmo DRE direto da API do Sienge (títulos **emitidos** no mês) e mostra onde difere, por conta e por obra.")
+        st.markdown("**Padrão = API do Sienge**: o app calcula o DRE direto da API (títulos **emitidos** no mês) e o painel da Diretoria, as métricas e a Dexie já usam esse número, sem precisar de PDF. "
+                    "**Conferência (opcional)** = se houver dúvida, importe o PDF do Sienge *Demonstrativo de Resultado – Agrupado por Obra – DRE GERENCIAL* (versão com a composição das contas) e o app mostra onde a API difere, por conta e por obra; "
+                    "na confirmação abaixo você escolhe, linha a linha, qual fonte vale.")
         meses_em = P.meses_com_emissao(conn)
         meses_dre = P.meses_com_dre(conn)
         meses_r_opts = sorted(set(meses_em) | set(meses_dre))
@@ -280,7 +281,7 @@ if aba_res.open or _TODAS:                                   # so' a aba aberta 
                 st.toast(st.session_state["pn2_conf_ok"])
                 st.success(st.session_state.pop("pn2_conf_ok"))
             conf = P.confirmacao_ativa(conn, mes_r)
-            _padrao = "PDF" if "PDF" in _fontes else "API"
+            _padrao = "API" if "API" in _fontes else "PDF"                # padrao: API (a contabilidade confere pelo PDF so' se tiver duvida)
             if not P.confirmacao_instalada(conn):
                 st.warning("Falta executar o **SQL-10** (`sql/v2_dre_confirmacao.sql`) no Supabase para gravar a confirmação. Você já pode escolher as fontes e ver o resultado.")
             if conf:
@@ -444,72 +445,77 @@ if aba_res.open or _TODAS:                                   # so' a aba aberta 
     # ------------------------------------------------------------------ regras
 if aba_obras.open or _TODAS:                                   # so' a aba aberta e' executada (sem isso as 10 abas rodavam a cada clique)
     with aba_obras:
-        st.markdown("Resultado **por obra** a partir do **DRE oficial** (PDF do Sienge importado na aba Resultado). "
+        st.markdown("Resultado **por obra**, pela **API do Sienge** (padrão) ou pelo **DRE oficial em PDF** quando a contabilidade confirmou o mês com o PDF. "
                     "**BDI real** = receita bruta − custos diretos; **margem de contribuição** = BDI ÷ receita. Obras sem código próprio no de-para entram juntas em *Demais obras*.")
-        meses_o = P.meses_com_dre(conn)
+        meses_o = P.meses_com_obras(conn)
         if not meses_o:
-            st.info("Ainda não há DRE oficial importado. Importe o PDF do Sienge na aba **Importações (V2)** e volte aqui.")
+            st.info("Ainda não há dados: sincronize os títulos emitidos (tipo I) na primeira aba ou importe o PDF do Sienge na aba **Importações (V2)**.")
         else:
-            mes_o = st.selectbox("Mês", meses_o, index=len(meses_o) - 1, key="pn2_mes_obras")
-            ob = P.obras_do_dre(conn, mes_o)
-            t = ob["total"]
-            o1, o2, o3, o4 = st.columns(4)
-            o1.metric("Receita bruta", F.moeda_br(t["receita"]), border=True)
-            o2.metric("Custos diretos", F.moeda_br(t["custo"]), border=True)
-            o3.metric("BDI real", F.moeda_br(t["bdi"]), border=True)
-            o4.metric("Margem de contribuição", f"{t['margem'] * 100:,.1f}%".replace(",", "X").replace(".", ",").replace("X", ".") if t["margem"] is not None else "–", border=True)
-            pct = lambda m: (f"{m * 100:,.1f}%".replace(",", "X").replace(".", ",").replace("X", ".") if m is not None else "–")
-            _folha_o = P.folha_do_mes(conn, mes_o)
-            _colab = P.colab_por_linha_obras(ob["linhas"], _folha_o)
-            def _por_colab(v, n):
-                return F.moeda_br(v / n) if n else "–"
-            st.dataframe(pd.DataFrame([{"Obra": l["obra"], "Nome": l["nome"], "Receita": F.moeda_br(l["receita"]), "Custos": F.moeda_br(l["custo"]), "BDI real": F.moeda_br(l["bdi"]),
-                                        "Margem (BDI/receita)": pct(l["margem"]),
-                                        "Colab. (CLT)": (str(_colab.get(l["obra"], 0)) if _folha_o else "–"),
-                                        "Fat./colab.": (_por_colab(l["receita"], _colab.get(l["obra"], 0)) if _folha_o else "–"),
-                                        "Custo/colab.": (_por_colab(-l["custo"], _colab.get(l["obra"], 0)) if _folha_o else "–")} for l in ob["linhas"]]),
-                         hide_index=True, width="stretch")
-            if _folha_o:
-                st.caption(f"Colaboradores CLT pelos recibos de {mes_o[5:]}/{mes_o[:4]} (obra pelo departamento do recibo e o de-para de departamentos). "
-                           "Fat./colab. = receita ÷ colaboradores; Custo/colab. = custos diretos ÷ colaboradores. Ainda não entram os PJ pagos nas obras."
-                           + (f" Atenção: {sum(x['colab'] for x in _folha_o['sem_depara'])} recibo(s) sem de-para de departamento (veja a aba Pessoas; o cadastro de departamentos fica na aba Importações (V2))." if _folha_o["sem_depara"] else ""))
+            _fech_o = [m for m in meses_o if m < f"{agora_br().date().year}-{agora_br().date().month:02d}"] or meses_o
+            mes_o = st.selectbox("Mês", meses_o, index=meses_o.index(_fech_o[-1]), key="pn2_mes_obras")
+            ob = P.obras_do_mes(conn, mes_o)
+            if not ob:
+                st.info("Sem dados por obra neste mês (nenhum título emitido carregado e nenhum PDF importado).")
             else:
-                st.caption("Colab., Fat./colab. e Custo/colab. aparecem quando os recibos da folha do mês forem importados (aba Importações (V2)).")
-            c_l, c_p = st.columns(2)
-            c_l.markdown("**5 obras com maior BDI**")
-            c_l.dataframe(pd.DataFrame([{"Obra": l["obra"], "Nome": l["nome"], "BDI real": F.moeda_br(l["bdi"]), "Margem": pct(l["margem"])} for l in ob["top_lucro"]]), hide_index=True, width="stretch")
-            c_p.markdown("**5 obras com maior prejuízo**")
-            if ob["top_prejuizo"]:
-                c_p.dataframe(pd.DataFrame([{"Obra": l["obra"], "Nome": l["nome"], "BDI real": F.moeda_br(l["bdi"]), "Margem": pct(l["margem"])} for l in ob["top_prejuizo"]]), hide_index=True, width="stretch")
-            else:
-                c_p.success("Nenhuma obra com BDI negativo neste mês.")
-            st.caption(f"Fonte: DRE oficial importado do arquivo “{ob['arquivo']}” (importação #{ob['importacao_id']}).")
-
-            # ---- projecao de receitas (xlsx) x realizado
-            st.divider()
-            st.markdown("**Projeção de receitas × realizado**")
-            _proj = P.projecao_do_mes(conn, mes_o)
-            if _proj is None:
-                st.info(f"Ainda não há projeção importada para {mes_o[5:]}/{mes_o[:4]}. Importe a planilha na aba **Importações (V2)**.")
-            else:
-                cmp_ = P.projecao_x_realizado(_proj, ob, P.nomes_obras_extra(conn))
-                _pr = lambda v: (F.pct_br(v) if v is not None else "–")
-                p1, p2, p3, p4 = st.columns(4)
-                p1.metric("Receita projetada", F.moeda_br(cmp_["receita_proj_total"]), border=True)
-                p2.metric("Receita real (DRE)", F.moeda_br(cmp_["receita_real_total"]), border=True)
-                _dv = cmp_["receita_real_total"] - cmp_["receita_proj_total"]
-                p3.metric("Desvio", F.moeda_br(_dv), delta=F.pct_br(_dv / cmp_["receita_proj_total"]) if abs(cmp_["receita_proj_total"]) > 0.005 else None, border=True)
-                p4.metric("BDI previsto", F.moeda_br(cmp_["total"]["bdi_proj"]), border=True)
-                st.dataframe(pd.DataFrame([{"Obra (projeção)": x["obra_proj"], "Obra (DRE)": f"{x['codigo']} · {x['nome']}", "Receita projetada": F.moeda_br(x["receita_proj"]),
-                                            "Receita real": F.moeda_br(x["receita_real"]), "Desvio": F.moeda_br(x["desvio"]), "Desvio %": _pr(x["desvio_pct"]),
-                                            "BDI previsto": F.moeda_br(x["bdi_proj"]), "BDI real": F.moeda_br(x["bdi_real"]), "Desvio BDI": F.moeda_br(x["desvio_bdi"])} for x in cmp_["linhas"]]),
+                st.caption(f"Fonte da tabela: **{'DRE oficial (PDF “' + str(ob['arquivo']) + '”)' if ob.get('fonte') == 'PDF' else 'API do Sienge (títulos emitidos no mês, regras padrão)'}**.")
+                t = ob["total"]
+                o1, o2, o3, o4 = st.columns(4)
+                o1.metric("Receita bruta", F.moeda_br(t["receita"]), border=True)
+                o2.metric("Custos diretos", F.moeda_br(t["custo"]), border=True)
+                o3.metric("BDI real", F.moeda_br(t["bdi"]), border=True)
+                o4.metric("Margem de contribuição", f"{t['margem'] * 100:,.1f}%".replace(",", "X").replace(".", ",").replace("X", ".") if t["margem"] is not None else "–", border=True)
+                pct = lambda m: (f"{m * 100:,.1f}%".replace(",", "X").replace(".", ",").replace("X", ".") if m is not None else "–")
+                _folha_o = P.folha_do_mes(conn, mes_o)
+                _colab = P.colab_por_linha_obras(ob["linhas"], _folha_o)
+                def _por_colab(v, n):
+                    return F.moeda_br(v / n) if n else "–"
+                st.dataframe(pd.DataFrame([{"Obra": l["obra"], "Nome": l["nome"], "Receita": F.moeda_br(l["receita"]), "Custos": F.moeda_br(l["custo"]), "BDI real": F.moeda_br(l["bdi"]),
+                                            "Margem (BDI/receita)": pct(l["margem"]),
+                                            "Colab. (CLT)": (str(_colab.get(l["obra"], 0)) if _folha_o else "–"),
+                                            "Fat./colab.": (_por_colab(l["receita"], _colab.get(l["obra"], 0)) if _folha_o else "–"),
+                                            "Custo/colab.": (_por_colab(-l["custo"], _colab.get(l["obra"], 0)) if _folha_o else "–")} for l in ob["linhas"]]),
                              hide_index=True, width="stretch")
-                if cmp_["sem_correspondencia"]:
-                    st.warning("Obras da projeção sem correspondência única no DRE (confira o nome): "
-                               + "; ".join(f"{o['obra']} ({F.moeda_br(o['receita'])})" for o in cmp_["sem_correspondencia"]))
-                if abs(cmp_["receita_sem_projecao"]) > 0.005:
-                    st.caption(f"Receita do DRE em obras sem projeção neste mês: {F.moeda_br(cmp_['receita_sem_projecao'])}.")
-                st.caption(f"Projeção do arquivo “{_proj['arquivo']}” (importação #{_proj['id']}). BDI real = receita bruta − custos diretos do DRE; BDI previsto = receita − custos previstos da planilha.")
+                if _folha_o:
+                    st.caption(f"Colaboradores CLT pelos recibos de {mes_o[5:]}/{mes_o[:4]} (obra pelo departamento do recibo e o de-para de departamentos). "
+                               "Fat./colab. = receita ÷ colaboradores; Custo/colab. = custos diretos ÷ colaboradores. Ainda não entram os PJ pagos nas obras."
+                               + (f" Atenção: {sum(x['colab'] for x in _folha_o['sem_depara'])} recibo(s) sem de-para de departamento (veja a aba Pessoas; o cadastro de departamentos fica na aba Importações (V2))." if _folha_o["sem_depara"] else ""))
+                else:
+                    st.caption("Colab., Fat./colab. e Custo/colab. aparecem quando os recibos da folha do mês forem importados (aba Importações (V2)).")
+                c_l, c_p = st.columns(2)
+                c_l.markdown("**5 obras com maior BDI**")
+                c_l.dataframe(pd.DataFrame([{"Obra": l["obra"], "Nome": l["nome"], "BDI real": F.moeda_br(l["bdi"]), "Margem": pct(l["margem"])} for l in ob["top_lucro"]]), hide_index=True, width="stretch")
+                c_p.markdown("**5 obras com maior prejuízo**")
+                if ob["top_prejuizo"]:
+                    c_p.dataframe(pd.DataFrame([{"Obra": l["obra"], "Nome": l["nome"], "BDI real": F.moeda_br(l["bdi"]), "Margem": pct(l["margem"])} for l in ob["top_prejuizo"]]), hide_index=True, width="stretch")
+                else:
+                    c_p.success("Nenhuma obra com BDI negativo neste mês.")
+                st.caption(f"Fonte: DRE oficial importado do arquivo “{ob['arquivo']}” (importação #{ob['importacao_id']}).")
+
+                # ---- projecao de receitas (xlsx) x realizado
+                st.divider()
+                st.markdown("**Projeção de receitas × realizado**")
+                _proj = P.projecao_do_mes(conn, mes_o)
+                if _proj is None:
+                    st.info(f"Ainda não há projeção importada para {mes_o[5:]}/{mes_o[:4]}. Importe a planilha na aba **Importações (V2)**.")
+                else:
+                    cmp_ = P.projecao_x_realizado(_proj, ob, P.nomes_obras_extra(conn))
+                    _pr = lambda v: (F.pct_br(v) if v is not None else "–")
+                    p1, p2, p3, p4 = st.columns(4)
+                    p1.metric("Receita projetada", F.moeda_br(cmp_["receita_proj_total"]), border=True)
+                    p2.metric("Receita real (DRE)", F.moeda_br(cmp_["receita_real_total"]), border=True)
+                    _dv = cmp_["receita_real_total"] - cmp_["receita_proj_total"]
+                    p3.metric("Desvio", F.moeda_br(_dv), delta=F.pct_br(_dv / cmp_["receita_proj_total"]) if abs(cmp_["receita_proj_total"]) > 0.005 else None, border=True)
+                    p4.metric("BDI previsto", F.moeda_br(cmp_["total"]["bdi_proj"]), border=True)
+                    st.dataframe(pd.DataFrame([{"Obra (projeção)": x["obra_proj"], "Obra (DRE)": f"{x['codigo']} · {x['nome']}", "Receita projetada": F.moeda_br(x["receita_proj"]),
+                                                "Receita real": F.moeda_br(x["receita_real"]), "Desvio": F.moeda_br(x["desvio"]), "Desvio %": _pr(x["desvio_pct"]),
+                                                "BDI previsto": F.moeda_br(x["bdi_proj"]), "BDI real": F.moeda_br(x["bdi_real"]), "Desvio BDI": F.moeda_br(x["desvio_bdi"])} for x in cmp_["linhas"]]),
+                                 hide_index=True, width="stretch")
+                    if cmp_["sem_correspondencia"]:
+                        st.warning("Obras da projeção sem correspondência única no DRE (confira o nome): "
+                                   + "; ".join(f"{o['obra']} ({F.moeda_br(o['receita'])})" for o in cmp_["sem_correspondencia"]))
+                    if abs(cmp_["receita_sem_projecao"]) > 0.005:
+                        st.caption(f"Receita do DRE em obras sem projeção neste mês: {F.moeda_br(cmp_['receita_sem_projecao'])}.")
+                    st.caption(f"Projeção do arquivo “{_proj['arquivo']}” (importação #{_proj['id']}). BDI real = receita bruta − custos diretos do DRE; BDI previsto = receita − custos previstos da planilha.")
 
 if aba_adm.open or _TODAS:                                   # so' a aba aberta e' executada (sem isso as 10 abas rodavam a cada clique)
     with aba_adm:

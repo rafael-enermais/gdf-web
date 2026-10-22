@@ -60,33 +60,27 @@ def montar_ctx(conn, mes: str, gerado_em: str = "") -> dict:
 
     ctx = {"mes": mes, "gerado_em": gerado_em, "dre": None, "serie": [], "obras": None, "proj": None, "adm": None, "desp": None, "pessoas": None, "hist": None, "avisos": []}
 
-    # --- DRE: 1) confirmado  2) DRE oficial importado (PDF)  3) reconstrucao pela API
-    conf = P.confirmacao_ativa(conn, mes) if P.confirmacao_instalada(conn) else None
-    if conf:
-        d = P.dre_de_folhas(conf["valores"] or {})
+    # --- DRE: 1) confirmado  2) DRE oficial importado (PDF), ainda nao confirmado  3) API do Sienge (padrao)
+    r = P.dre_resolvido(conn, mes)
+    if r and r["conf"]:
+        conf, d = r["conf"], r["dre"]
         fontes = conf["fontes"] or {}
         ctx["dre"] = {"linhas": d["linhas"], "valores": d["valores"], "origem": "DRE confirmado", "fontes": fontes,
                       "quem": conf["quem"], "quando": conf["quando"], "observacao": conf["observacao"],
                       "manuais": sorted(k for k, f in fontes.items() if f == "MANUAL")}
     else:
-        imp = P.dre_importacao_ativa(conn, mes)
-        if imp:
-            contas = [{"plano_cod": c, "plano_nome": "", "valor": v} for c, v in P.dre_contas_importadas(conn, imp["id"]).items()]
-            origem = "DRE oficial (PDF) — ainda não confirmado"
-        else:
-            contas = P.resultado_por_conta(conn, mes, sem_previsao=True)
-            origem = "Reconstruído pela API do Sienge — a conferir"
-        d = P.dre_do_mes(contas)
+        d = r["dre"] if r else P.dre_do_mes([])
+        origem = {"pdf": "DRE oficial (PDF) — ainda não confirmado", "api": "API do Sienge (padrão) — a conferir"}.get(r["fonte"] if r else "", "Sem dados no mês")
         ctx["dre"] = {"linhas": d["linhas"], "valores": d["valores"], "origem": origem, "fontes": {}, "quem": None, "quando": None,
                       "observacao": None, "manuais": []}
     import datetime as _dt
     _hoje = agora_br().date()
     ctx["serie"] = P.receita_mensal(conn, mes_atual=f"{_hoje.year}-{_hoje.month:02d}")      # mes em andamento fica de fora (incompleto)
 
-    # --- Obras (DRE oficial importado)
+    # --- Obras (PDF oficial ou API do Sienge, conforme a fonte do mes)
     try:
-        if mes in P.meses_com_dre(conn):
-            ob = P.obras_do_dre(conn, mes)
+        ob = P.obras_do_mes(conn, mes)
+        if ob:
             folha = P.folha_do_mes(conn, mes)
             ob["colab"] = P.colab_por_linha_obras(ob["linhas"], folha) if folha else {}
             extra = P.nomes_obras_extra(conn)
@@ -264,9 +258,9 @@ def _nome_obra(l, nome_cheio):
 def p_obras(c, n, N, ctx):
     _moldura(c, n, N, "Obras", ctx)
     ob = ctx["obras"]
-    y = titulo(c, TOPY, "Resultado por obra", "DRE oficial do Sienge · BDI real = receita bruta − custos diretos")
+    y = titulo(c, TOPY, "Resultado por obra", ("DRE oficial do Sienge (PDF)" if (ob or {}).get("fonte") == "PDF" else "API do Sienge") + " · BDI real = receita bruta − custos diretos")
     if not ob:
-        _vazio(c, y, "Falta o DRE oficial em PDF deste mês (aba Importações (V2) do painel). Importe o arquivo e gere o relatório de novo.")
+        _vazio(c, y, "Sem dados por obra neste mês: não há PDF do DRE importado nem títulos emitidos carregados pela API do Sienge.")
         return
     t = ob["total"]
     kw = (CW - 3 * 10) / 4
@@ -346,15 +340,20 @@ def p_resultado(c, n, N, ctx):
     _moldura(c, n, N, "Resultado", ctx)
     y = titulo(c, TOPY, "Receita − Custo = BDI − Administração = Resultado", _mes_extenso(ctx["mes"]))
     ob, a = ctx["obras"], ctx["adm"]
-    if not ob or not a or not a.get("orcamento"):
-        _vazio(c, y, "Esta página precisa do DRE oficial por obra (para receita, custo e BDI) e do Orçamento ADM (para a administração realizada) do mês. "
+    dv_ = (ctx.get("dre") or {}).get("valores")
+    if not (dv_ or ob) or not a or not a.get("orcamento"):
+        _vazio(c, y, "Esta página precisa do DRE do mês (receita, custo e BDI) e do Orçamento ADM (para a administração realizada). "
                      "Importe o que falta na aba Importações (V2).")
         return
-    rec, cus, bdi = ob["total"]["receita"], ob["total"]["custo"], ob["total"]["bdi"]
+    if dv_:                                                      # receita e custo do DRE do mes (fonte confirmada); BDI = receita bruta - custos diretos
+        rec, cus = dv_["01"], dv_["04"]
+        bdi = round(rec + cus, 2)
+    else:
+        rec, cus, bdi = ob["total"]["receita"], ob["total"]["custo"], ob["total"]["bdi"]
     adm = a["orcamento"]["total"]["realizado"]
     res = round(bdi - adm, 2)
     kw = (CW - 4 * 10) / 5
-    for i, (r_, val, sub) in enumerate([("Receita", mm(rec), "DRE oficial"), ("Custo direto", mm(-cus if cus < 0 else cus), "obras"),
+    for i, (r_, val, sub) in enumerate([("Receita", mm(rec), "DRE do mês"), ("Custo direto", mm(-cus if cus < 0 else cus), "obras"),
                                         ("BDI", mm(bdi), "receita − custo"), ("Administração", mm(adm), "realizado do mês (orçamento ADM)"),
                                         ("Resultado", mm(res), "BDI − administração")]):
         kpi(c, MX + i * (kw + 10), y, kw, 62, r_, val, sub, dark=(i == 4), vsize=11.5)
@@ -368,20 +367,20 @@ def p_resultado(c, n, N, ctx):
     if ac:
         y = caixa_nota(c, y, f"Administração no acumulado do ano (orçamento ADM): orçado {mm(ac['total']['orcado'])}, realizado {mm(ac['total']['realizado'])}, "
                              f"desvio {mm(ac['total']['desvio'], 2, True)} ({_pc(ac['total']['desvio_pct'])}).")
-    caixa_nota(c, y, "Receita e custo vêm do DRE oficial do Sienge (somando todas as obras); a administração é o realizado do Orçamento ADM. "
+    caixa_nota(c, y, "Receita e custo vêm do DRE do mês (fonte confirmada: API ou PDF do Sienge); a administração é o realizado do Orçamento ADM. "
                      "O acumulado do ano e o desvio mensal estão na página seguinte ao Resultado do mês, quando o histórico do painel da contabilidade está importado.")
 
 
 def p_proj(c, n, N, ctx):
     _moldura(c, n, N, "Previsto × realizado", ctx)
-    y = titulo(c, TOPY, "Previsto × realizado por obra", "Projeção de receitas × DRE oficial do mês")
+    y = titulo(c, TOPY, "Previsto × realizado por obra", "Projeção de receitas × realizado do mês")
     cm = ctx.get("proj")
     if not cm:
-        _vazio(c, y, "Falta a projeção de receitas do mês (planilha xlsx) e/ou o DRE oficial. Importe na aba Importações (V2).")
+        _vazio(c, y, "Falta a projeção de receitas do mês (planilha xlsx) e/ou o realizado por obra. Importe a projeção na aba Importações (V2).")
         return
     kw = (CW - 3 * 10) / 4
     dv = cm["receita_real_total"] - cm["receita_proj_total"]
-    for i, (r_, val, sub) in enumerate([("Receita projetada", mm(cm["receita_proj_total"]), "planilha de projeção"), ("Receita real", mm(cm["receita_real_total"]), "DRE oficial"),
+    for i, (r_, val, sub) in enumerate([("Receita projetada", mm(cm["receita_proj_total"]), "planilha de projeção"), ("Receita real", mm(cm["receita_real_total"]), "realizado por obra"),
                                         ("Desvio", mm(dv, 2, True), _pc(dv / cm["receita_proj_total"]) if abs(cm["receita_proj_total"]) > 0.005 else "–"), ("BDI previsto", mm(cm["total"]["bdi_proj"]), "receita − custo previsto")]):
         kpi(c, MX + i * (kw + 10), y, kw, 62, r_, val, sub, dark=(i == 2))
     y -= 78
@@ -392,7 +391,7 @@ def p_proj(c, n, N, ctx):
     y -= 10
     if cm["sem_correspondencia"]:
         y = caixa_nota(c, y, "Obras da projeção sem correspondência única no DRE: " + "; ".join(f"{o['obra']} ({fnum(o['receita'], 0)})" for o in cm["sem_correspondencia"][:6]) + ".")
-    caixa_nota(c, y, "Custo previsto e BDI previsto vêm da própria planilha de projeção; BDI real = receita bruta − custos diretos do DRE oficial.")
+    caixa_nota(c, y, "Custo previsto e BDI previsto vêm da própria planilha de projeção; BDI real = receita bruta − custos diretos do realizado por obra.")
 
 
 def p_despesas(c, n, N, ctx):
@@ -549,7 +548,7 @@ def p_notas(c, n, N, ctx):
     _moldura(c, n, N, "Notas e limitações", ctx)
     y = titulo(c, TOPY, "Notas e limitações deste rascunho")
     itens = ["Este PDF é um RASCUNHO: o layout está sendo validado e pode mudar. Os números são os mesmos das abas do painel (nenhum cálculo novo).",
-             "O DRE usa a confirmação da contabilidade quando existe; sem ela, mostra o DRE oficial importado ou a reconstrução pela API, sempre identificando a origem.",
+             "O DRE usa a confirmação da contabilidade quando existe; sem ela, mostra o DRE oficial importado (se houver) ou o cálculo pela API do Sienge (padrão), sempre identificando a origem.",
              "Edições do painel valem para dados importados e resultados gerados; não alteram o que vem da API do Sienge.",
              "Regras confirmadas pela contabilidade em 19/10/2026: previsões fora das despesas, distrato e títulos desfeitos/multas AEJ fora; INSS/FGTS pela guia fica (a guia entra depois da emissão do PDF).",
              "Pessoas: custo da folha não inclui PJ, INSS patronal nem provisões de férias e 13º. A % de horas extras usa como base a remuneração (proventos que não são HE nem DSR s/ HE, menos todos os descontos: remuneração líquida), definição confirmada pela contabilidade em 20/10/2026; a diferença para o painel dela (~R$ 139 mil de proventos) vem dos recibos, que prevalecem.",

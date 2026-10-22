@@ -67,13 +67,15 @@ def test_i03_sem_previsto_mostra_o_valor_mas_fica_sem_lancamento_e_sem_dre_nao_i
     assert ln["realizado"] is None and ln["status"] == "Sem lançamento"
 
 
-def test_termos_mes_cai_para_o_dre_resolvido(monkeypatch):
-    monkeypatch.setattr(P, "termos_do_mes", lambda conn, mes: None)
-    monkeypatch.setattr(M, "_dre_resolvido", lambda conn, mes: ({"valores": {"01": 1000.0, "05": 250.0}}, "Reconstruido pela API do Sienge (a conferir)"))
+def test_termos_mes_usa_a_regra_unica_do_painel(monkeypatch):
+    base = {"rec": 1000.0, "cus": 750.0, "bdi": 250.0, "rec_p": None, "bdi_p": None}
+    monkeypatch.setattr(P, "termos_do_mes", lambda conn, mes: {**base, "fonte": "api"})
     t = M._termos_mes(None, "2026-09")
     assert t["rec"] == 1000.0 and t["bdi"] == 250.0 and t["rec_p"] is None and "API" in t["fonte"]
-    monkeypatch.setattr(M, "_dre_resolvido", lambda conn, mes: ({"valores": {}}, "Reconstruido pela API do Sienge (a conferir)"))
-    assert M._termos_mes(None, "2026-09") is None
+    monkeypatch.setattr(P, "termos_do_mes", lambda conn, mes: {**base, "fonte": "confirmado"})
+    assert "confirmado" in M._termos_mes(None, "2026-09")["fonte"]
+    monkeypatch.setattr(P, "termos_do_mes", lambda conn, mes: None)
+    assert M._termos_mes(None, "2026-09") is None                    # mes sem dado: nada a calcular
 
 
 def test_um_indicador_que_falha_nao_derruba_os_outros(monkeypatch):
