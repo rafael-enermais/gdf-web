@@ -7,6 +7,8 @@ nao foram totalmente pagos/recebidos. Completa a rotina diaria (que olha pagamen
 Variaveis: SIENGE_USER, SIENGE_PASSWORD, SIENGE_BASE_URL (opcional), DATABASE_URL (so' para gravar).
   GDF_ABERTOS_GRAVAR = "sim" grava no banco; qualquer outro valor (padrao) so' MEDE (conta titulos/tempo, nao grava nada).
   GDF_ABERTOS_INI / GDF_ABERTOS_FIM = "AAAA-MM" (padrao 2023-01 .. 2032-12).
+  GDF_ABERTOS_LADO = "P" (so' a pagar), "R" (so' a receber) ou vazio/outro (os dois).
+  GDF_ABERTOS_PRAZO_MIN = prazo global em minutos (padrao 40): passou disso, encerra limpo, sem perder o que ja' foi gravado.
 O repositorio e' PUBLICO e o log tambem: imprime SO contagens e tempos.
 """
 from __future__ import annotations
@@ -25,6 +27,8 @@ import sienge_api as S  # noqa: E402
 USUARIO_ROTINA = "rotina-abertos"
 PAUSA_ENTRE_CHAMADAS = 6
 ESPERAS_429 = (30, 60, 120, 240)
+PRAZO_GLOBAL_S = 40 * 60            # encerra limpo antes do limite de 45 min do job do GitHub
+PAUSA_APOS_ESTOURO_S = 60          # respiro dado ao Sienge depois de uma janela sem resposta
 LIMITE_POR_JANELA_S = 300          # se uma janela passar disso, desiste dela (registra no log) e segue para a proxima, em vez de ficar parado
 
 
@@ -62,23 +66,65 @@ def _contar_data_base_diferente(regs: list) -> tuple:
     return dif, tot
 
 
-def executar(conn, cli, ini: str, fim: str, gravar: bool, buscar=None, log=print, limite_s: int = 0) -> int:
-    """Devolve 0 (ok) ou 1 (alguma busca falhou). `buscar(cli, lado, mes_ini, tipo, mes_fim=)` injetavel para teste."""
+def _meses_da_janela(a: str, b: str) -> list:
+    """Quebra a janela 'AAAA-MM'..'AAAA-MM' em janelas de 1 mes: [(mes, mes), ...]. Funcao pura."""
+    y, m = int(a[:4]), int(a[5:7])
+    yf, mf = int(b[:4]), int(b[5:7])
+    out = []
+    while (y, m) <= (yf, mf):
+        c = f"{y:04d}-{m:02d}"
+        out.append((c, c))
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return out
+
+
+def executar(conn, cli, ini: str, fim: str, gravar: bool, buscar=None, log=print, limite_s: int = 0,
+             lados=("P", "R"), prazo_global_s: int = 0, pausa_apos_estouro_s: int = 0, seguidas_max: int = 3, relogio=time.monotonic,
+             dormir=time.sleep) -> int:
+    """Devolve 0 (ok) ou 1 (alguma busca falhou). `buscar(cli, lado, mes_ini, tipo, mes_fim=)` injetavel para teste.
+    Protecoes contra o Sienge lento (cargas #7/#8 de 21/10/2026 falharam por isso):
+      - janela que estoura o limite e' QUEBRADA em meses e refeita mes a mes (apos uma pausa), em vez de ser perdida;
+      - `seguidas_max` janelas seguidas sem resposta = o Sienge esta fora; encerra o lado em vez de gastar o tempo todo;
+      - `prazo_global_s`: ao passar disso encerra limpo (o que ja' foi gravado fica; o lado e' fechado com status ERRO);
+      - `lados`: ("P",) ou ("R",) permite carregar um lado por vez."""
     buscar = buscar or S.buscar_bulk
     falhas = 0
     sids = {}
     totais = {"P": [0, 0], "R": [0, 0]}
     campos_vistos = {"P": False, "R": False}
-    for lado in ("P", "R"):
+    t_inicio = relogio()
+    passou_prazo = False
+
+    def _restante():
+        return (prazo_global_s - (relogio() - t_inicio)) if prazo_global_s else None
+
+    for lado in lados:
+        if prazo_global_s and _restante() <= 0:
+            falhas += 1
+            passou_prazo = True
+            log(f"{lado}: prazo global de {prazo_global_s // 60} min esgotado antes de começar este lado; nada feito aqui")
+            continue
         if gravar:
             sids[lado] = P.criar_sync(conn, ini, lado, "D", USUARIO_ROTINA)
         acum = {"titulos": 0, "baixas": 0, "rateios": 0, "liquido": 0.0}
         erro = None
-        for (a, b) in S.janelas_abertos(ini, fim):
+        seguidas = 0
+        fila = list(S.janelas_abertos(ini, fim))
+        while fila:
+            a, b = fila.pop(0)
+            if prazo_global_s and _restante() <= 0:
+                falhas += 1
+                passou_prazo = True
+                erro = f"prazo global de {prazo_global_s // 60} min esgotado; faltaram janelas a partir de {a}"
+                log(f"{lado}: {erro} (encerrando limpo)")
+                break
+            lim = limite_s
+            if prazo_global_s:
+                lim = max(10, int(min(limite_s or _restante(), _restante())))
             t0 = time.monotonic()
             log(f"{lado} vencimento {a}..{b}: pedindo ao Sienge...")
             try:
-                regs = _com_limite(limite_s, lambda: buscar(cli, lado, a, "D", mes_fim=b))
+                regs = _com_limite(lim, lambda: buscar(cli, lado, a, "D", mes_fim=b))
                 abertos = S.somente_abertos(regs, lado)
                 if regs and not campos_vistos[lado] and isinstance(regs[0], dict):       # SO os nomes dos campos (nunca valores): confere se existe 'vencimento original'
                     campos_vistos[lado] = True
@@ -92,10 +138,24 @@ def executar(conn, cli, ini: str, fim: str, gravar: bool, buscar=None, log=print
                     cont = P.gravar_normalizado(conn, sids[lado], S.normalizar_titulos(lado, abertos))
                     for k in acum:
                         acum[k] += cont.get(k) or 0
+                seguidas = 0
             except _Estourou:
+                if a != b:                                    # janela grande: quebra em meses e tenta de novo, depois de dar um respiro ao Sienge
+                    log(f"{lado} vencimento {a}..{b}: sem resposta em {lim}s; vou refazer mês a mês")
+                    if pausa_apos_estouro_s:
+                        dormir(pausa_apos_estouro_s)
+                    fila = _meses_da_janela(a, b) + fila
+                    continue
                 falhas += 1
-                erro = f"janela {a}..{b} passou de {limite_s}s sem resposta"
-                log(f"ERRO {lado} vencimento {a}..{b}: sem resposta em {limite_s}s (desisti desta janela)")
+                seguidas += 1
+                erro = f"janela {a}..{b} passou de {lim}s sem resposta"
+                log(f"ERRO {lado} vencimento {a}..{b}: sem resposta em {lim}s (desisti deste mês)")
+                if seguidas >= seguidas_max:
+                    erro = f"{seguidas} meses seguidos sem resposta do Sienge; lado {lado} encerrado em {a}"
+                    log(f"{lado}: {erro} (o Sienge parece fora do ar; rode de novo mais tarde)")
+                    break
+                if pausa_apos_estouro_s:
+                    dormir(pausa_apos_estouro_s)
             except Exception as exc:
                 falhas += 1
                 erro = str(exc)
@@ -106,7 +166,8 @@ def executar(conn, cli, ini: str, fim: str, gravar: bool, buscar=None, log=print
             P.finalizar_sync(conn, sids[lado], "ERRO" if erro else "OK", acum["titulos"], acum["baixas"], acum["rateios"], acum["liquido"], erro)
             P.registrar_log(conn, "ROTINA_ABERTOS", "ERRO" if erro else "INFO", USUARIO_ROTINA, ini,
                             {"lado": lado, "janela": f"{ini}..{fim}", "titulos": acum["titulos"], "baixas": acum["baixas"], "rateios": acum["rateios"]})
-    log(f"resumo: pagar {totais['P'][0]} títulos ({totais['P'][1]} em aberto); receber {totais['R'][0]} títulos ({totais['R'][1]} em aberto); gravar={gravar}")
+    log(f"resumo: pagar {totais['P'][0]} títulos ({totais['P'][1]} em aberto); receber {totais['R'][0]} títulos ({totais['R'][1]} em aberto); gravar={gravar}"
+        + ("; PARADO PELO PRAZO GLOBAL" if passou_prazo else ""))
     return 1 if falhas else 0
 
 
@@ -159,6 +220,12 @@ def main(env=None) -> int:
     ini = (env.get("GDF_ABERTOS_INI") or "2023-01").strip()
     fim = (env.get("GDF_ABERTOS_FIM") or "2032-12").strip()
     modo = (env.get("GDF_ABERTOS_GRAVAR") or "").strip().lower()
+    lado_env = (env.get("GDF_ABERTOS_LADO") or "").strip().upper()
+    lados = (lado_env,) if lado_env in ("P", "R") else ("P", "R")
+    try:
+        prazo_s = int(float((env.get("GDF_ABERTOS_PRAZO_MIN") or "40").strip().replace(",", "."))) * 60
+    except ValueError:
+        prazo_s = PRAZO_GLOBAL_S
     gravar = modo in ("sim", "true", "1")
     try:
         user, pwd, base = S.credenciais(None, env)
@@ -169,7 +236,7 @@ def main(env=None) -> int:
     if modo == "diagnostico":
         return diagnosticar(cli, ini, fim)
     if not gravar:
-        return executar(None, cli, ini, fim, False, limite_s=LIMITE_POR_JANELA_S)
+        return executar(None, cli, ini, fim, False, limite_s=LIMITE_POR_JANELA_S, lados=lados, prazo_global_s=prazo_s, pausa_apos_estouro_s=PAUSA_APOS_ESTOURO_S)
     import psycopg2
     url = (env.get("DATABASE_URL") or "").strip()
     if not url:
@@ -188,7 +255,7 @@ def main(env=None) -> int:
         print(f"ERRO ao conectar no banco ({type(exc).__name__}).")
         return 1
     try:
-        return executar(conn, cli, ini, fim, True, limite_s=LIMITE_POR_JANELA_S)
+        return executar(conn, cli, ini, fim, True, limite_s=LIMITE_POR_JANELA_S, lados=lados, prazo_global_s=prazo_s, pausa_apos_estouro_s=PAUSA_APOS_ESTOURO_S)
     finally:
         conn.close()
 
