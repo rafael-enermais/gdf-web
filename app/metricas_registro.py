@@ -96,12 +96,36 @@ def posicao_do_mes(mes: str, hoje: dt.date | None = None) -> tuple:
 
 
 # ---------------------------------------------------------------- I03 margem de contribuicao
+def _tenta(conn, fn, *a):
+    """Chama uma leitura; qualquer erro de banco vira None (e desfaz a transacao para a conexao seguir usavel)."""
+    try:
+        return fn(conn, *a)
+    except Exception:                                               # noqa: BLE001
+        try:
+            conn.rollback()
+        except Exception:                                           # noqa: BLE001
+            pass
+        return None
+
+
+def _dre_resolvido(conn, mes: str) -> tuple:
+    """DRE do mes pela mesma prioridade do app: confirmado > oficial (PDF) > reconstruido pela API (a conferir). Devolve (dre, origem).
+    (Mesma regra da Dexie, copiada aqui de proposito: a rotina do Actions so' tem o psycopg2 instalado e nao pode importar a Dexie.)"""
+    conf = _tenta(conn, P.confirmacao_ativa, mes) if P.confirmacao_instalada(conn) else None
+    if conf:
+        return P.dre_de_folhas(conf["valores"] or {}), "DRE confirmado pela contabilidade"
+    imp = _tenta(conn, P.dre_importacao_ativa, mes)
+    if imp:
+        contas = [{"plano_cod": c, "plano_nome": "", "valor": v} for c, v in P.dre_contas_importadas(conn, imp["id"]).items()]
+        return P.dre_do_mes(contas), "DRE oficial (PDF), ainda nao confirmado"
+    return P.dre_do_mes(_tenta(conn, P.resultado_por_conta, mes, True) or []), "Reconstruido pela API do Sienge (a conferir)"
+
+
 def _termos_mes(conn, mes: str) -> dict | None:
     """Receita e BDI do mes (e os previstos, quando ha projecao) como o app calcula: DRE confirmado > oficial (PDF) > reconstruido pela API (a conferir)."""
-    t = P.termos_do_mes(conn, mes)
+    t = _tenta(conn, P.termos_do_mes, mes)
     if t:
         return {"rec": t["rec"], "bdi": t["bdi"], "rec_p": t["rec_p"], "bdi_p": t["bdi_p"], "fonte": "DRE confirmado pela contabilidade"}
-    from dexie_ferramentas import _dre_resolvido                   # import tardio: reaproveita a mesma prioridade de fontes da Dexie
     d, origem = _dre_resolvido(conn, mes)
     v = d.get("valores") or {}
     rec, bdi = v.get("01") or 0.0, v.get("05") or 0.0

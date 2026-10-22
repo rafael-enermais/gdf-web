@@ -68,12 +68,11 @@ def test_i03_sem_previsto_mostra_o_valor_mas_fica_sem_lancamento_e_sem_dre_nao_i
 
 
 def test_termos_mes_cai_para_o_dre_resolvido(monkeypatch):
-    import dexie_ferramentas as FERR
     monkeypatch.setattr(P, "termos_do_mes", lambda conn, mes: None)
-    monkeypatch.setattr(FERR, "_dre_resolvido", lambda conn, mes: ({"valores": {"01": 1000.0, "05": 250.0}}, "Reconstruido pela API do Sienge (a conferir)"))
+    monkeypatch.setattr(M, "_dre_resolvido", lambda conn, mes: ({"valores": {"01": 1000.0, "05": 250.0}}, "Reconstruido pela API do Sienge (a conferir)"))
     t = M._termos_mes(None, "2026-09")
     assert t["rec"] == 1000.0 and t["bdi"] == 250.0 and t["rec_p"] is None and "API" in t["fonte"]
-    monkeypatch.setattr(FERR, "_dre_resolvido", lambda conn, mes: ({"valores": {}}, "Reconstruido pela API do Sienge (a conferir)"))
+    monkeypatch.setattr(M, "_dre_resolvido", lambda conn, mes: ({"valores": {}}, "Reconstruido pela API do Sienge (a conferir)"))
     assert M._termos_mes(None, "2026-09") is None
 
 
