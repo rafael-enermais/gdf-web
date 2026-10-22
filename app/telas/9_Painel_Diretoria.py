@@ -129,17 +129,19 @@ def _adm_periodo(_conn, mes_ini: str, mes: str, carimbo: str):
         linhas_per = P.adm_linhas(_conn, mes_ini, mes, fora_adm, sem_previsao=sem_prev) if mes_ini != mes else linhas_mes
     orc = P.orcamento_ativo(_conn) if P.orcamento_instalado(_conn) else None
     orc_mes = orc_per = None
-    serie = []
+    serie, serie_g = [], []
     if orc:
         meses_orc = [m for m in PER.meses_entre(mes_ini, mes) if m in orc["meses"]]
         if mes in orc["meses"]:
             orc_mes = P.orcamento_resumo(_conn, orc["id"], mes)
         if meses_orc:
             orc_per = P.orcamento_resumo(_conn, orc["id"], mes, acumulado=True, mes_ini=meses_orc[0])
-        serie = [x for x in P.orcamento_serie_mensal(_conn, orc["id"]) if mes_ini <= x["mes"] <= mes]
+        serie_todas = P.orcamento_serie_mensal(_conn, orc["id"])
+        serie = [x for x in serie_todas if mes_ini <= x["mes"] <= mes]
+        serie_g = [x for x in serie_todas if PER.somar_meses(mes, -11) <= x["mes"] <= mes]       # grafico: 12 meses ate o mes de referencia
     if not (linhas_per or orc_per or orc_mes):
         return None
-    return {"linhas_mes": linhas_mes, "linhas_per": linhas_per, "orc_mes": orc_mes, "orc_per": orc_per, "serie_orc": serie}
+    return {"linhas_mes": linhas_mes, "linhas_per": linhas_per, "orc_mes": orc_mes, "orc_per": orc_per, "serie_orc": serie, "serie_orc_g": serie_g}
 
 
 def _fmt_num(v):
@@ -241,6 +243,8 @@ else:
     h3.markdown(f"<div class='gdf-periodo-txt'>Período: <b>{PER.rotulo(*PER.resolver(modo_per, mes))}</b></div>", unsafe_allow_html=True)
 mes_ini, mes = PER.resolver(modo_per, mes, mes_de)
 PER_ROT = PER.rotulo(mes_ini, mes)                           # '01/2026 a 10/2026'
+MES_INI_G = PER.somar_meses(mes, -11)                        # GRAFICOS: sempre os 12 meses ate o mes de referencia (nao seguem o filtro de periodo; cartoes e tabelas seguem)
+MESES_G = PER.meses_entre(MES_INI_G, mes)
 ACUM = PER.curto(mes_ini, mes)                               # cabecalho de coluna: 'Jan–Out/26'
 UM_MES = mes_ini == mes
 ctx = _ctx(conn, mes, CARIMBO)
@@ -378,9 +382,9 @@ if aba_res.open or _TODAS:
         g1, g2 = st.columns(2)
         with g1:
             _md("**Desvio mensal (realizado − previsto)**")
-            _idx_h = [i for i, m in enumerate(hist["desvio_meses"]) if mes_ini <= m["mes"] <= mes] if hist and hist["desvio_linhas"] else []      # so' os meses do periodo escolhido
+            _idx_h = [i for i, m in enumerate(hist["desvio_meses"]) if MES_INI_G <= m["mes"] <= mes] if hist and hist["desvio_linhas"] else []      # grafico: 12 meses ate o mes de referencia
             if hist and hist["desvio_linhas"] and not _idx_h:
-                _info(f"O histórico do painel da contabilidade (até {_rot(hist['ate'])}) não tem desvio mensal em {PER_ROT}.")
+                _info(f"O histórico do painel da contabilidade (até {_rot(hist['ate'])}) não tem desvio mensal nos 12 meses até {_rot(mes)}.")
             elif hist and hist["desvio_linhas"]:
                 linhas_h = list(hist["desvio_linhas"])
                 sel_h = st.selectbox("Métrica", linhas_h, index=len(linhas_h) - 1, key="dir_ano_linha", label_visibility="collapsed")
@@ -393,7 +397,7 @@ if aba_res.open or _TODAS:
                     x=alt.X("Mês:N", sort=ml, axis=alt.Axis(labelAngle=0, title=None)), y=alt.Y("Desvio (R$ mi):Q", title="R$ milhões"),
                     color=alt.Color("cor:N", scale=alt.Scale(domain=["bom", "ruim"], range=[BOM, RUIM]), legend=None),
                     tooltip=["Mês", alt.Tooltip("Desvio (R$ mi):Q", format=",.2f")]).properties(height=240), width="stretch")
-                _cap(f"Meses de {PER_ROT} (histórico do painel da contabilidade). Para Custos e Despesas ADM, valor positivo indica estouro. Janeiro = desvio acumulado menos a soma de fevereiro em diante.")
+                _cap(f"Gráfico fixo nos últimos 12 meses ({PER.rotulo(MES_INI_G, mes)}; histórico do painel da contabilidade). Para Custos e Despesas ADM, valor positivo indica estouro. Janeiro = desvio acumulado menos a soma de fevereiro em diante.")
             else:
                 _info("O desvio mensal aparece quando o histórico do painel da contabilidade é importado.")
         with g2:
@@ -407,8 +411,7 @@ if aba_res.open or _TODAS:
                 _cap("Faturamento necessário para cobrir o déficit acumulado de base-line, distribuído proporcionalmente à projeção.")
             else:
                 _info("A recomposição aparece quando o histórico do painel da contabilidade é importado.")
-        _ini_g = min(mes_ini, PER.somar_meses(mes, -11))                       # grafico: o periodo escolhido, com no minimo 12 meses
-        serie = [x for x in ctx["serie"] if _ini_g <= x["mes"] <= mes]
+        serie = [x for x in ctx["serie"] if MES_INI_G <= x["mes"] <= mes]       # grafico: sempre 12 meses ate o mes de referencia
         if len(serie) >= 2:
             _md("**Receita mês a mês**")
             rots = [_rot(x["mes"]) for x in serie]
@@ -615,14 +618,15 @@ if aba_adm.open or _TODAS:
                 k[3].metric("Realizado no período", _mi(ac["total"]["realizado"]) if ac else "–", _delta(ac["total"]["realizado"], ac["total"]["orcado"]) if ac else None, delta_color="inverse", border=True)
                 acima_n = sum(1 for x in so if x["realizado"] > x["orcado"])
                 k[4].metric("Meses acima do orçado", f"{acima_n} de {len(so)}" if so else "–", "realizado > orçado", delta_color="off", border=True)
-                if len(so) > 1:
-                    _md("**Despesas ADM — orçado × realizado por mês**")
+                so_g = ap.get("serie_orc_g") or []
+                if len(so_g) > 1:
+                    _md("**Despesas ADM — orçado × realizado por mês (12 meses)**")
                     linhas_g = []
-                    for x in so:
+                    for x in so_g:
                         linhas_g.append({"Mês": _rot(x["mes"]), "Série": "Orçado", "v": x["orcado"] / 1e6})
                         linhas_g.append({"Mês": _rot(x["mes"]), "Série": "Realizado acima do orçado" if x["realizado"] > x["orcado"] else "Realizado", "v": x["realizado"] / 1e6})
                     dg = pd.DataFrame(linhas_g)
-                    ordem_m = [_rot(x["mes"]) for x in so]
+                    ordem_m = [_rot(x["mes"]) for x in so_g]
                     estilo.altair(alt.Chart(dg).mark_bar().encode(
                         x=alt.X("Mês:N", sort=ordem_m, axis=alt.Axis(labelAngle=0, title=None)), xOffset=alt.XOffset("Série:N"),
                         y=alt.Y("v:Q", title="R$ milhões"),
@@ -761,9 +765,14 @@ if aba_desp.open or _TODAS:
                                            "% do mês": [F.pct_br(x[1] / tot_mes) if tot_mes else "–" for x in contas_mes[:5]]}), hide_index=True, width="stretch")
                 _cap("Contas pagas, exceto as contas de pessoas e encargos (aba Pessoas). Conforme as regras da aba “Regras” do Painel EnerMais.")
             with e2:
-                _md(f"**Evolução mensal · {conta or 'todas as contas'}**")
-                vals = DD.serie_mensal(dd, ms, conta)
-                estilo.altair(_barras_mes(rots, vals, destaque=len(ms) - 1), width="stretch")
+                _md(f"**Evolução mensal · {conta or 'todas as contas'} (12 meses)**")
+                if mes_ini <= MES_INI_G:
+                    dd12 = dd
+                else:                                                            # periodo curto: carrega os 12 meses so' para o grafico (cartoes e tabelas seguem o periodo)
+                    _l12, _f12 = _pagos(conn, MES_INI_G, mes, CARIMBO)
+                    dd12 = DD.despesas_df(DD.para_df(_l12), _f12)
+                vals = DD.serie_mensal(dd12, MESES_G, conta)
+                estilo.altair(_barras_mes([m[5:] + "/" + m[2:4] for m in MESES_G], vals, destaque=len(MESES_G) - 1), width="stretch")
                 cr = DD.agrupar(dd, "credor", mes, conta=conta)
                 _md(f"**Principais credores · {conta or 'todas as contas'}**")
                 cr_df = pd.DataFrame({"Credor": [x["chave"] for x in cr["linhas"]], "ac": [x["acumulado"] for x in cr["linhas"]], "mes": [x["mes"] for x in cr["linhas"]]})
@@ -816,7 +825,7 @@ if aba_pes.open or _TODAS:
             c1, c2 = st.columns(2)
             with c1:
                 _md("**Colaboradores ativos**")
-                _hc = [(m, hc_por_mes.get(m, n_mes if m == mes else None)) for m in ms]
+                _hc = [(m, hc_por_mes.get(m, n_mes if m == mes else None)) for m in MESES_G]       # grafico: 12 meses
                 _hc = [(m, x) for m, x in _hc if x is not None]
                 if _hc:
                     rots_hc = [m[5:] + "/" + m[2:4] for m, _ in _hc]
@@ -825,7 +834,7 @@ if aba_pes.open or _TODAS:
             with c2:
                 _md("**Horas extras × receita**")
                 sf = HIST.serie_he_combinada(hist, pes["serie"] if pes else [])
-                ms_g = PER.meses_entre(min(mes_ini, PER.somar_meses(mes, -5)), mes)              # no minimo 6 meses no grafico, mesmo com periodo curto
+                ms_g = MESES_G                                                                   # grafico: sempre 12 meses ate o mes de referencia
                 ev_g = DD.evolucao_he_receita(sf, ctx["serie"], ms_g)
                 if sum(1 for x in ev_g if x["he_pct"] is not None) >= 2:
                     rots_g = [_rot(x["mes"]) for x in ev_g]
