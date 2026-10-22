@@ -162,12 +162,13 @@ def _sem_clientes_do_grupo(completo: bool) -> str:
     return "" if completo else f"AND NOT (t.lado='R' AND {sql_nucleo('t.contraparte_nome')} = ANY(%(grupo)s))"
 
 
-def _abertos_sql(venc: str, incluir_previsao: bool, completo: bool = True) -> str:
-    """CTE comum: titulos vencidos (vencimento <= %(venc_ate)s) e ainda nao quitados ate %(pago_ate)s, com o valor em aberto."""
+def _abertos_sql(venc: str, incluir_previsao: bool, completo: bool = True, filtro_venc: str = "<= %(venc_ate)s") -> str:
+    """CTE comum: titulos vencidos (vencimento <= %(venc_ate)s) e ainda nao quitados ate %(pago_ate)s, com o valor em aberto.
+    `filtro_venc` troca a condicao do vencimento (ex.: '> %(venc_ate)s' para os titulos A VENCER)."""
     return f"""WITH pg AS (SELECT lado, bill_id, installment_id, sum(bruto) AS v FROM pnl_v_baixa WHERE data_pagamento <= %(pago_ate)s GROUP BY 1,2,3)
                SELECT t.lado, t.contraparte_nome, t.numero_doc, {venc} AS venc, t.valor_original - COALESCE(pg.v, 0) AS aberto
                FROM pnl_titulo t LEFT JOIN pg ON pg.lado=t.lado AND pg.bill_id=t.bill_id AND pg.installment_id=t.installment_id
-               WHERE t.lado IN ('P','R') AND {venc} <= %(venc_ate)s AND t.valor_original - COALESCE(pg.v, 0) > 0.01
+               WHERE t.lado IN ('P','R') AND {venc} {filtro_venc} AND t.valor_original - COALESCE(pg.v, 0) > 0.01
                  {_prev(incluir_previsao)} {_desfeitos()} {_sem_clientes_do_grupo(completo)}"""
 
 
@@ -203,6 +204,25 @@ def inadimplencia(conn, venc_ate: dt.date, pago_ate: dt.date, incluir_previsao: 
             d["mais_antigo"] = min(d["mais_antigo"], v)
         top = sorted(por.values(), key=lambda d: -d["valor"])[:topo]
         out[nome] = {"total": total, "n": len(sel), "faixas": faixas, "top": top}
+    return out
+
+
+def a_vencer(conn, venc_ate: dt.date, pago_ate: dt.date, dias: int = 30, incluir_previsao: bool = False, completo: bool = False) -> dict:
+    """Titulos ainda NAO vencidos na posicao (vencimento depois de `venc_ate`) e em aberto ate `pago_ate`: por lado, o que vence nos proximos `dias` dias
+    (ate' `venc_ate` + dias) e o total a vencer (sem limite de prazo = o que falta para fechar a carteira). Mesmas regras de `inadimplencia`
+    (vencimento original, sem previsao, sem distrato, sem clientes do grupo no a receber)."""
+    venc = coluna_vencimento(conn)
+    limite = venc_ate + dt.timedelta(days=dias)
+    with conn.cursor() as cur:
+        cur.execute(_abertos_sql(venc, incluir_previsao, completo, filtro_venc="> %(venc_ate)s"),
+                    {"venc_ate": venc_ate, "pago_ate": pago_ate, "grupo": nucleos_do_grupo(conn) or ["(sem grupo)"]})
+        linhas = cur.fetchall()
+    out = {"venc_ate": venc_ate, "pago_ate": pago_ate, "dias": dias, "limite": limite}
+    for lado, nome in (("R", "receber"), ("P", "pagar")):
+        sel = [l for l in linhas if l[0] == lado]
+        prox = [l for l in sel if l[3] is not None and l[3] <= limite]
+        out[nome] = {"total": round(sum(float(l[4]) for l in sel), 2), "n": len(sel),
+                     "proximos": round(sum(float(l[4]) for l in prox), 2), "n_proximos": len(prox)}
     return out
 
 

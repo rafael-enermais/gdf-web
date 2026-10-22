@@ -146,7 +146,7 @@ def test_schema_e_idempotente(pg_dsn):
     with c.cursor() as cur:
         cur.execute(SCHEMA_SQL.read_text(encoding="utf-8"))
         cur.execute(SCHEMA_SQL.read_text(encoding="utf-8"))
-        cur.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema='gdf' AND table_name NOT LIKE 'pnl\\_%' AND table_name NOT LIKE 'dexie\\_%'")
+        cur.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema='gdf' AND table_name NOT LIKE 'pnl\\_%' AND table_name NOT LIKE 'dexie\\_%' AND table_name NOT LIKE 'metrica\\_%'")
         assert cur.fetchone()[0] == 8      # so' as do schema.sql (o Painel V2, pnl_*, e a memoria da Dexie, dexie_*, tem teste proprio)
     c.close()
 

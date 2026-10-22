@@ -77,6 +77,7 @@ paginas = [
     st.Page("telas/8_Painel_EnerMais.py", title="Painel EnerMais (em construção)", icon="🏗️", url_path="painel-enermais"),
     _PAGINA_DIRETORIA,
     st.Page("telas/10_Dexie.py", title="Dexie (assistente IA)", icon="🤖", url_path="dexie"),
+    st.Page("telas/11_Metricas.py", title="Métricas do mês", icon="🎯", url_path="metricas"),
     st.Page("telas/3_Historico.py", title="Histórico", icon="🗂️", url_path="historico"),
     st.Page("telas/4_Mapa_de_Contas.py", title="Mapa de contas", icon="🧭", url_path="mapa"),
     st.Page("telas/7_Ajuda.py", title="Ajuda", icon="❓", url_path="ajuda"),
