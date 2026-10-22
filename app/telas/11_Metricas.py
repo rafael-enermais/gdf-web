@@ -31,13 +31,18 @@ if mes == atual:
     st.info("Mês em andamento: as posições de contas a pagar e a receber são **ao vivo** (até hoje). Quando o mês fechar, grave de novo para fixar o fim do mês.")
 
 
+def _pct(v):
+    """O registro guarda o % em pontos (43.8 = 43,8%); o formatador do app espera fração (0.438)."""
+    return F.pct_br(None if v is None else float(v) / 100.0)
+
+
 def _quadro(linhas: list) -> pd.DataFrame:
     def valor(l):
         if l["item_id"] == "I03":
-            return F.pct_br(l["realizado"])
-        return F.moeda_br(l["realizado"])
+            return _pct(l["realizado"])
+        return F.moeda_br(None if l["realizado"] is None else float(l["realizado"]))
     return pd.DataFrame([{"Item": l["item_id"], "Dono (área)": l["pessoa"], "Meta": l["meta"] or "–", "Realizado": valor(l),
-                          "% atingimento": F.pct_br(l["pct_atingimento"]), "Status": l["status"], "Origem": l["origem"]} for l in linhas])
+                          "% atingimento": _pct(l["pct_atingimento"]), "Status": l["status"], "Origem": l["origem"]} for l in linhas])
 
 
 col1, col2 = st.columns(2)

@@ -205,7 +205,8 @@ def _textos(at):
     return " ".join([m.value for m in at.markdown] + [m.value for m in at.success] + [m.value for m in at.warning] + [m.value for m in at.info] + [m.value for m in at.error])
 
 
-def test_tela_calcula_sem_gravar_e_depois_grava(conn, dados):
+def test_tela_calcula_sem_gravar_e_depois_grava(conn, dados, monkeypatch):
+    monkeypatch.setattr(M, "_termos_mes", lambda c, mes: {"rec": 1000.0, "bdi": 400.0, "rec_p": 1000.0, "bdi_p": 500.0, "fonte": "teste"})
     agora = dt.datetime(2026, 10, 20, 10, 0)
     with patch("conexao.get_conn", return_value=conn), patch("fuso.agora_br", return_value=agora), patch("metricas_registro.agora_br", return_value=agora):
         at = _tela(conn).run()
@@ -214,6 +215,9 @@ def test_tela_calcula_sem_gravar_e_depois_grava(conn, dados):
         at.button(key="met_calc").click().run()
         assert not at.exception, at.exception
         assert any("Prévia" in s.value for s in at.subheader) and _contar(conn, "metrica_registro") == 0         # so' calculou
+        previa = at.dataframe[0].value.set_index("Item")
+        assert previa.loc["I27", "% atingimento"] == "91,1%" and previa.loc["I27", "Realizado"] == "R$ 700,00" and previa.loc["I22", "Realizado"] == "R$ 1.000,00"
+        assert previa.loc["I03", "Realizado"] == "40,0%" and previa.loc["I03", "% atingimento"] == "80,0%"      # pontos -> %, sem multiplicar por 100 de novo
         at.button(key="met_grava").click().run()
         assert not at.exception, at.exception
         assert _contar(conn, "metrica_registro") == 3 and "Registro de 10/2026 gravado" in _textos(at)
