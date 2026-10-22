@@ -13,6 +13,10 @@ on:
         description: "Gravar no banco? 'sim' grava; qualquer outra coisa so' mede (conta titulos e tempo)."
         required: false
         default: "nao"
+      lado:
+        description: "Qual lado? 'P' = so' a pagar, 'R' = so' a receber, vazio = os dois. Dica: carregue um lado por vez, sem disparar duas cargas coladas."
+        required: false
+        default: ""
       ini:
         description: "Primeiro mes (AAAA-MM). Vazio = 2023-01."
         required: false
@@ -32,7 +36,7 @@ concurrency:
 jobs:
   abertos:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -47,6 +51,8 @@ jobs:
           SIENGE_BASE_URL: ${{ secrets.SIENGE_BASE_URL }}
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           GDF_ABERTOS_GRAVAR: ${{ github.event_name == 'schedule' && 'sim' || github.event.inputs.gravar }}
+          GDF_ABERTOS_LADO: ${{ github.event.inputs.lado }}
+          GDF_ABERTOS_PRAZO_MIN: "40"
           GDF_ABERTOS_INI: ${{ github.event.inputs.ini }}
           GDF_ABERTOS_FIM: ${{ github.event.inputs.fim }}
           PYTHONUNBUFFERED: "1"
