@@ -234,3 +234,18 @@ def test_tela_pessoas_mostra_serie_de_receita(conn):
     assert not at.exception, at.exception
     tab = at.tabs[6].dataframe[0].value
     assert list(tab.columns) == ["Mês", "Receita bruta", "Var. % s/ mês anterior", "Fonte"] and "09/2026" in set(tab["Mês"])
+
+
+@pytest.mark.pg
+def test_credor_grupo_demais_pj_e_independente_do_outros_dir(conn):
+    assert P.credor_grupo_aceita(conn, "DEMAIS_PJ") and P.credor_grupo_aceita(conn, "OUTROS_DIR")
+    r = P.credor_grupo_adicionar(conn, "Colaborador Pj Exemplo Ltda", "teste@x", "DEMAIS_PJ")
+    assert r["ok"] and [c["chave"] for c in P.credor_grupo_ativos(conn, "DEMAIS_PJ")] == ["COLABORADOR PJ EXEMPLO LTDA"]
+    assert P.credor_grupo_ativos(conn) == []                                                  # nao vaza para 'Outros credores/Dir'
+    assert not P.credor_grupo_adicionar(conn, "COLABORADOR  PJ EXEMPLO LTDA", "teste@x", "DEMAIS_PJ")["ok"]
+    assert P.credor_grupo_adicionar(conn, "Colaborador Pj Exemplo Ltda", "teste@x")["ok"]       # o mesmo nome pode estar nos dois grupos
+    assert not P.credor_grupo_adicionar(conn, "Qualquer Um", "teste@x", "GRUPO_INEXISTENTE")["ok"]
+    logs = P.ultimos_logs(conn, acao="CREDOR_GRUPO_ADICIONADO")
+    assert logs and "EXEMPLO" not in str(logs[0]["detalhe"]).upper() and "DEMAIS_PJ" in str(logs[-1]["detalhe"] if len(logs) == 1 else [l["detalhe"] for l in logs])
+    assert P.credor_grupo_remover(conn, r["id"], "teste@x") and P.credor_grupo_ativos(conn, "DEMAIS_PJ") == []
+    assert len(P.credor_grupo_ativos(conn)) == 1                                              # remover num grupo nao mexe no outro

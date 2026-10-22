@@ -209,3 +209,18 @@ def test_nome_fantasia_do_pj_usa_o_cadastro_e_cai_na_razao_social():
     assert DD.nome_fantasia("Colaborador  Teste Ltda", mapa) == "Colab Teste"                     # casa sem diferenca de caixa/espacos
     assert DD.nome_fantasia("OUTRO PJ ME", mapa) == "OUTRO PJ ME"                                   # sem fantasia: razao social
     assert DD.nome_fantasia("X", None) == "X" == DD.nome_fantasia("X", {})
+
+
+def test_demais_colaboradores_pj_somam_numa_linha_sem_mostrar_nomes():
+    colabs = [{"credor": "PJ ALFA LTDA", "destino": "103", "valor": 5000.0},
+              {"credor": "Pj  Beta Participações Ltda", "destino": "ADM", "valor": 3000.0},
+              {"credor": "PJ GAMA", "destino": "103", "valor": 9000.0},
+              {"credor": "PJ BETA PARTICIPACOES LTDA - ME", "destino": "104", "valor": 1000.0}]
+    out = DD.agrupar_pj_demais(colabs, ["PJ ALFA", "PJ BETA PARTICIPACOES"])
+    assert [c["credor"] for c in out] == ["PJ GAMA", "Demais colaboradores-PJ"]
+    ag = out[1]
+    assert ag["agrupado"] and ag["n"] == 3 and ag["valor"] == 9000.0 and ag["destino"] == "vários"
+    assert "ALFA" not in str(ag).upper() and "BETA" not in str(ag).upper()
+    assert DD.agrupar_pj_demais(colabs, []) == colabs                         # sem cadastro: igual
+    assert DD.agrupar_pj_demais(colabs, ["NINGUEM"]) == colabs                 # ninguem casa: igual
+    assert DD.agrupar_pj_demais([], ["PJ ALFA"]) == []

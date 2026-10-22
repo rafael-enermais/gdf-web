@@ -117,6 +117,12 @@ def _outros_dir(_conn, carimbo: str) -> list:
     return [c["chave"] for c in P.credor_grupo_ativos(_conn)] if P.credor_grupo_instalado(_conn) else []
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def _demais_pj(_conn, carimbo: str) -> list:
+    """Chaves (nomes) do grupo 'Demais colaboradores-PJ' (lista 'PJ do mes' da aba Pessoas)."""
+    return [c["chave"] for c in P.credor_grupo_ativos(_conn, "DEMAIS_PJ")] if P.credor_grupo_instalado(_conn) else []
+
+
 @st.cache_data(ttl=1800, show_spinner="Lendo a administração do período…")
 def _adm_periodo(_conn, mes_ini: str, mes: str, carimbo: str):
     """Administracao no periodo: pagamentos das unidades ADM (mes de referencia e periodo todo) e orcado x realizado (mes, periodo e serie). None se nao ha nada."""
@@ -926,8 +932,13 @@ if aba_pes.open or _TODAS:
             if pj["colaboradores"]:
                 with st.expander(f"PJ do mês: {pj['total']} colaboradores (fonte: contas pagas “Salários PJ”)"):
                     _fant = _fantasias(conn, CARIMBO)
-                    _lin_pj = [{"Colaborador PJ": DD.nome_fantasia(c["credor"], _fant), "Razão social": c["credor"], "Alocado em": c["destino"], "Pago no mês": _m(c["valor"])} for c in pj["colaboradores"]]
+                    _pj_exib = DD.agrupar_pj_demais(pj["colaboradores"], _demais_pj(conn, CARIMBO))                  # cadastro: Importacoes V2 > credores > Demais colaboradores-PJ
+                    _lin_pj = [({"Colaborador PJ": c["credor"], "Razão social": f"{c['n']} colaboradores", "Alocado em": c["destino"], "Pago no mês": _m(c["valor"])} if c.get("agrupado")
+                                else {"Colaborador PJ": DD.nome_fantasia(c["credor"], _fant), "Razão social": c["credor"], "Alocado em": c["destino"], "Pago no mês": _m(c["valor"])}) for c in _pj_exib]
                     st.dataframe(pd.DataFrame(_lin_pj), hide_index=True, width="stretch")
+                    _n_ag = next((c["n"] for c in _pj_exib if c.get("agrupado")), 0)
+                    if _n_ag:
+                        _cap(f"“Demais colaboradores-PJ”: {_n_ag} colaboradores cadastrados para aparecer somados numa linha só (o total de {pj['total']} colaboradores acima continua contando todos).")
                     if not _fant:
                         _cap("Nome fantasia: ainda não carregado. Executar o SQL-30 e clicar em “Atualizar cadastros” no Painel EnerMais (aba de sincronização) para mostrar o nome fantasia no lugar da razão social.")
                     _cap("Regra (contabilidade, 20/10/2026): a fonte do PJ são as contas pagas, sem regras próprias. Cada credor com valor positivo conta 1 colaborador, alocado na obra (ou na administração) "

@@ -449,29 +449,38 @@ def _cadastros(conn, usuario):
 
 
 def _cadastro_credores(conn, usuario):
-    """De-para de credores: quem fica em 'Outros credores/Dir' (fora do ranking da Administracao). Antes ficava na aba Administracao."""
-    st.markdown("**Cadastro: credores em “Outros credores/Dir” (fora do ranking da Administração)**")
+    """De-para de credores: quem fica em 'Outros credores/Dir' (fora do ranking da Administracao) e em 'Demais colaboradores-PJ' (uma linha so' na lista de PJ da aba Pessoas)."""
     if not P.credor_grupo_instalado(conn):
+        st.markdown("**Cadastro: credores em “Outros credores/Dir” (fora do ranking da Administração)**")
         st.warning("Falta executar o **SQL-11** (`sql/v2_credor_grupo.sql`) no Supabase para poder agrupar credores. Até lá o ranking mostra todos.")
         return
+    _cadastro_grupo(conn, usuario, "OUTROS_DIR", "Cadastro: credores em “Outros credores/Dir” (fora do ranking da Administração)", "pn2_cg")
+    _cadastro_grupo(conn, usuario, "DEMAIS_PJ", "Cadastro: colaboradores PJ em “Demais colaboradores-PJ” (uma linha só na lista “PJ do mês”, aba Pessoas)", "pn2_pj")
+
+
+def _cadastro_grupo(conn, usuario, grupo: str, titulo: str, pref: str):
+    st.markdown(f"**{titulo}**")
+    if not P.credor_grupo_aceita(conn, grupo):
+        st.warning("Falta executar o **SQL-37** (`sql/v2_demais_pj.sql`) no Supabase para usar este grupo.")
+        return
     st.caption("O credor entra no grupo se o nome dele **começa com** o texto cadastrado (sem diferenciar acento ou maiúscula). Nada é apagado: remover só desativa.")
-    atuais = P.credor_grupo_ativos(conn)
+    atuais = P.credor_grupo_ativos(conn, grupo)
     if atuais:
         st.dataframe(pd.DataFrame([{"Cadastrado como": c["nome"], "Por": c["quem"] or "", "Quando": c["quando"].strftime("%d/%m/%Y")} for c in atuais]), hide_index=True, width="stretch")
     else:
         st.info("Nenhum credor cadastrado ainda neste grupo.")
     n1, n2 = st.columns([3, 1])
-    novo_nome = n1.text_input("Adicionar credor ao grupo (nome ou começo do nome)", key="pn2_cg_nome")
-    if n2.button("Adicionar", key="pn2_cg_add", disabled=not novo_nome.strip()):
-        r_add = P.credor_grupo_adicionar(conn, novo_nome, usuario)
+    novo_nome = n1.text_input("Adicionar credor ao grupo (nome ou começo do nome)", key=f"{pref}_nome")
+    if n2.button("Adicionar", key=f"{pref}_add", disabled=not novo_nome.strip()):
+        r_add = P.credor_grupo_adicionar(conn, novo_nome, usuario, grupo)
         if r_add["ok"]:
             st.rerun()
         else:
             st.error(r_add["erro"])
     if atuais:
         r1, r2 = st.columns([3, 1])
-        rem = r1.selectbox("Tirar do grupo", [c["id"] for c in atuais], format_func=lambda i: next(c["nome"] for c in atuais if c["id"] == i), key="pn2_cg_rem")
-        if r2.button("Tirar", key="pn2_cg_btn_rem"):
+        rem = r1.selectbox("Tirar do grupo", [c["id"] for c in atuais], format_func=lambda i: next(c["nome"] for c in atuais if c["id"] == i), key=f"{pref}_rem")
+        if r2.button("Tirar", key=f"{pref}_btn_rem"):
             P.credor_grupo_remover(conn, rem, usuario)
             st.rerun()
 

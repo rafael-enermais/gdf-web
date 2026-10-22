@@ -1251,43 +1251,63 @@ def credor_grupo_instalado(conn) -> bool:
         return False
 
 
-def credor_grupo_ativos(conn) -> list:
-    """Credores que estao no grupo 'Outros credores/Dir' (ativos): [{'id','chave','nome','quem','quando'}]."""
+GRUPOS_CREDOR = {"OUTROS_DIR": "Outros credores/Dir", "DEMAIS_PJ": "Demais colaboradores-PJ"}      # grupo -> rotulo mostrado
+
+
+def credor_grupo_aceita(conn, grupo: str) -> bool:
+    """True se o banco ja aceita esse grupo (o SQL-37 amplia o CHECK para 'DEMAIS_PJ'; 'OUTROS_DIR' vale desde o SQL-11)."""
+    if grupo == "OUTROS_DIR":
+        return credor_grupo_instalado(conn)
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, chave, COALESCE(nome_exibicao, chave), alterado_por, alterado_em FROM pnl_credor_grupo WHERE ativo AND grupo='OUTROS_DIR' ORDER BY chave")
+            cur.execute("SELECT count(*) FROM pg_constraint c JOIN pg_class t ON t.oid=c.conrelid JOIN pg_namespace n ON n.oid=t.relnamespace "
+                        "WHERE n.nspname='gdf' AND t.relname='pnl_credor_grupo' AND c.contype='c' AND pg_get_constraintdef(c.oid) LIKE %s", (f"%{grupo}%",))
+            return cur.fetchone()[0] >= 1
+    except Exception:
+        return False
+
+
+def credor_grupo_ativos(conn, grupo: str = "OUTROS_DIR") -> list:
+    """Credores ativos de um grupo ('OUTROS_DIR' = 'Outros credores/Dir'; 'DEMAIS_PJ' = 'Demais colaboradores-PJ'): [{'id','chave','nome','quem','quando'}]."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, chave, COALESCE(nome_exibicao, chave), alterado_por, alterado_em FROM pnl_credor_grupo WHERE ativo AND grupo=%s ORDER BY chave", (grupo,))
             return [{"id": i, "chave": c, "nome": n, "quem": q, "quando": e} for i, c, n, q, e in cur.fetchall()]
     except Exception:
         return []
 
 
-def credor_grupo_adicionar(conn, nome: str, usuario: str | None) -> dict:
-    """Poe um credor em 'Outros credores/Dir'. O credor casa se o nome dele COMECA com o texto informado (sem acento, sem diferenca de maiuscula).
+def credor_grupo_adicionar(conn, nome: str, usuario: str | None, grupo: str = "OUTROS_DIR") -> dict:
+    """Poe um credor num grupo. O credor casa se o nome dele COMECA com o texto informado (sem acento, sem diferenca de maiuscula).
     Devolve {'ok': True, 'id'} ou {'ok': False, 'erro'}. O log guarda so' o id (nada de nome de pessoa)."""
+    if grupo not in GRUPOS_CREDOR:
+        return {"ok": False, "erro": "Grupo desconhecido."}
     chave = norm_credor(nome)
     if len(chave) < 3:
         return {"ok": False, "erro": "Escreva pelo menos 3 letras do nome do credor."}
+    if not credor_grupo_aceita(conn, grupo):
+        return {"ok": False, "erro": "Falta executar o SQL-37 (sql/v2_demais_pj.sql) no Supabase para usar este grupo."}
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT id FROM pnl_credor_grupo WHERE ativo AND grupo='OUTROS_DIR' AND chave=%s", (chave,))
+            cur.execute("SELECT id FROM pnl_credor_grupo WHERE ativo AND grupo=%s AND chave=%s", (grupo, chave))
             if cur.fetchone():
                 return {"ok": False, "erro": "Esse credor já está no grupo."}
-            cur.execute("INSERT INTO pnl_credor_grupo (chave, nome_exibicao, grupo, alterado_por) VALUES (%s,%s,'OUTROS_DIR',%s) RETURNING id", (chave, str(nome).strip(), usuario))
+            cur.execute("INSERT INTO pnl_credor_grupo (chave, nome_exibicao, grupo, alterado_por) VALUES (%s,%s,%s,%s) RETURNING id", (chave, str(nome).strip(), grupo, usuario))
             novo = cur.fetchone()[0]
     except Exception as exc:
         return {"ok": False, "erro": f"Não consegui gravar: {exc}"}
-    registrar_log(conn, "CREDOR_GRUPO_ADICIONADO", "INFO", usuario, None, {"id": novo, "grupo": "OUTROS_DIR", "tamanho_do_nome": len(chave)})
+    registrar_log(conn, "CREDOR_GRUPO_ADICIONADO", "INFO", usuario, None, {"id": novo, "grupo": grupo, "tamanho_do_nome": len(chave)})
     return {"ok": True, "id": novo}
 
 
 def credor_grupo_remover(conn, id_: int, usuario: str | None) -> bool:
     """Tira o credor do grupo (ativo = false; a linha fica no historico). Devolve True se mudou algo."""
     with conn.cursor() as cur:
-        cur.execute("UPDATE pnl_credor_grupo SET ativo=false, alterado_por=%s, alterado_em=now() WHERE id=%s AND ativo", (usuario, int(id_)))
-        n = cur.rowcount
-    if n:
-        registrar_log(conn, "CREDOR_GRUPO_REMOVIDO", "INFO", usuario, None, {"id": int(id_), "grupo": "OUTROS_DIR"})
-    return bool(n)
+        cur.execute("UPDATE pnl_credor_grupo SET ativo=false, alterado_por=%s, alterado_em=now() WHERE id=%s AND ativo RETURNING grupo", (usuario, int(id_)))
+        r = cur.fetchone()
+    if r:
+        registrar_log(conn, "CREDOR_GRUPO_REMOVIDO", "INFO", usuario, None, {"id": int(id_), "grupo": r[0]})
+    return bool(r)
 
 
 def _periodo(mes_ini: str, mes_fim: str) -> tuple:

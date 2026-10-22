@@ -276,6 +276,22 @@ def marcar_outros_dir(df: pd.DataFrame, chaves: list, rotulo: str = "Outros cred
     return out
 
 
+def agrupar_pj_demais(colaboradores: list, chaves: list, rotulo: str = "Demais colaboradores-PJ") -> list:
+    """Lista de PJ do mes com os credores do grupo 'Demais colaboradores-PJ' somados numa linha so' (o nome COMECA com uma das chaves, sem acento/maiuscula).
+    -> mesma lista, sem esses credores + 1 linha {'credor': rotulo, 'destino': 'vários', 'valor': soma, 'n': quantos, 'agrupado': True} (nenhum nome aparece).
+    A contagem de colaboradores nao muda: so' a forma de mostrar. Sem chaves ou sem ninguem casando, devolve a lista como veio."""
+    norm = lambda t: re.sub(r"\s+", " ", _sem_acento(t)).upper()                  # noqa: E731
+    ch = [c for c in (norm(k) for k in (chaves or [])) if c]
+    if not ch or not colaboradores:
+        return list(colaboradores or [])
+    dentro = [c for c in colaboradores if any(norm(c["credor"]).startswith(k) for k in ch)]
+    if not dentro:
+        return list(colaboradores)
+    fora = [c for c in colaboradores if c not in dentro]
+    linha = {"credor": rotulo, "destino": "vários", "valor": round(sum(c["valor"] for c in dentro), 2), "n": len(dentro), "agrupado": True}
+    return sorted(fora + [linha], key=lambda c: -c["valor"])
+
+
 def rotular_obras(df: pd.DataFrame, nomes: dict) -> pd.DataFrame:
     """Coluna 'obra_rot' = a mesma linguagem da aba Obras: '<codigo> · <nome da obra>' para cada centro de custo ligado a uma obra pelo de-para;
     centros da administracao -> 'Administração'; codigo DEM -> 'Demais obras'; sem de-para -> 'Sem obra (<centro de custo>)'.

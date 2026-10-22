@@ -32,6 +32,7 @@ GRUPO_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_centro_g
 DRE_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_dre_pdf.sql"
 CONF_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_dre_confirmacao.sql"
 CREDOR_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_credor_grupo.sql"
+DEMAIS_PJ_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_demais_pj.sql"
 IMPOSTO_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_titulo_imposto.sql"
 DATABASE_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_titulo_vencimento_original.sql"
 VENCHIST_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_vencimento_historico.sql"
@@ -117,6 +118,7 @@ def pg_dsn():
         cur.execute(DRE_SQL.read_text(encoding="utf-8"))       # DRE oficial lido do PDF (pnl_dre_valor)
         cur.execute(CONF_SQL.read_text(encoding="utf-8"))      # confirmacao do DRE do mes (fonte por linha)
         cur.execute(CREDOR_SQL.read_text(encoding="utf-8"))    # de-para credor -> "Outros credores/Dir" (aba Administracao)
+        cur.execute(DEMAIS_PJ_SQL.read_text(encoding="utf-8"))  # SQL-37: grupo "Demais colaboradores-PJ"
         cur.execute(IMPOSTO_SQL.read_text(encoding="utf-8"))   # SQL-13: imposto do titulo de receita (DRE 02.02)
         cur.execute(FOLHA_SQL.read_text(encoding="utf-8"))     # SQL-16: recibos da folha e de-para departamento -> obra
         cur.execute(ORC_SQL.read_text(encoding="utf-8"))       # SQL-18: orcamento ADM (orcado x realizado)
