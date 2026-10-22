@@ -1,0 +1,39 @@
+# GDF - registro diario das metricas do painel de metas (I03, I22, I27) em gdf.metrica_registro. Nao fala com o Sienge: le o que a carga ja gravou.
+# Roda todo dia as 07:30 (Brasilia), depois da carga do Sienge (04:30), e sob demanda: Actions > "Registrar metricas GDF" > Run workflow.
+# Secret necessario: DATABASE_URL (o mesmo das outras rotinas). O repositorio e' publico: o script so' imprime contagens.
+name: Registrar metricas GDF
+
+on:
+  schedule:
+    - cron: "30 10 * * *"    # 10:30 UTC = 07:30 em Brasilia
+  workflow_dispatch:
+    inputs:
+      meses:
+        description: "Opcional: meses AAAA-MM separados por virgula. Vazio = mes atual (e o anterior nos 5 primeiros dias do mes)."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ingest-sienge-gdf
+  cancel-in-progress: false
+
+jobs:
+  registrar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Instalar dependencia
+        run: pip install psycopg2-binary==2.9.13
+      - name: Registrar metricas
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          GDF_METRICAS_MESES: ${{ github.event.inputs.meses }}
+          PYTHONUNBUFFERED: "1"
+        run: python scripts/registrar_metricas_gdf.py
