@@ -264,7 +264,7 @@ def p_obras(c, n, N, ctx):
         return
     t = ob["total"]
     kw = (CW - 3 * 10) / 4
-    for i, (r_, val, sub) in enumerate([("Receita bruta", mm(t["receita"]), "todas as obras"), ("Custos diretos", mm(t["custo"]), "obras"),
+    for i, (r_, val, sub) in enumerate([("Receita bruta", mm(t["receita"]), "todas as obras"), ("Custos", mm(t["custo"]), "padrão: DRE 04+06+08+09+10+12"),
                                         ("BDI real", mm(t["bdi"]), "receita − custos"), ("Margem de contribuição", _pc(t["margem"]), "BDI ÷ receita")]):
         kpi(c, MX + i * (kw + 10), y, kw, 62, r_, val, sub, dark=(i == 3))
     y -= 78

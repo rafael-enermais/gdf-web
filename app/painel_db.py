@@ -836,26 +836,40 @@ def _codigos_obra_proprios(conn):
         return None
 
 
+CUSTO_PADRAO_LINHAS = ("04", "06", "08", "09", "10", "12")        # padrao da contabilidade (22/10/2026): Custos = DRE 04+06+08+09+10+12 = "Custo Total" do relatorio Custos por obra
+
+
+def custo_padrao_obra(linhas: dict) -> float:
+    """Custo da obra no padrao da contabilidade (negativo, como no DRE). Pela API vem pronto em 'CP' (soma das contas do relatorio de custos por obra);
+    pelo PDF do DRE soma as linhas 04+06+08+09+10+12 que existirem."""
+    if "CP" in linhas:
+        return round(float(linhas["CP"] or 0.0), 2)
+    return round(sum(float(linhas.get(k, 0.0) or 0.0) for k in CUSTO_PADRAO_LINHAS), 2)
+
+
 def _montar_obras(por_obra: dict, proprios, importacao_id, arquivo: str, fonte: str) -> dict:
-    """Monta a tabela da aba Obras: por obra, receita bruta (linha 01), custos diretos (linha 04), BDI real = receita + custos (custos ja vem negativo) e
-    margem = BDI / receita. `por_obra` = {cod: {'nome': ..., 'linhas': {linha_dre: valor}}}. Obra sem codigo proprio no de-para vira a linha 'DEM'."""
-    linhas, dem = [], {"receita": 0.0, "custo": 0.0, "n": 0}
+    """Monta a tabela da aba Obras: por obra, receita bruta (linha 01), CUSTOS no padrao da contabilidade (DRE 04+06+08+09+10+12; `custo_04` guarda so' a linha 04),
+    BDI real = receita + custos (custos ja vem negativo) e margem = BDI / receita. `por_obra` = {cod: {'nome': ..., 'linhas': {linha_dre: valor}}}.
+    Obra sem codigo proprio no de-para vira a linha 'DEM'."""
+    linhas, dem = [], {"receita": 0.0, "custo": 0.0, "custo_04": 0.0, "n": 0}
     for cod, o in por_obra.items():
-        rec, cus = o["linhas"].get("01", 0.0), o["linhas"].get("04", 0.0)
+        rec, cus, c04 = o["linhas"].get("01", 0.0), custo_padrao_obra(o["linhas"]), o["linhas"].get("04", 0.0)
         if abs(rec) < 0.005 and abs(cus) < 0.005:
             continue
         if proprios is not None and cod not in proprios:
-            dem["receita"] += rec; dem["custo"] += cus; dem["n"] += 1
+            dem["receita"] += rec; dem["custo"] += cus; dem["custo_04"] += c04; dem["n"] += 1
             continue
-        linhas.append({"obra": cod, "nome": o["nome"] or "", "receita": rec, "custo": cus})
+        linhas.append({"obra": cod, "nome": o["nome"] or "", "receita": rec, "custo": cus, "custo_04": c04})
     if dem["n"]:
-        linhas.append({"obra": "DEM", "nome": f"Demais obras ({dem['n']})", "receita": round(dem["receita"], 2), "custo": round(dem["custo"], 2), "n": dem["n"]})
+        linhas.append({"obra": "DEM", "nome": f"Demais obras ({dem['n']})", "receita": round(dem["receita"], 2), "custo": round(dem["custo"], 2),
+                       "custo_04": round(dem["custo_04"], 2), "n": dem["n"]})
     for l in linhas:
         l["bdi"] = round(l["receita"] + l["custo"], 2)
         l["margem"] = round(l["bdi"] / l["receita"], 4) if abs(l["receita"]) > 0.005 else None
     linhas.sort(key=lambda l: (l["obra"] == "DEM", -l["receita"]))
     rt, ct = round(sum(l["receita"] for l in linhas), 2), round(sum(l["custo"] for l in linhas), 2)
-    total = {"receita": rt, "custo": ct, "bdi": round(rt + ct, 2), "margem": round((rt + ct) / rt, 4) if abs(rt) > 0.005 else None}
+    total = {"receita": rt, "custo": ct, "custo_04": round(sum(l.get("custo_04", 0.0) for l in linhas), 2), "bdi": round(rt + ct, 2),
+             "margem": round((rt + ct) / rt, 4) if abs(rt) > 0.005 else None}
     proprias = [l for l in linhas if l["obra"] != "DEM"]
     return {"importacao_id": importacao_id, "arquivo": arquivo, "fonte": fonte, "linhas": linhas, "total": total,
             "top_lucro": sorted(proprias, key=lambda l: -l["bdi"])[:5], "top_prejuizo": sorted((l for l in proprias if l["bdi"] < 0), key=lambda l: l["bdi"])[:5]}
@@ -893,7 +907,7 @@ def obras_da_api(conn, mes: str) -> dict | None:
     if not api:
         return None
     nomes = nomes_obras_depara(conn)
-    por_obra = {cod: {"nome": nomes.get(cod, ""), "linhas": {"01": v.get("01", 0.0), "04": v.get("04", 0.0)}} for cod, v in api.items()}
+    por_obra = {cod: {"nome": nomes.get(cod, ""), "linhas": {"01": v.get("01", 0.0), "04": v.get("04", 0.0), "CP": v.get("CP", v.get("04", 0.0))}} for cod, v in api.items()}
     ob = _montar_obras(por_obra, _codigos_obra_proprios(conn), None, "API do Sienge (titulos emitidos no mes)", "API")
     return ob if ob["linhas"] else None
 
@@ -959,22 +973,25 @@ def somar_obras(obs: list) -> dict | None:
             if l["obra"] == "DEM":
                 dem["receita"] += l["receita"]
                 dem["custo"] += l["custo"]
+                dem["custo_04"] = dem.get("custo_04", 0.0) + l.get("custo_04", l["custo"])
                 dem["n"] = max(dem["n"], l.get("n", 0))
                 continue
-            a = por.setdefault(l["obra"], {"obra": l["obra"], "nome": "", "receita": 0.0, "custo": 0.0})
+            a = por.setdefault(l["obra"], {"obra": l["obra"], "nome": "", "receita": 0.0, "custo": 0.0, "custo_04": 0.0})
             a["receita"] += l["receita"]
             a["custo"] += l["custo"]
+            a["custo_04"] += l.get("custo_04", l["custo"])
             a["nome"] = l.get("nome") or a["nome"]
-    linhas = [{**a, "receita": round(a["receita"], 2), "custo": round(a["custo"], 2)} for a in por.values()]
+    linhas = [{**a, "receita": round(a["receita"], 2), "custo": round(a["custo"], 2), "custo_04": round(a["custo_04"], 2)} for a in por.values()]
     if dem["n"] or abs(dem["receita"]) > 0.005 or abs(dem["custo"]) > 0.005:
-        linhas.append({"obra": "DEM", "nome": f"Demais obras ({dem['n']})", "receita": round(dem["receita"], 2), "custo": round(dem["custo"], 2), "n": dem["n"]})
+        linhas.append({"obra": "DEM", "nome": f"Demais obras ({dem['n']})", "receita": round(dem["receita"], 2), "custo": round(dem["custo"], 2),
+                       "custo_04": round(dem.get("custo_04", 0.0), 2), "n": dem["n"]})
     for l in linhas:
         l["bdi"] = round(l["receita"] + l["custo"], 2)
         l["margem"] = round(l["bdi"] / l["receita"], 4) if abs(l["receita"]) > 0.005 else None
     linhas.sort(key=lambda l: (l["obra"] == "DEM", -l["receita"]))
     rt, ct = round(sum(l["receita"] for l in linhas), 2), round(sum(l["custo"] for l in linhas), 2)
     proprias = [l for l in linhas if l["obra"] != "DEM"]
-    return {"linhas": linhas, "total": {"receita": rt, "custo": ct, "bdi": round(rt + ct, 2), "margem": round((rt + ct) / rt, 4) if abs(rt) > 0.005 else None},
+    return {"linhas": linhas, "total": {"receita": rt, "custo": ct, "custo_04": round(sum(l.get("custo_04", 0.0) for l in linhas), 2), "bdi": round(rt + ct, 2), "margem": round((rt + ct) / rt, 4) if abs(rt) > 0.005 else None},
             "top_lucro": sorted(proprias, key=lambda l: -l["bdi"])[:5], "top_prejuizo": sorted((l for l in proprias if l["bdi"] < 0), key=lambda l: l["bdi"])[:5],
             "meses": len(obs), "importacao_id": None, "arquivo": f"{len(obs)} meses somados"}
 
@@ -1059,6 +1076,10 @@ def termos_do_mes(conn, mes: str) -> dict | None:
         return None
     v = r["dre"]["valores"]
     rec, cus = round(v["01"], 2), round(abs(v["04"]), 2)
+    ob0 = obras_do_mes(conn, mes)
+    if ob0:                                                  # custo no padrao da contabilidade: linha 04 do DRE (com as confirmacoes) + o que o padrao 04+06+08+09+10+12 soma alem da 04
+        extra = ob0["total"]["custo"] - ob0["total"].get("custo_04", ob0["total"]["custo"])
+        cus = round(abs(v["04"]) + abs(extra), 2) if extra <= 0 else round(max(abs(v["04"]) - extra, 0.0), 2)
     out = {"mes": mes, "rec": rec, "cus": cus, "bdi": round(rec - cus, 2), "fonte": r["fonte"],
            "adm_real": None, "adm_orc": None, "rec_p": None, "bdi_p": None}
     orc = orcamento_ativo(conn) if orcamento_instalado(conn) else None
@@ -1067,7 +1088,7 @@ def termos_do_mes(conn, mes: str) -> dict | None:
         out["adm_real"], out["adm_orc"] = t["realizado"], t["orcado"]
     proj = projecao_do_mes(conn, mes)
     if proj:
-        ob = obras_do_mes(conn, mes)
+        ob = ob0
         if ob:
             px = projecao_x_realizado(proj, ob, nomes_obras_extra(conn))
             if abs(px["receita_proj_total"]) > 0.005:
@@ -1115,9 +1136,10 @@ def resultado_por_obra_api(conn, mes: str, sem_previsao: bool = False, sem_distr
         c = por_obra.setdefault(cod_obra, {})
         c[plano] = round(c.get(plano, 0.0) + _sinal_resultado(lado, plano) * float(v or 0), 2)
     saida = {}
+    import custos_obra_nivel as CON
     for cod_obra, contas in por_obra.items():
         dre = dre_do_mes([{"plano_cod": k, "plano_nome": "", "valor": x} for k, x in contas.items()])
-        saida[cod_obra] = dre["valores"]
+        saida[cod_obra] = {**dre["valores"], "CP": round(sum(x for k, x in contas.items() if k in CON.MAPA), 2)}      # CP = custo padrao (contas do relatorio de custos por obra)
     return saida
 
 

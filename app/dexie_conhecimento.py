@@ -106,7 +106,7 @@ TEMAS = {
             "Endividamento = (Passivo circulante + não circulante) ÷ Ativo; composição do endividamento = PC ÷ (PC + PNC). "
             "Margem bruta = lucro bruto ÷ receita líquida; margem líquida = lucro líquido ÷ receita líquida; EBITDA = resultado antes de juros, impostos sobre o lucro, depreciação e amortização. "
             "ROA = lucro líquido ÷ ativo; ROE = lucro líquido ÷ patrimônio líquido. Alavancagem = dívida líquida ÷ EBITDA. "
-            "BDI (benefícios e despesas indiretas): no painel da Diretoria, BDI = Receita − Custos diretos de obra (resultado antes da administração). "
+            "BDI (benefícios e despesas indiretas): no painel da Diretoria, BDI = Receita − Custos de obra no padrão da contabilidade (DRE 04+06+08+09+10+12; resultado antes da administração). "
             "Prazo médio de recebimento (PMR) = média de dias entre emissão e vencimento dos títulos a receber; prazo médio de pagamento (PMP), idem para a pagar; "
             "ciclo financeiro = PMR − PMP; necessidade de capital de giro (NCG) = gasto diário × ciclo (quando positivo), como o app calcula. Ciclo positivo = a empresa paga antes de receber. "
             "Inadimplência = vencidos e não pagos na data de posição, por faixa de atraso. Desvio de orçamento = realizado − orçado (positivo = gastou mais). "
@@ -128,7 +128,7 @@ TEMAS = {
     "glossario_gdf": {
         "titulo": "Glossário e regras do GDF (como o app calcula)",
         "texto": (
-            "Painel da Diretoria: Receita − Custos diretos = BDI; BDI − Administração = Resultado; mostra realizado x previsto (projeção) por mês e somado no período. "
+            "Painel da Diretoria: Receita − Custos (DRE 04+06+08+09+10+12) = BDI; BDI − Administração = Resultado; mostra realizado x previsto (projeção) por mês e somado no período. "
             "Origem do DRE do mês: 1) DRE confirmado pela contabilidade; 2) DRE oficial importado (PDF do Sienge); 3) reconstruído pela API do Sienge (a conferir; não é número oficial). "
             "Despesas: contas pagas (baixas) com as regras da aba Regras (contas excluídas como pessoal CLT, encargos e transferências; previsão fora). "
             "Previsão: título marcado como previsão no Sienge; fica fora de despesas e indicadores por padrão. "

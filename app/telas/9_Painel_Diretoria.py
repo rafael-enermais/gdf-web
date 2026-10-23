@@ -459,7 +459,7 @@ def _comparar_historico():
     app = P.somar_termos(_termos_meses(conn, tuple(ms_h), CARIMBO))
     if not app:
         return None
-    nomes = {"rec": "Receita (base-line)", "cus": "Custos diretos", "bdi": "BDI", "adm": "Administração", "res": "Resultado"}
+    nomes = {"rec": "Receita (base-line)", "cus": "Custos", "bdi": "BDI", "adm": "Administração", "res": "Resultado"}
     linhas = []
     for k, nome in nomes.items():
         h_, a_ = hist["acumulado"].get(k), app[k][0]
@@ -481,7 +481,7 @@ def _formula(modo: str, termos=None):
         _info("Não há dados de DRE (confirmado ou API do Sienge) em nenhum mês deste período." if modo == "per" else
               "Não há dados de DRE no ano até este mês.")
         return
-    rot = [("rec", "Receita (base-line)", True), ("cus", "Custos diretos", False), ("bdi", "BDI", True), ("adm", "Administração", False), ("res", "Resultado", True)]
+    rot = [("rec", "Receita (base-line)", True), ("cus", "Custos", False), ("bdi", "BDI", True), ("adm", "Administração", False), ("res", "Resultado", True)]
     cols = st.container(key="dir_formula").columns([5, 1, 5, 1, 5, 1, 5, 1, 5], vertical_alignment="center")
     for i, (k, nome, maior_melhor) in enumerate(rot):
         real_, prev_ = termos[k]
@@ -678,7 +678,7 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
                 a, b, c, d = st.columns(4)
                 a.metric("Receita realizada", _mi(sel["Receita"]), border=True)
                 b.metric("Receita prevista", _mi(sel["receita_proj"]) if pd.notna(sel["receita_proj"]) else "sem projeção", border=True)
-                c.metric("Custos diretos", _mi(sel["Custos"]), border=True)
+                c.metric("Custos", _mi(sel["Custos"]), border=True)
                 d.metric("BDI real", _mi(sel["BDI real"]), F.pct_br(sel["Margem"]) + " de margem" if sel["Margem"] is not None else None, border=True)
                 e1, e2, e3, e4 = st.columns(4)
                 e1.metric("Colaboradores", int(sel["Colab."]), f"{int(sel['CLT'])} CLT + {int(sel['PJ'])} PJ", delta_color="off", border=True)
@@ -730,7 +730,7 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
                     _soma = sum(_val.get(c, 0.0) for c in _topo)
                     _cap(f"Selecionado: {_m(_soma)} ({F.pct_br(_soma / _tab_n[0]['periodo'])} do custo total) em {len(cats_sel)} linha{'s' if len(cats_sel) > 1 else ''}.")
                 _cap(f"Custos dos títulos emitidos em {PER_ROT} (análise “comprometido”, como no relatório de custos por obra da contabilidade), sem previsões e títulos desfeitos e sem os centros da administração. "
-                     "Segue as obras marcadas na tabela acima (nenhuma marcada = todas). Valor negativo é crédito. O total pode diferir da coluna “Custos” da tabela de obras, que usa só as contas do DRE.")
+                     "Segue as obras marcadas na tabela acima (nenhuma marcada = todas). Valor negativo é crédito. O total acompanha a coluna “Custos” da tabela de obras (padrão da contabilidade: DRE 04+06+08+09+10+12).")
             else:
                 _cap("Sem custos por categoria para esta seleção (faltam títulos emitidos no período ou o de-para de centros de custo → obra).")
             _contas_cat = CON.contas_das_categorias(cats_sel) if cats_sel else None

@@ -782,7 +782,7 @@ def test_conferencia_ano_compara_app_e_painel_e_aponta_diferenca(monkeypatch):
     assert ref["situacao"] == "confere" and ref["diferenca"] == 0
     antes = {l["item"]: l for l in tab if l["periodo"].startswith("2026-01 a 2026-02")}
     assert antes["Receita"]["painel_contabilidade"] == 3000.0 and antes["Receita"]["situacao"] == "confere"
-    assert antes["Custos diretos"]["painel_contabilidade"] == 2100.0 and antes["Custos diretos"]["app"] == 2100.0
+    assert antes["Custos"]["painel_contabilidade"] == 2100.0 and antes["Custos"]["app"] == 2100.0
     assert antes["Administracao"]["app"] is None and "sem dado" in antes["Administracao"]["situacao"]          # ADM so' existe com orcamento em todos os meses
     ano = {l["item"]: l for l in tab if "acumulado do ano" in l["periodo"]}
     assert ano["Receita"]["diferenca"] == 0 and ano["Receita"]["origem_app"] == "2 mes(es) api, 1 mes(es) confirmado"

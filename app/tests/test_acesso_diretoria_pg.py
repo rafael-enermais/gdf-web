@@ -153,7 +153,7 @@ def test_painel_da_diretoria_cinco_abas_com_tudo(conn):
         pj_exp = [d.value for d in at.dataframe if "Colaborador PJ" in d.value.columns]                                                 # expander "PJ do mes" da aba Pessoas
         assert pj_exp and "Colab Fantasia" in set(pj_exp[0]["Colaborador PJ"]) and "COLABORADOR TESTE" in set(pj_exp[0]["Razão social"])
         rotulos = [m.label for m in at.metric]
-        for esperado in ("Receita (base-line)", "Custos diretos", "BDI", "Administração", "Resultado",        # Resultado
+        for esperado in ("Receita (base-line)", "Custos", "BDI", "Administração", "Resultado",        # Resultado
                          "Receita realizada", "Obras com prejuízo",                                           # Obras
                          "Orçado 09/2026", "Meses acima do orçado",                                           # Administracao
                          "Pago em 09/2026", "Top 12 Jan–Set/26",                                                  # Despesas
