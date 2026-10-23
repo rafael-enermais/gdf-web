@@ -142,7 +142,8 @@ def test_pagina_obras_e_contratos_so_editor_e_caixinhas(conn, dados):
         assert not e.exception, e.exception
         creds = [d.value for d in e.dataframe if "Credor" in d.value.columns and "Obras" in d.value.columns and "Contratos" in d.value.columns][0]
         assert set(creds["Credor"]) == {"Alfa Ltda", "Beta SA"}
-        contratos = [d.value for d in e.dataframe if "Contrato" in d.value.columns and "Saldo" in d.value.columns][0]
+        contratos = [d.value for d in e.dataframe if "Contrato" in d.value.columns and "Situação" in d.value.columns][0]
+        assert "Saldo" not in contratos.columns                                  # com obra marcada o saldo não existe (nada de "None" na tela)
         assert set(contratos["Contrato"]) == {"CT-2", "CT-3"}
         # marca o contrato CT-2 -> aparecem as medicoes
         chave_k = SEL.chave("oc_contr", "", (), ("109",), ())

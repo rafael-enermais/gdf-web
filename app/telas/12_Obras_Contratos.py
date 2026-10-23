@@ -111,8 +111,9 @@ k[1].metric("Contratado", _mi(tot), border=True)
 k[2].metric("Medido", _mi(med), delta=(f"{med / tot:.0%} do contratado" if tot > 0.005 else None), delta_color="off", border=True)
 k[3].metric("Medições lançadas", f"{nmed}", border=True)
 ev_k = _tabela(df_k, SEL.chave("oc_contr", busca, tuple(situacoes), tuple(ob_ids), tuple(cr_ids)),
-               ["Contrato", "Credor", "Obras", "Situação", "Início", "Fim", "Mão de obra", "Material", "Total", "Medido", "Saldo", "Medições"], altura=380)
-st.caption("Saldo = Total − Medido (não aparece com obras marcadas, porque o total do contrato não se divide por obra). Marque contratos para ver o detalhe, as medições e os anexos.")
+               ["Contrato", "Credor", "Obras", "Situação", "Início", "Fim", "Mão de obra", "Material", "Total", "Medido"] + ([] if ob_ids else ["Saldo"]) + ["Medições"],
+               altura=min(35 * (len(df_k) + 1) + 3, 380))
+st.caption("Saldo = Total − Medido (a coluna some com obras marcadas, porque o total do contrato não se divide por obra). Marque contratos para ver o detalhe, as medições e os anexos.")
 sel_k = SEL.selecionadas(ev_k, df_k)
 if len(sel_k):
     st.markdown(f"### 4 · Detalhe · {SEL.rotulo(sel_k['Contrato'], '', ate=3)}")
