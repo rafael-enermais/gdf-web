@@ -35,3 +35,12 @@ def test_consulta_do_banco_so_traz_contas_das_categorias(conn):
     assert isinstance(linhas, list)
     assert all(len(x) == 4 and x[2] in C.MAPA and x[1] == "2026-09" for x in linhas)
     assert P.custos_obra_linhas(conn, "2019-01", "2019-01") == []
+
+
+def test_contas_das_categorias_marcar_pai_inclui_filhos():
+    assert C.contas_das_categorias([]) == set()
+    assert C.contas_das_categorias(["00"]) == set(C.MAPA)
+    assert C.contas_das_categorias(["01.01"]) == set(C.CONTAS_POR_CATEGORIA["01.01"])
+    assert C.contas_das_categorias(["05"]) == set(C.CONTAS_POR_CATEGORIA["05.03"]) | set(C.CONTAS_POR_CATEGORIA["05.04"])
+    # marcar so' uma subcategoria nao puxa a irma
+    assert not (C.contas_das_categorias(["05.04"]) & set(C.CONTAS_POR_CATEGORIA["05.03"]))

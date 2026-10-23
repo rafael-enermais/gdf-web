@@ -713,19 +713,33 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
             _md(f"**Custos por categoria · {_rot_obras}**")
             _lin_n = _custos_nivel(conn, mes_ini, mes, CARIMBO)
             _tab_n = CON.tabela(_lin_n, cods_sel, lambda o: o if o in proprias else "DEM", mes) if _lin_n else []
+            cats_sel: list = []                                               # codigos de categoria marcados (vazio = todas)
             if _tab_n and abs(_tab_n[0]["periodo"]) > 0.005:
-                st.dataframe(pd.DataFrame({"Código": [x["codigo"] for x in _tab_n],
-                                           "Categoria": [("      " if "." in x["codigo"] else "") + x["categoria"] for x in _tab_n],
-                                           f"Acumulado {ACUM}": [_m(x["periodo"]) for x in _tab_n],
-                                           "% do total": [F.pct_br(x["pct"]) if x["pct"] is not None else "–" for x in _tab_n],
-                                           _rot(mes): [_m(x["mes"]) if abs(x["mes"]) > 0.005 else "–" for x in _tab_n]}), hide_index=True, width="stretch", height=min(35 * (len(_tab_n) + 1) + 3, 735))
+                _df_n = pd.DataFrame({"Código": [x["codigo"] for x in _tab_n],
+                                      "Categoria": [("      " if "." in x["codigo"] else "") + x["categoria"] for x in _tab_n],
+                                      f"Acumulado {ACUM}": [_m(x["periodo"]) for x in _tab_n],
+                                      "% do total": [F.pct_br(x["pct"]) if x["pct"] is not None else "–" for x in _tab_n],
+                                      _rot(mes): [_m(x["mes"]) if abs(x["mes"]) > 0.005 else "–" for x in _tab_n]})
+                _cap("Marque a caixinha de uma ou mais categorias ou subcategorias: os credores abaixo passam a mostrar só as contas delas (marcar a categoria inclui as subcategorias).")
+                _ev_n = st.dataframe(_df_n, hide_index=True, width="stretch", height=min(35 * (len(_tab_n) + 1) + 3, 735),
+                                     on_select="rerun", selection_mode="multi-row", key=_chave("dir_ob_cat", tuple(cods_sel), mes_ini, mes))
+                cats_sel = list(_selecionadas(_ev_n, _df_n)["Código"])
+                if cats_sel:
+                    _topo = [c for c in cats_sel if "." in c and c.split(".")[0] not in cats_sel or "." not in c]             # sem contar duas vezes (categoria + subcategoria dela)
+                    _val = {x["codigo"]: x["periodo"] for x in _tab_n}
+                    _soma = sum(_val.get(c, 0.0) for c in _topo)
+                    _cap(f"Selecionado: {_m(_soma)} ({F.pct_br(_soma / _tab_n[0]['periodo'])} do custo total) em {len(cats_sel)} linha{'s' if len(cats_sel) > 1 else ''}.")
                 _cap(f"Custos dos títulos emitidos em {PER_ROT} (análise “comprometido”, como no relatório de custos por obra da contabilidade), sem previsões e títulos desfeitos e sem os centros da administração. "
                      "Segue as obras marcadas na tabela acima (nenhuma marcada = todas). Valor negativo é crédito. O total pode diferir da coluna “Custos” da tabela de obras, que usa só as contas do DRE.")
             else:
                 _cap("Sem custos por categoria para esta seleção (faltam títulos emitidos no período ou o de-para de centros de custo → obra).")
-            _md(f"**Principais credores · {_rot_obras}**")
+            _contas_cat = CON.contas_das_categorias(cats_sel) if cats_sel else None
+            _rot_cat = _txt_sel(cats_sel, "") if cats_sel else ""
+            _md(f"**Principais credores · {_rot_obras}" + (f" · categoria {_rot_cat}" if cats_sel else "") + "**")
             _pj_nomes = _credores_pj_nomes(conn, mes_ini, mes, CARIMBO)               # contabilidade 21/10: quem e' colaborador PJ ja' esta na lista de colaboradores, nao em credores
             dd_ob = _despesas_sem_pj(conn, mes_ini, mes, CARIMBO)
+            if _contas_cat is not None and len(dd_ob):
+                dd_ob = dd_ob[dd_ob["plano_cod"].isin(_contas_cat)]
             if cods_sel:
                 alvo = [c for c in cods_sel if c != "DEM"]
                 if "DEM" in cods_sel:
@@ -741,7 +755,8 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
                            + f" Contas pagas em {PER_ROT}, sem pessoal e encargos (estão na lista de colaboradores e na aba Pessoas) e sem os credores que são colaboradores PJ"
                            + (f" ({len(_pj_nomes)} fora da lista)" if _pj_nomes else "") + ". Obra pelo centro de custo do lançamento.")
             else:
-                _cap("Sem contas pagas para esta seleção (ou falta o de-para de centros de custo → obra).")
+                _cap("Sem contas pagas para esta seleção (ou falta o de-para de centros de custo → obra)."
+                     + (" Pessoal e encargos (categoria 01) não entram na lista de credores: estão em Colaboradores e na aba Pessoas." if any(c.startswith("01") for c in cats_sel) else ""))
 
             _md(f"**Colaboradores alocados nas obras — {_rot(mes)}**")
             q_col = st.text_input("Buscar nome ou função", key="dir_col_busca", placeholder="ex.: engenheiro, silva")

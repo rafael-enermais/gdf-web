@@ -171,6 +171,15 @@ def test_painel_da_diretoria_cinco_abas_com_tudo(conn):
         # cascata da aba Obras: lista de colaboradores por obra (CLT da folha + PJ das contas pagas), com busca
         todos = [c.value for c in at.caption if "colaboradores (" in c.value]
         assert todos and "CLT" in todos[0] and "PJ" in todos[0], todos
+        # v0.46.0: categorias e subcategorias de "Custos por categoria" tambem tem caixinha e filtram os credores abaixo (a chave muda com o que alimenta a tabela)
+        chaves_cat = [k for k in at.session_state.filtered_state if str(k).startswith("dir_ob_cat_")] if hasattr(at.session_state, "filtered_state") else []
+        for chave in chaves_cat:
+            for linhas in ([0], [1], [0, 2], [0, 1, 2, 3, 4]):
+                at.session_state[chave] = {"selection": {"rows": linhas, "columns": []}}
+                at.run()
+                assert not at.exception, (chave, linhas, at.exception)
+            at.session_state[chave] = {"selection": {"rows": [], "columns": []}}
+            at.run()
         # v0.41.0: tabelas com caixinha e VARIAS linhas marcadas (somam); nenhuma aba pode quebrar com 1, 2 ou todas marcadas
         for chave in ("dir_ob_df", "dir_adm_grp", "dir_desp_top", "dir_pes_tab"):
             for linhas in ([0], [0, 1], [0, 1, 2, 3, 4, 5]):

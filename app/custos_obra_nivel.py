@@ -97,6 +97,14 @@ MAPA = {conta: cat for cat, contas in CONTAS_POR_CATEGORIA.items() for conta in 
 CONTAS = tuple(MAPA)
 
 
+def contas_das_categorias(codigos) -> set:
+    """Contas do plano das categorias marcadas na tabela. Marcar uma categoria de nivel 1 ('01') inclui as subcategorias ('01.01'...); '00' (custo total) = todas as contas."""
+    cods = set(codigos or ())
+    if "00" in cods:
+        return set(MAPA)
+    return {conta for conta, cat in MAPA.items() if cat in cods or cat.split(".")[0] in cods}
+
+
 def por_categoria(linhas, obras=None, destino=None, mes=None) -> dict:
     """Soma o custo (positivo = gasto) por categoria de NIVEL 2 e por nivel 1.
     `linhas` = [(obra, 'AAAA-MM', plano_cod, resultado)] (resultado: custo negativo, como no DRE). `destino(obra)` leva a obra do banco para a linha da tabela de Obras
