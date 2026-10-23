@@ -29,6 +29,18 @@ def _txt(v) -> str:
     return "" if v is None else str(v).strip()
 
 
+_SITUACAO = {"COMPLETED": "Concluído", "FULLY_MEASURED": "Totalmente medido", "PARTIALLY_MEASURED": "Parcialmente medido", "PENDING": "Pendente", "CANCELED": "Cancelado",
+             "CANCELLED": "Cancelado", "APPROVED": "Aprovada", "DISAPPROVED": "Reprovada", "IN_PROGRESS": "Em andamento", "NOT_MEASURED": "Sem medição"}
+
+
+def _pt(v) -> str:
+    """Situacao da API (ex.: 'PARTIALLY_MEASURED') em portugues; o que nao conhecemos fica legivel ('Foo bar'); texto ja normal nao muda."""
+    t = _txt(v)
+    if t.upper() in _SITUACAO:
+        return _SITUACAO[t.upper()]
+    return t.replace("_", " ").capitalize() if (t.isupper() or "_" in t) else t
+
+
 def _data(v) -> str:
     """'2026-03-15T00:00:00...' -> '2026-03-15' (texto ISO; vazio se nao houver)."""
     t = _txt(v)
@@ -82,9 +94,9 @@ def normalizar(brutos_c: list, brutos_m: list) -> dict:
         mo, ma = _num(c.get("totalLaborValue")), _num(c.get("totalMaterialValue"))
         contratos.append({"chave": chave(c.get("documentId"), c.get("contractNumber")), "doc": _txt(c.get("documentId")), "num": _txt(c.get("contractNumber")),
                           "credor_id": _txt(c.get("supplierId")), "credor": _txt(c.get("supplierName")) or "(sem credor)", "empresa": _txt(c.get("companyName")),
-                          "situacao": _txt(c.get("status")) or "(sem situação)", "aprovacao": _txt(c.get("statusApproval")), "autorizado": bool(c.get("isAuthorized")),
+                          "situacao": _pt(c.get("status")) or "(sem situação)", "aprovacao": _pt(c.get("statusApproval")), "autorizado": bool(c.get("isAuthorized")),
                           "data": _data(c.get("contractDate")), "inicio": _data(c.get("startDate")), "fim": _data(c.get("endDate")), "objeto": _txt(c.get("object")),
-                          "tipo": _txt(c.get("contractType")), "obras": obras, "mao_obra": mo, "material": ma, "total": round(mo + ma, 2)})
+                          "tipo": _pt(c.get("contractType")), "obras": obras, "mao_obra": mo, "material": ma, "total": round(mo + ma, 2)})
     medicoes = []
     for m in brutos_m or []:
         if not isinstance(m, dict):
@@ -93,7 +105,7 @@ def normalizar(brutos_c: list, brutos_m: list) -> dict:
         medicoes.append({"chave": chave(m.get("documentId"), m.get("contractNumber")), "obra_id": _txt(m.get("buildingId")), "n": _txt(m.get("measurementNumber")),
                          "data": _data(m.get("measurementDate")), "venc": _data(m.get("dueDate")), "mao_obra": mo, "material": ma, "bruto": round(mo + ma, 2),
                          "liquido": _num(m.get("netValue")), "a_liberar": _num(m.get("valueToRelease")), "autorizada": bool(m.get("authorized")),
-                         "finalizada": bool(m.get("finalized")), "liberada": bool(m.get("released")), "situacao": _txt(m.get("statusApproval")), "obs": _txt(m.get("notes"))})
+                         "finalizada": bool(m.get("finalized")), "liberada": bool(m.get("released")), "situacao": _pt(m.get("statusApproval")), "obs": _txt(m.get("notes"))})
     return {"contratos": contratos, "medicoes": medicoes, "quando": time.strftime("%Y-%m-%d %H:%M")}
 
 
@@ -175,7 +187,7 @@ def df_contratos(contratos: list, medicoes: list, obras=None) -> pd.DataFrame:
         medido = round(m.get("medido", 0.0), 2)
         linhas.append({"Contrato": c["chave"], "Credor": c["credor"], "Obras": ", ".join(o["nome"] for o in c["obras"]) or "—", "Situação": c["situacao"],
                        "Início": c["inicio"], "Fim": c["fim"], "Mão de obra": c["mao_obra"], "Material": c["material"], "Total": c["total"], "Medido": medido,
-                       "A liberar": round(m.get("a_liberar", 0.0), 2), "Saldo": round(c["total"] - medido, 2) if not obras else None, "Medições": m.get("n", 0),
+                       "A liberar": round(m.get("a_liberar", 0.0), 2), "Saldo": round(c["total"] - medido, 2) if not obras else float("nan"), "Medições": m.get("n", 0),
                        "_chave": c["chave"], "_doc": c["doc"], "_num": c["num"]})
     return pd.DataFrame(linhas, columns=["Contrato", "Credor", "Obras", "Situação", "Início", "Fim", "Mão de obra", "Material", "Total", "Medido", "A liberar", "Saldo", "Medições",
                                          "_chave", "_doc", "_num"])

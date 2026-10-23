@@ -152,3 +152,8 @@ def test_pagina_obras_e_contratos_so_editor_e_caixinhas(conn, dados):
         assert any("Medições dos contratos marcados" in m.value for m in e.markdown)
         med = [d.value for d in e.dataframe if "Medição" in d.value.columns][0]
         assert len(med) == 1 and med.iloc[0]["Obra"] == "Angra"
+
+
+def test_situacoes_da_api_em_portugues():
+    assert CS._pt("PARTIALLY_MEASURED") == "Parcialmente medido" and CS._pt("COMPLETED") == "Concluído" and CS._pt("APPROVED") == "Aprovada"
+    assert CS._pt("SOMETHING_NEW") == "Something new" and CS._pt("Em andamento") == "Em andamento" and CS._pt(None) == ""

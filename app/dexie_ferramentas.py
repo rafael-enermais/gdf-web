@@ -477,7 +477,7 @@ _CONTA_COD = {"type": "string", "description": "Codigo (ou comeco do codigo) da 
 _CREDOR_TXT = {"type": "string", "description": "Parte do nome do credor, sem acento."}
 
 def contratos(conn, e) -> tuple:
-    """Contratos de SUPRIMENTOS do Sienge (API, somente leitura; mesma base da pagina 'Obras e contratos'): valores, medido, a liberar, por obra ou por credor, com filtros por texto."""
+    """Contratos de SUPRIMENTOS do Sienge (API, somente leitura; mesma base da pagina 'Obras e contratos'): valores, medido, por obra ou por credor, com filtros por texto."""
     try:
         dados = CS.carregar()
     except SIENGE.ErroSienge as exc:
@@ -497,12 +497,12 @@ def contratos(conn, e) -> tuple:
     for c in lista:
         m = med.get(c["chave"], {})
         linhas.append({"contrato": c["chave"], "credor": c["credor"], "obras": ", ".join(o["nome"] for o in c["obras"]), "situacao": c["situacao"], "inicio": c["inicio"], "fim": c["fim"],
-                       "mao_de_obra": c["mao_obra"], "material": c["material"], "total": c["total"], "medido": round(m.get("medido", 0.0), 2), "a_liberar": round(m.get("a_liberar", 0.0), 2),
+                       "mao_de_obra": c["mao_obra"], "material": c["material"], "total": c["total"], "medido": round(m.get("medido", 0.0), 2), "medicoes": m.get("n", 0),
                        "objeto": c["objeto"][:120]})
     n = _limite(e.get("limite"), 15, 100)
     res = {"filtros": filtros or None, "contratos_no_recorte": len(linhas), "contratado": round(sum(x["total"] for x in linhas), 2), "medido": round(sum(x["medido"] for x in linhas), 2),
-           "a_liberar": round(sum(x["a_liberar"] for x in linhas), 2), "dados_buscados_em": dados["quando"],
-           "observacao": "Contratado = valor total do contrato (um contrato de varias obras conta inteiro). Com obra_contem, 'medido' e 'a_liberar' so' contam as medicoes dessas obras. So' contratos de SUPRIMENTOS (os de venda nao estao liberados)."}
+           "medicoes_lancadas": sum(x["medicoes"] for x in linhas), "dados_buscados_em": dados["quando"],
+           "observacao": "Contratado = valor total do contrato (um contrato de varias obras conta inteiro). Com obra_contem, 'medido' so' conta as medicoes dessas obras. So' contratos de SUPRIMENTOS (os de venda nao estao liberados)."}
     por = str(e.get("agrupar_por") or "").strip().lower()
     if por in ("credor", "obra", "situacao"):
         grupos: dict = {}
@@ -552,7 +552,7 @@ TOOLS = [
         "limite": {"type": "integer", "description": "Quantos pagamentos listar (padrao 20, maximo 200; ate 40 seguem para a conversa e todos vao para a tabela)."},
         "incluir_contas_excluidas": {"type": "boolean", "description": "true para incluir tambem as contas que as regras tiram das Despesas (pessoal, encargos, transferencias)."}},
        ["mes_ini", "mes_fim"]),
-    _t("contratos", "CONTRATOS de suprimentos do Sienge (API): valor contratado, medido e a liberar, por obra, credor ou situacao, ou a lista dos maiores. Filtra por obra_contem, credor_contem, situacao_contem e busca (texto livre: objeto, numero). Cada chamada usa dados guardados por ate 1 hora. So' suprimentos; contratos de venda e o conteudo dos anexos nao estao disponiveis.",
+    _t("contratos", "CONTRATOS de suprimentos do Sienge (API): valor contratado e medido, por obra, credor ou situacao, ou a lista dos maiores. Filtra por obra_contem, credor_contem, situacao_contem e busca (texto livre: objeto, numero). Cada chamada usa dados guardados por ate 1 hora. So' suprimentos; contratos de venda e o conteudo dos anexos nao estao disponiveis.",
        {"obra_contem": {"type": "string", "description": "Parte do nome da obra (ex.: 'Lote 03', 'Angra')."}, "credor_contem": _CREDOR_TXT, "situacao_contem": {"type": "string", "description": "Parte da situacao do contrato."},
         "busca": {"type": "string", "description": "Texto livre (objeto, numero do contrato, empresa)."}, "agrupar_por": {"type": "string", "enum": ["credor", "obra", "situacao"], "description": "Agrupa os totais; sem isso lista os maiores contratos."},
         "limite": {"type": "integer", "description": "Quantos itens listar (padrao 15, maximo 100)."}}),
