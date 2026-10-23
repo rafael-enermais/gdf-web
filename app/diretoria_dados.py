@@ -162,21 +162,32 @@ def total_por(df: pd.DataFrame, col: str = "plano_nome") -> list:
     return [(k, round(float(v), 2)) for k, v in s.items()]
 
 
-def serie_mensal(df: pd.DataFrame, meses: list, conta: str | None = None) -> list:
-    """Valor pago em cada mes de `meses` (0 onde nao houve), de uma conta (plano_nome) ou de todas."""
-    d = df if conta is None else df[df["plano_nome"] == conta]
+def _lista(v) -> list | None:
+    """None/vazio -> None (sem filtro); texto -> [texto]; lista/conjunto -> lista. Deixa os filtros aceitarem uma ou VARIAS linhas marcadas."""
+    if v is None:
+        return None
+    if isinstance(v, str):
+        return [v]
+    v = list(v)
+    return v or None
+
+
+def serie_mensal(df: pd.DataFrame, meses: list, conta=None) -> list:
+    """Valor pago em cada mes de `meses` (0 onde nao houve), de uma ou varias contas (plano_nome) ou de todas."""
+    c = _lista(conta)
+    d = df if c is None else df[df["plano_nome"].isin(c)]
     por = d.groupby("mes")["valor"].sum().to_dict() if len(d) else {}
     return [round(float(por.get(m, 0.0)), 2) for m in meses]
 
 
-def agrupar(df: pd.DataFrame, por: str, mes_ref: str, conta: str | None = None, credor: str | None = None, top: int = 15) -> dict:
-    """Acumulado do periodo e valor do mes de referencia, agrupado por `por` ('credor' ou 'cc'), filtrado por conta e/ou credor.
+def agrupar(df: pd.DataFrame, por: str, mes_ref: str, conta=None, credor=None, top: int = 15) -> dict:
+    """Acumulado do periodo e valor do mes de referencia, agrupado por `por` ('credor' ou 'cc'), filtrado por conta(s) e/ou credor(es) (texto ou lista).
     -> {'linhas': [{'chave','acumulado','mes'}] (top N), 'n': total de chaves, 'total': soma do filtro}"""
     d = df
-    if conta is not None:
-        d = d[d["plano_nome"] == conta]
-    if credor is not None:
-        d = d[d["credor"] == credor]
+    if _lista(conta) is not None:
+        d = d[d["plano_nome"].isin(_lista(conta))]
+    if _lista(credor) is not None:
+        d = d[d["credor"].isin(_lista(credor))]
     if not len(d):
         return {"linhas": [], "n": 0, "total": 0.0}
     g = d.groupby(por)["valor"].sum()

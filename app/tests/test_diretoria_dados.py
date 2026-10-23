@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """Painel da Diretoria (dados do acumulado, pessoas e PJ): funcoes puras com dados SINTETICOS + leitura no Postgres descartavel."""
+import pandas as pd
 import pytest
 
 import diretoria_dados as DD
@@ -224,3 +225,13 @@ def test_demais_colaboradores_pj_somam_numa_linha_sem_mostrar_nomes():
     assert DD.agrupar_pj_demais(colabs, []) == colabs                         # sem cadastro: igual
     assert DD.agrupar_pj_demais(colabs, ["NINGUEM"]) == colabs                 # ninguem casa: igual
     assert DD.agrupar_pj_demais([], ["PJ ALFA"]) == []
+
+
+def test_agrupar_e_serie_aceitam_varias_contas_e_credores():
+    """v0.41.0: marcar varias linhas nas tabelas do painel soma (texto continua valendo para uma so')."""
+    df = pd.DataFrame({"plano_nome": ["A", "A", "B", "C"], "credor": ["x", "y", "x", "z"], "cc": ["o1", "o1", "o2", "o3"], "mes": ["2026-09"] * 4, "valor": [10.0, 20.0, 5.0, 1.0]})
+    assert DD.agrupar(df, "credor", "2026-09", conta="A")["total"] == 30.0
+    assert DD.agrupar(df, "credor", "2026-09", conta=["A", "B"])["total"] == 35.0
+    assert DD.agrupar(df, "cc", "2026-09", conta=["A", "B"], credor=["x"])["total"] == 15.0
+    assert DD.agrupar(df, "cc", "2026-09", conta=[], credor=None)["total"] == 36.0                 # lista vazia = sem filtro
+    assert DD.serie_mensal(df, ["2026-09"], conta=["A", "C"]) == [31.0] and DD.serie_mensal(df, ["2026-09"]) == [36.0]

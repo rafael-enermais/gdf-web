@@ -250,6 +250,29 @@ def _selecionada(ev, df):
     return df.iloc[rows[0]].to_dict() if rows and rows[0] < len(df) else None
 
 
+def _chave(base: str, *dep) -> str:
+    """Chave de um st.dataframe com selecao que muda quando muda o que o alimenta (a selecao por posicao nao fica 'grudada' em outra linha)."""
+    import zlib
+    return f"{base}_{zlib.crc32(repr(dep).encode()) % 100000}"
+
+
+def _selecionadas(ev, df):
+    """TODAS as linhas marcadas (caixinhas) de um st.dataframe com selecao multipla -> DataFrame (vazio se nenhuma)."""
+    try:
+        rows = [r for r in ev.selection.rows if r < len(df)]
+    except Exception:
+        rows = []
+    return df.iloc[rows] if rows else df.iloc[0:0]
+
+
+def _txt_sel(itens, vazio: str, ate: int = 2) -> str:
+    """Rotulo curto do que esta marcado: 'A, B' ate' `ate` itens; acima disso 'N selecionados'; sem marcacao -> `vazio`."""
+    itens = [str(i) for i in itens]
+    if not itens:
+        return vazio
+    return ", ".join(itens) if len(itens) <= ate else f"{len(itens)} selecionados"
+
+
 def _busca(df, texto, colunas):
     if not texto.strip():
         return df
@@ -623,12 +646,24 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
                 k[5].metric("Menor BDI", str(mn["Nome"] or mn["Obra"])[:22], _mi(mn["BDI real"], True), border=True)
             busca = st.text_input("Pesquisar obra (código ou nome)", key="dir_ob_busca", placeholder="ex.: 104, lote 03, Eletrobras")
             vis = _busca(base, busca, ["Obra", "Nome"]).reset_index(drop=True)
-            _cap("Clique em uma linha para ver o detalhe da obra; clique no cabeçalho para ordenar. Previsto = projeção de receitas do mês.")
+            _cap("Marque a caixinha de uma ou mais obras para ver o detalhe (várias marcadas somam); clique no cabeçalho para ordenar. Previsto = projeção de receitas do mês.")
             mostra = vis[["Obra", "Nome", "Receita", "Custos", "BDI previsto", "BDI real", "Desvio BDI", "Margem", "Colab.", "Fat./colab.", "Custo/colab."]]
             ev = st.dataframe(_estilo(mostra, numeros=("Receita", "Custos", "BDI previsto", "BDI real", "Colab.", "Fat./colab.", "Custo/colab."),
                                       percentuais=("Desvio BDI", "Margem")),
-                              hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="dir_ob_df")
-            sel = _selecionada(ev, vis)
+                              hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row", key="dir_ob_df")
+            sel_df = _selecionadas(ev, vis)
+            cods_sel = list(sel_df["Obra"])
+            if len(sel_df) == 1:
+                sel = sel_df.iloc[0].to_dict()
+            elif len(sel_df) > 1:                                              # varias obras marcadas: soma
+                _rp = sel_df["receita_proj"].dropna()
+                _rec, _cus, _bdi = float(sel_df["Receita"].sum()), float(sel_df["Custos"].sum()), float(sel_df["BDI real"].sum())
+                _hc = int(sel_df["Colab."].sum())
+                sel = {"Obra": ", ".join(cods_sel), "Nome": f"{len(sel_df)} obras selecionadas", "Receita": _rec, "Custos": _cus, "BDI real": _bdi, "receita_proj": float(_rp.sum()) if len(_rp) else float("nan"),
+                       "Margem": (_bdi / _rec) if abs(_rec) > 0.005 else None, "Colab.": _hc, "CLT": int(sel_df["CLT"].sum()), "PJ": int(sel_df["PJ"].sum()),
+                       "Fat./colab.": (_rec / _n_ob / _hc) if _hc and "DEM" not in cods_sel else float("nan")}
+            else:
+                sel = None
             _pj_unicos = set().union(*[cr for c, cr in pj_obra.items() if c not in ("ADM", "99", "sem de-para")]) if pj_obra else set()
             _cap(f"Total: receita {_mi(tr)} · custos {_mi(tc)} · BDI {_mi(tb)} · {int(base['CLT'].sum()) + len(_pj_unicos)} colaboradores nas obras (cada PJ contado uma vez, mesmo atendendo várias obras).")
             if sel:
@@ -642,7 +677,9 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
                 e1.metric("Colaboradores", int(sel["Colab."]), f"{int(sel['CLT'])} CLT + {int(sel['PJ'])} PJ", delta_color="off", border=True)
                 e2.metric("Faturamento por colaborador", _mi(sel["Fat./colab."]) if pd.notna(sel["Fat./colab."]) else "–", border=True)
                 e3.metric("Custo por colaborador", _mi(sel["Custos"] / _n_ob / sel["Colab."]) if sel["Colab."] else "–", border=True)
-                po = pes["folha"]["por_obra"].get(sel["Obra"]) if pes else None
+                _pos = [pes["folha"]["por_obra"].get(c) for c in cods_sel] if pes else []
+                _pos = [x for x in _pos if x]
+                po = {"custo": sum(x["custo"] for x in _pos), "colab": sum(x["colab"] for x in _pos)} if _pos else None
                 e4.metric("Custo da folha CLT por colaborador", _m(po["custo"] / po["colab"]) if po and po["colab"] else "–", border=True)
             _cap("Colaboradores = CLT da folha do mês + PJ alocado na obra onde mais recebeu em “Salários PJ” (contas pagas). Obras sem projeção não têm BDI previsto.")
 
@@ -664,22 +701,16 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
                 regs_c.append({"Nome": _nf, "Função": f"Prestador de serviço (PJ) — {round(x['pct'] * 100)}% nesta obra" + (f" · razão social: {x['credor']}" if _nf != x["credor"] else ""),
                                "Tipo": "PJ", "dest": _destino_ob(x["obra"])})
             col_df = pd.DataFrame([r for r in regs_c if r["dest"]], columns=["Nome", "Função", "Tipo", "dest"])
-            opcoes = ["ALL"] + [c for c in [*proprias_l, "DEM"] if len(col_df) and (col_df["dest"] == c).any()]
-            nome_op = lambda c: "Todas as obras" if c == "ALL" else ("Demais obras" if c == "DEM" else f"{c} · {nomes_ob.get(c, c)}")      # noqa: E731
-            cod_sel = sel["Obra"] if sel else None
-            if st.session_state.get("dir_ob_ultima") != cod_sel:                    # linha nova clicada (ou limpa): leva a lista para a mesma obra
-                st.session_state["dir_ob_ultima"] = cod_sel
-                st.session_state["dir_col_obra"] = cod_sel if cod_sel in opcoes else "ALL"
-            if st.session_state.get("dir_col_obra") not in opcoes:
-                st.session_state["dir_col_obra"] = "ALL"
-
-            _md(f"**Principais credores · {nomes_ob.get(cod_sel, cod_sel) if cod_sel and cod_sel != 'DEM' else ('demais obras' if cod_sel == 'DEM' else 'todas as obras')}**")
+            _rot_obras = _txt_sel([("demais obras" if c == "DEM" else nomes_ob.get(c, c)) for c in cods_sel], "todas as obras")
+            _md(f"**Principais credores · {_rot_obras}**")
             _pj_nomes = _credores_pj_nomes(conn, mes_ini, mes, CARIMBO)               # contabilidade 21/10: quem e' colaborador PJ ja' esta na lista de colaboradores, nao em credores
             dd_ob = _despesas_sem_pj(conn, mes_ini, mes, CARIMBO)
-            if cod_sel == "DEM":
-                alvo = [c for c in dd_ob["obra"].unique() if c not in proprias and c not in nao_obra] if len(dd_ob) else []
+            if cods_sel:
+                alvo = [c for c in cods_sel if c != "DEM"]
+                if "DEM" in cods_sel:
+                    alvo += [c for c in dd_ob["obra"].unique() if c not in proprias and c not in nao_obra] if len(dd_ob) else []
             else:
-                alvo = [cod_sel] if cod_sel else None
+                alvo = None
             cr_ob = DD.credores_da_obra(dd_ob, alvo, mes)
             if cr_ob["linhas"]:
                 st.dataframe(pd.DataFrame({"Credor": [x["chave"] for x in cr_ob["linhas"]], f"Acumulado {ACUM}": [_m(x["acumulado"]) for x in cr_ob["linhas"]],
@@ -692,14 +723,13 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
                 _cap("Sem contas pagas para esta seleção (ou falta o de-para de centros de custo → obra).")
 
             _md(f"**Colaboradores alocados nas obras — {_rot(mes)}**")
-            f1, f2 = st.columns([2, 3])
-            obra_col = f1.selectbox("Obra", opcoes, format_func=nome_op, key="dir_col_obra")
-            q_col = f2.text_input("Buscar nome ou função", key="dir_col_busca", placeholder="ex.: engenheiro, silva")
-            lista = col_df if obra_col == "ALL" else col_df[col_df["dest"] == obra_col]
+            q_col = st.text_input("Buscar nome ou função", key="dir_col_busca", placeholder="ex.: engenheiro, silva")
+            _cap("A lista segue as obras marcadas na tabela acima (nenhuma marcada = todas as obras).")
+            lista = col_df if not cods_sel else col_df[col_df["dest"].isin(cods_sel)]
             lista = _busca(lista, q_col, ["Nome", "Função"]) if len(lista) else lista
             if len(lista):
                 mostra_c = lista[["Nome", "Função"]].copy()
-                if obra_col == "ALL":
+                if not cods_sel or len(cods_sel) > 1:
                     mostra_c["Obra"] = lista["dest"].map(lambda c: "Demais obras" if c == "DEM" else f"{c} · {nomes_ob.get(c, c)}")
                 st.dataframe(mostra_c, hide_index=True, width="stretch", height=min(35 * (len(mostra_c) + 1) + 3, 420))
                 n_clt = int((lista["Tipo"] == "CLT").sum())
@@ -727,7 +757,7 @@ if aba_adm.open or _TODAS:
             o, ac, so = ap["orc_mes"], ap["orc_per"], ap["serie_orc"]
             linhas_mes, linhas_per = ap["linhas_mes"], ap["linhas_per"]
             grp_sel = None
-            contas_sel: list = []                                      # filtro de conta (so' aparece com um grupo selecionado)
+            contas_sel: list = []                                      # contas marcadas (a tabela de contas so' aparece com algum grupo marcado)
             if o or ac:
                 k = st.columns(5)
                 k[0].metric(f"Orçado {_rot(mes)}", _mi(o["total"]["orcado"]) if o else "–", border=True)
@@ -766,40 +796,40 @@ if aba_adm.open or _TODAS:
                 grp = pd.DataFrame(linhas_grp)
                 if len(grp):
                     cfg_g = {c: st.column_config.NumberColumn(c, format="localized") for c in grp.columns if c not in ("Código", "Grupo")}
-                    _cap("Clique em um grupo para filtrar as contas e os credores abaixo (clique de novo para voltar ao total). Desvio = realizado − orçado: positivo é estouro. O orçamento está consolidado das unidades.")
-                    ev_g = st.dataframe(grp, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="dir_adm_grp", column_config=cfg_g)
-                    grp_sel = _selecionada(ev_g, grp)
-                filtro_g = grp_sel["Código"] if grp_sel else None
+                    _cap("Marque a caixinha de um ou mais grupos para filtrar as contas e os credores abaixo (várias marcadas somam; nenhuma = total). Desvio = realizado − orçado: positivo é estouro. O orçamento está consolidado das unidades.")
+                    ev_g = st.dataframe(grp, hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row", key="dir_adm_grp", column_config=cfg_g)
+                    grp_sel = _selecionadas(ev_g, grp)
+                filtros_g = list(grp_sel["Código"]) if grp_sel is not None and len(grp_sel) else []
                 base_c = ac or o
-                _no_g = lambda c: (not filtro_g) or c == filtro_g or c.startswith(filtro_g + ".")                       # noqa: E731
-                if filtro_g:
+                _no_g = lambda c: (not filtros_g) or any(c == g or c.startswith(g + ".") for g in filtros_g)               # noqa: E731
+                if filtros_g:
                     cs = [x for x in base_c["contas"] if _no_g(x["codigo"])]
-                    _md(f"**Contas do grupo {filtro_g} — orçado × realizado ({PER_ROT})**")
-                    _cap("Maiores estouros primeiro; desvio negativo = gastou menos que o orçado.")
-                    _opc_c = {x["codigo"]: f"{x['codigo']} · {x['conta']}" for x in cs}
-                    if st.session_state.get("dir_adm_contas"):                                       # trocou de grupo: tira da selecao o que nao existe mais
-                        st.session_state["dir_adm_contas"] = [c for c in st.session_state["dir_adm_contas"] if c in _opc_c]
-                    contas_sel = st.multiselect("Filtrar por conta (ex.: Seguros, Aluguéis)", list(_opc_c), format_func=_opc_c.get, key="dir_adm_contas", placeholder="Todas as contas do grupo",
-                                                help="Mostra só as contas escolhidas aqui e, mais abaixo, quem recebeu nelas (unidade → credor → contas).")
-                    if contas_sel:
-                        cs = [x for x in cs if x["codigo"] in contas_sel]
+                    _md(f"**Contas {'do grupo ' + filtros_g[0] if len(filtros_g) == 1 else 'dos ' + str(len(filtros_g)) + ' grupos marcados'} — orçado × realizado ({PER_ROT})**")
+                    _cap("Marque a caixinha de uma ou mais contas (ex.: Seguros, Aluguéis) para ver só elas e, mais abaixo, quem recebeu nelas. Maiores estouros primeiro; desvio negativo = gastou menos que o orçado.")
+                    if cs:
+                        _tab_c = pd.DataFrame({"Código": [x["codigo"] for x in cs], "Conta": [x["conta"] for x in cs], "Orçado": [_m(x["orcado"]) for x in cs],
+                                               "Realizado": [_m(x["realizado"]) for x in cs], "Desvio": [_m(x["desvio"]) for x in cs]})
+                        ev_cc = st.dataframe(_tab_c, hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row", key=_chave("dir_adm_contas", filtros_g))
+                        contas_sel = list(_selecionadas(ev_cc, _tab_c)["Código"])
+                    else:
+                        _cap("Nenhuma conta com orçamento neste filtro.")
                 else:
                     cs = base_c["acima"]
                     _md(f"**Contas que mais passaram do orçado ({PER_ROT})**")
-                if cs:
-                    st.dataframe(pd.DataFrame([{"Conta": f"{x['codigo']} · {x['conta']}", "Orçado": _m(x["orcado"]), "Realizado": _m(x["realizado"]), "Desvio": _m(x["desvio"])} for x in cs]),
-                                 hide_index=True, width="stretch")
-                else:
-                    _cap("Nenhuma conta com orçamento neste filtro.")
+                    if cs:
+                        st.dataframe(pd.DataFrame([{"Conta": f"{x['codigo']} · {x['conta']}", "Orçado": _m(x["orcado"]), "Realizado": _m(x["realizado"]), "Desvio": _m(x["desvio"])} for x in cs]),
+                                     hide_index=True, width="stretch")
+                    else:
+                        _cap("Nenhuma conta com orçamento neste filtro.")
             if linhas_per or linhas_mes:
-                filtro_cod = grp_sel["Código"] if grp_sel else None
-                _no_grupo = lambda c: ((not filtro_cod) or c == filtro_cod or c.startswith(filtro_cod + ".")) and ((not contas_sel) or any(c == k or c.startswith(k + ".") for k in contas_sel))      # noqa: E731
+                filtros_cod = list(grp_sel["Código"]) if grp_sel is not None and len(grp_sel) else []
+                _no_grupo = lambda c: ((not filtros_cod) or any(c == g or c.startswith(g + ".") for g in filtros_cod)) and ((not contas_sel) or any(c == k or c.startswith(k + ".") for k in contas_sel))      # noqa: E731
                 chaves_dir = _outros_dir(conn, CARIMBO)
                 df_l = DD.marcar_outros_dir(pd.DataFrame(linhas_mes, columns=["plano_cod", "plano_nome", "credor", "unidade", "valor"]), chaves_dir)
                 df_l = df_l[df_l["plano_cod"].map(_no_grupo)] if len(df_l) else df_l
                 df_a = DD.marcar_outros_dir(pd.DataFrame(linhas_per or linhas_mes, columns=["plano_cod", "plano_nome", "credor", "unidade", "valor"]), chaves_dir)
                 df_a = df_a[df_a["plano_cod"].map(_no_grupo)] if len(df_a) else df_a
-                _md("#### Quem recebeu: unidade → credor → contas" + (f" · grupo {filtro_cod}" if filtro_cod else "") + (f" · {len(contas_sel)} conta(s) filtrada(s)" if contas_sel else ""))
+                _md("#### Quem recebeu: unidade → credor → contas" + (f" · {_txt_sel(filtros_cod, '', 1).replace(' selecionados', ' grupos')}" if filtros_cod else "") + (f" · {len(contas_sel)} conta(s) filtrada(s)" if contas_sel else ""))
                 if not len(df_l) and not len(df_a):
                     _info("Nenhum pagamento da administração neste grupo no período.")
                 else:
@@ -810,16 +840,16 @@ if aba_adm.open or _TODAS:
                     un["ano"] = un["unidade"].map(lambda u: float(un_ano.get(u, 0.0)))
                     un = un.sort_values(["ano", "mes"], ascending=False).reset_index(drop=True)
                     tot_u = float(un["ano"].sum())
-                    _cap(f"Pago nas unidades da administração (contas pagas, inclui pessoal). 1) Clique em uma unidade (ou deixe sem seleção para ver todas). 2) Clique em um credor para ver as contas dele. "
+                    _cap(f"Pago nas unidades da administração (contas pagas, inclui pessoal). 1) Marque uma ou mais unidades (ou deixe sem marcação para ver todas). 2) Marque um ou mais credores para ver as contas deles. "
                          f"Mês = {_rot(mes)}; período = {PER_ROT}.")
                     un_m = pd.DataFrame({"Unidade": un["unidade"], _rot(mes): un["mes"].map(lambda x: _m(x) if abs(x) > 0.005 else "–"), ACUM: un["ano"].map(_m),
                                          "% do período": un["ano"].map(lambda x: F.pct_br(x / tot_u) if tot_u else "–")})
-                    ev_u = st.dataframe(un_m, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="dir_adm_un")
-                    su = _selecionada(ev_u, un)
+                    ev_u = st.dataframe(un_m, hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row", key=_chave("dir_adm_un", filtros_cod, contas_sel))
+                    su = list(_selecionadas(ev_u, un)["unidade"])
                     if su:
-                        df_l = df_l[df_l["unidade"] == su["unidade"]]
-                        df_a = df_a[df_a["unidade"] == su["unidade"]]
-                        _md(f"Credores em **{su['unidade']}**")
+                        df_l = df_l[df_l["unidade"].isin(su)]
+                        df_a = df_a[df_a["unidade"].isin(su)]
+                        _md(f"Credores em **{_txt_sel(su, '', 2)}**")
                     bc = st.text_input("Pesquisar credor", key="dir_adm_busca")
                     c_mes = df_l.groupby("credor_exib")["valor"].sum() if len(df_l) else pd.Series(dtype=float)
                     c_ano = df_a.groupby("credor_exib")["valor"].sum() if len(df_a) else pd.Series(dtype=float)
@@ -830,22 +860,23 @@ if aba_adm.open or _TODAS:
                     tot_c = float(df_a["valor"].sum())
                     cr_m = pd.DataFrame({"Credor": cr["credor"], _rot(mes): cr["mes"].map(lambda x: _m(x) if abs(x) > 0.005 else "–"), ACUM: cr["ano"].map(_m),
                                          "% do filtro": cr["ano"].map(lambda x: F.pct_br(x / tot_c) if tot_c else "–")}).head(60)
-                    ev_c = st.dataframe(cr_m, hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="dir_adm_cr")
-                    sc = _selecionada(ev_c, cr)
+                    ev_c = st.dataframe(cr_m, hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row", key=_chave("dir_adm_cr", filtros_cod, contas_sel, su, bc))
+                    sc = list(_selecionadas(ev_c, cr)["credor"])
                     if chaves_dir and len(df_a) and (df_a["credor_exib"] == "Outros credores/Dir").any():
-                        _cap("“Outros credores/Dir” junta numa linha só os credores do grupo definido pela contabilidade (clique na linha para ver quem são).")
+                        _cap("“Outros credores/Dir” junta numa linha só os credores do grupo definido pela contabilidade (marque a caixinha da linha para ver quem são).")
                     if sc:
-                        outros_sel = sc["credor"] == "Outros credores/Dir"
-                        d_a, d_l = df_a[df_a["credor_exib"] == sc["credor"]], df_l[df_l["credor_exib"] == sc["credor"]]
+                        outros_sel = "Outros credores/Dir" in sc
+                        d_a, d_l = df_a[df_a["credor_exib"].isin(sc)], df_l[df_l["credor_exib"].isin(sc)]
                         if outros_sel and len(d_a):
+                            _o_a, _o_l = d_a[d_a["credor_exib"] == "Outros credores/Dir"], d_l[d_l["credor_exib"] == "Outros credores/Dir"]
                             _md("Quem está em **Outros credores/Dir**")
-                            q_a = d_a.groupby("credor")["valor"].sum().sort_values(ascending=False)
-                            q_l = d_l.groupby("credor")["valor"].sum() if len(d_l) else pd.Series(dtype=float)
+                            q_a = _o_a.groupby("credor")["valor"].sum().sort_values(ascending=False)
+                            q_l = _o_l.groupby("credor")["valor"].sum() if len(_o_l) else pd.Series(dtype=float)
                             st.dataframe(pd.DataFrame({"Credor": q_a.index, _rot(mes): [(_m(q_l.get(c)) if abs(float(q_l.get(c, 0.0))) > 0.005 else "–") for c in q_a.index], ACUM: q_a.map(_m).values}),
                                          hide_index=True, width="stretch")
                         ct_a = d_a.groupby(["plano_cod", "plano_nome"], as_index=False)["valor"].sum().sort_values("valor", ascending=False)
                         ct_m = d_l.groupby("plano_cod")["valor"].sum() if len(d_l) else pd.Series(dtype=float)
-                        _md(f"Contas pagas a **{sc['credor']}**")
+                        _md(f"Contas pagas a **{_txt_sel(sc, '', 2)}**")
                         st.dataframe(pd.DataFrame({"Conta": ct_a["plano_cod"] + " · " + ct_a["plano_nome"].fillna(""), _rot(mes): ct_a["plano_cod"].map(lambda c: _m(ct_m.get(c)) if abs(float(ct_m.get(c, 0.0))) > 0.005 else "–"),
                                                    ACUM: ct_a["valor"].map(_m)}), hide_index=True, width="stretch")
                     _cap("Conferência: o Realizado do orçamento (tabela de grupos) vem do relatório de Orçamento ADM importado; aqui é o valor efetivamente pago no Sienge (contas pagas). "
@@ -880,17 +911,16 @@ if aba_desp.open or _TODAS:
                 _md(f"**Top 12 contas — acumulado {ACUM}**")
                 top = contas_ano[:12]
                 df_top = pd.DataFrame({"Conta": [x[0] for x in top], "Acumulado": [x[1] for x in top]})
-                _cap("Clique em uma conta para detalhar (evolução, credores e obras); clique de novo para voltar ao total.")
+                _cap("Marque a caixinha de uma ou mais contas para detalhar (evolução, credores e obras; várias marcadas somam); sem marcação = total.")
                 ev_t = st.dataframe(pd.DataFrame({"Conta": df_top["Conta"], "Acumulado": df_top["Acumulado"].map(_mi), "% do período": df_top["Acumulado"].map(lambda x: F.pct_br(x / tot_ano) if tot_ano else "–")}),
-                                    hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="dir_desp_top")
-                conta_sel = _selecionada(ev_t, df_top)
-                conta = conta_sel["Conta"] if conta_sel else None
+                                    hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row", key="dir_desp_top")
+                conta = list(_selecionadas(ev_t, df_top)["Conta"]) or None
                 _md(f"**Top 5 de {_rot(mes)}**")
                 st.dataframe(pd.DataFrame({"Conta": [x[0] for x in contas_mes[:5]], _rot(mes): [_m(x[1]) for x in contas_mes[:5]],
                                            "% do mês": [F.pct_br(x[1] / tot_mes) if tot_mes else "–" for x in contas_mes[:5]]}), hide_index=True, width="stretch")
                 _cap("Contas pagas, exceto as contas de pessoas e encargos (aba Pessoas). Conforme as regras da aba “Regras” do Painel EnerMais.")
             with e2:
-                _md(f"**Evolução mensal · {conta or 'todas as contas'} (12 meses)**")
+                _md(f"**Evolução mensal · {_txt_sel(conta or [], 'todas as contas')} (12 meses)**")
                 if mes_ini <= MES_INI_G:
                     dd12 = dd
                 else:                                                            # periodo curto: carrega os 12 meses so' para o grafico (cartoes e tabelas seguem o periodo)
@@ -898,18 +928,18 @@ if aba_desp.open or _TODAS:
                 vals = DD.serie_mensal(dd12, MESES_G, conta)
                 estilo.altair(_barras_mes([m[5:] + "/" + m[2:4] for m in MESES_G], vals, destaque=len(MESES_G) - 1), width="stretch")
                 cr = DD.agrupar(dd, "credor", mes, conta=conta)
-                _md(f"**Principais credores · {conta or 'todas as contas'}**")
+                _md(f"**Principais credores · {_txt_sel(conta or [], 'todas as contas')}**")
                 cr_df = pd.DataFrame({"Credor": [x["chave"] for x in cr["linhas"]], "ac": [x["acumulado"] for x in cr["linhas"]], "mes": [x["mes"] for x in cr["linhas"]]})
-                cr_sel = None
+                cr_sel = pd.DataFrame({"Credor": []})
                 if len(cr_df):
                     ev_cr = st.dataframe(pd.DataFrame({"Credor": cr_df["Credor"], ACUM: cr_df["ac"].map(_m), "% do filtro": cr_df["ac"].map(lambda x: F.pct_br(x / cr["total"]) if cr["total"] else "–"),
                                                        _rot(mes): cr_df["mes"].map(lambda x: _m(x) if abs(x) > 0.005 else "–")}),
-                                         hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="dir_desp_cr")
-                    cr_sel = _selecionada(ev_cr, cr_df)
-                    _cap(("Todos os credores da conta." if cr["n"] <= len(cr["linhas"]) else f"Top {len(cr['linhas'])} de {cr['n']} credores") + " Clique em um credor para filtrar as obras abaixo.")
-                cred = cr_sel["Credor"] if cr_sel else None
+                                         hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row", key=_chave("dir_desp_cr", conta))
+                    cr_sel = _selecionadas(ev_cr, cr_df)
+                    _cap(("Todos os credores da conta." if cr["n"] <= len(cr["linhas"]) else f"Top {len(cr['linhas'])} de {cr['n']} credores") + " Marque um ou mais credores para filtrar as obras abaixo.")
+                cred = list(cr_sel["Credor"]) or None
                 ob_ = DD.agrupar(dd, "cc", mes, conta=conta, credor=cred)
-                _md(f"**Por obra / centro de custo · {cred or conta or 'todas as contas'}**")
+                _md(f"**Por obra / centro de custo · {_txt_sel(cred or conta or [], 'todas as contas')}**")
                 if ob_["linhas"]:
                     st.dataframe(pd.DataFrame({"Obra / centro de custo": [x["chave"] for x in ob_["linhas"]], ACUM: [_m(x["acumulado"]) for x in ob_["linhas"]],
                                                "%": [F.pct_br(x["acumulado"] / ob_["total"]) if ob_["total"] else "–" for x in ob_["linhas"]],
@@ -1002,34 +1032,33 @@ if aba_pes.open or _TODAS:
                 if tabp_v:
                     tdf = pd.DataFrame(tabp_v)
                     tot_m = sum(x["mes"] for x in tabp)
-                    _cap("Clique em uma conta para ver credores e obras; clique de novo para voltar ao total.")
+                    _cap("Marque a caixinha de uma ou mais contas para ver credores e obras (várias marcadas somam); sem marcação = total.")
                     _tab_p = {"Conta": tdf["conta"], _rot(mes): tdf["mes"].map(_m), "% do mês": tdf["pct_mes"].map(lambda x: F.pct_br(x, 2)), "R$/colab. mês": tdf["por_colab_mes"].map(_m),
                               "Acum. até mês anterior": tdf["acum_antes"].map(_m), "R$/colab. acum.": tdf["por_colab_acum"].map(_m), "Variação": tdf["variacao"].map(lambda x: F.pct_br(x) if x is not None else "N/A")}
                     if not UM_MES:                                                           # periodo de varios meses: acrescenta o total do PERIODO (meses antes + mes de referencia)
                         _tab_p = {**{k: v for k, v in _tab_p.items() if k != "Variação"}, f"Total {ACUM}": tdf["periodo"].map(_m), f"R$/colab. {ACUM}": tdf["por_colab_periodo"].map(_m),
                                   "Variação": _tab_p["Variação"]}
-                    ev_p = st.dataframe(pd.DataFrame(_tab_p), hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="dir_pes_tab")
-                    p_sel = _selecionada(ev_p, tdf.rename(columns={"conta": "Conta"}))
-                    conta_p = p_sel["Conta"] if p_sel else None
+                    ev_p = st.dataframe(pd.DataFrame(_tab_p), hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row", key="dir_pes_tab")
+                    conta_p = list(_selecionadas(ev_p, tdf.rename(columns={"conta": "Conta"}))["Conta"]) or None
                     _cap(f"Contas de pessoal de obra (2.01.02) e ADM (2.02.01), sem salários CLT/PJ e premiações. Total do mês (todas as contas): {_m(tot_m)}. "
                                "R$/colab. acumulado = acumulado até o mês anterior ÷ soma do headcount mensal desses meses" + ("." if soma_antes else " (indisponível sem o headcount dos meses anteriores)."))
                     d1, d2 = st.columns(2)
                     pdf_cr = _pessoas_sem_grupo(conn, mes_ini, mes, CARIMBO)       # contabilidade 21/10: credores do grupo ENERMAIS fora das listas
                     with d1:
                         cr = DD.agrupar(pdf_cr, "credor", mes, conta=conta_p)
-                        _md(f"**Principais credores · {conta_p or 'todas as contas'}**")
+                        _md(f"**Principais credores · {_txt_sel(conta_p or [], 'todas as contas')}**")
                         cr_df = pd.DataFrame({"Credor": [x["chave"] for x in cr["linhas"]], "ac": [x["acumulado"] for x in cr["linhas"]], "mes": [x["mes"] for x in cr["linhas"]]})
-                        cr_sel = None
+                        cr_sel = pd.DataFrame({"Credor": []})
                         if len(cr_df):
                             ev_cr = st.dataframe(pd.DataFrame({"Credor": cr_df["Credor"], ACUM: cr_df["ac"].map(_m), "%": cr_df["ac"].map(lambda x: F.pct_br(x / cr["total"]) if cr["total"] else "–"),
                                                                _rot(mes): cr_df["mes"].map(lambda x: _m(x) if abs(x) > 0.005 else "–")}),
-                                                 hide_index=True, width="stretch", on_select="rerun", selection_mode="single-row", key="dir_pes_cr")
-                            cr_sel = _selecionada(ev_cr, cr_df)
-                            _cap(("Todos os credores." if cr["n"] <= len(cr["linhas"]) else f"Top {len(cr['linhas'])} de {cr['n']} credores.") + " Clique em um credor para filtrar as obras. Sem os credores do grupo ENERMAIS (as seis empresas).")
+                                                 hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row", key=_chave("dir_pes_cr", conta_p))
+                            cr_sel = _selecionadas(ev_cr, cr_df)
+                            _cap(("Todos os credores." if cr["n"] <= len(cr["linhas"]) else f"Top {len(cr['linhas'])} de {cr['n']} credores.") + " Marque um ou mais credores para filtrar as obras. Sem os credores do grupo ENERMAIS (as seis empresas).")
                     with d2:
-                        cred_p = cr_sel["Credor"] if cr_sel else None
+                        cred_p = list(cr_sel["Credor"]) or None
                         ob_ = DD.agrupar(DD.rotular_obras(pdf_cr, _nomes_obras(conn, CARIMBO)), "obra_rot", mes, conta=conta_p, credor=cred_p, top=25)
-                        _md(f"**Por obra · {cred_p or conta_p or 'todas as contas'}**")
+                        _md(f"**Por obra · {_txt_sel(cred_p or conta_p or [], 'todas as contas')}**")
                         if ob_["linhas"]:
                             st.dataframe(pd.DataFrame({"Obra": [x["chave"] for x in ob_["linhas"]], ACUM: [_m(x["acumulado"]) for x in ob_["linhas"]],
                                                        "%": [F.pct_br(x["acumulado"] / ob_["total"]) if ob_["total"] else "–" for x in ob_["linhas"]],
