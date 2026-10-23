@@ -7,6 +7,7 @@ Variaveis: SIENGE_USER, SIENGE_PASSWORD, SIENGE_BASE_URL (opcional).
 """
 from __future__ import annotations
 
+import re
 import sys
 import time
 from pathlib import Path
@@ -103,6 +104,11 @@ def anexos(cli) -> None:
         ("v1/supply-contracts/measurements/attachments", {"documentId": doc, "contractNumber": num}),
         ("v1/supply-contracts/measurements/all", {"documentId": doc, "contractNumber": num, "limit": 5}),
         ("v1/attachments", {"documentId": doc, "contractNumber": num}),
+        ("v1/supply-contracts/attachments", {}),
+        ("v1/supply-contracts/attachments", {"documentId": doc, "contractNumber": num, "buildingId": bld, "limit": 5, "offset": 0}),
+        ("v1/supply-contracts/attachments", {"documentId": doc, "contractNumber": num, "buildingId": bld, "measurementNumber": 1}),
+        ("v1/supply-contracts/attachments", {"documentId": doc, "contractNumber": num, "buildingId": bld, "supplierId": c.get("supplierId")}),
+        ("v1/supply-contracts/items", {}),
     ]
     for caminho, params in cand:
         rot = caminho.replace(str(doc), "{doc}").replace(str(num), "{num}").replace(str(bld), "{bld}")
@@ -111,7 +117,9 @@ def anexos(cli) -> None:
             resp = cli.get(caminho, {k: v for k, v in params.items() if v is not None})
         except S.ErroSienge as e:
             cod = str(e).split("HTTP ")[1][:3] if "HTTP " in str(e) else "rede"
-            print(f"{rot} {pars}: HTTP {cod}")
+            msg = str(e).split(caminho + ". ", 1)[1] if (caminho + ". ") in str(e) else ""
+            msg = re.sub(r"[0-9]", "#", msg)[:160]                 # sem numeros: o log e' publico
+            print(f"{rot} {pars}: HTTP {cod} {msg}")
             continue
         itens = S.lista(resp)
         campos = nomes_de_campos(itens[0])[:40] if itens else (sorted(resp.keys())[:15] if isinstance(resp, dict) else [])
