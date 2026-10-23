@@ -92,23 +92,21 @@ def anexos(cli) -> None:
     doc, num = c.get("documentId"), c.get("contractNumber")
     bld = ((c.get("buildings") or [{}])[0]).get("buildingId")
     cand = [
-        ("v1/supply-contracts/attachments", {"documentId": doc, "contractNumber": num, "buildingId": bld}),
-        ("v1/supply-contracts/attachments", {"documentId": doc, "contractNumber": num}),
-        (f"v1/supply-contracts/{doc}/{num}/attachments", {}),
-        (f"v1/supply-contracts/{doc}/{num}/{bld}/attachments", {}),
-        (f"v1/supply-contracts/{doc}/{num}", {}),
-        ("v1/supply-contracts/all/attachments", {"documentId": doc, "contractNumber": num}),
-        ("v1/supply-contracts/items", {"documentId": doc, "contractNumber": num, "buildingId": bld}),
-        ("v1/supply-contracts/items", {"documentId": doc, "contractNumber": num}),
-        ("v1/supply-contracts/items/all", {"documentId": doc, "contractNumber": num}),
-        ("v1/supply-contracts/measurements/attachments", {"documentId": doc, "contractNumber": num}),
-        ("v1/supply-contracts/measurements/all", {"documentId": doc, "contractNumber": num, "limit": 5}),
-        ("v1/attachments", {"documentId": doc, "contractNumber": num}),
-        ("v1/supply-contracts/attachments", {}),
-        ("v1/supply-contracts/attachments", {"documentId": doc, "contractNumber": num, "buildingId": bld, "limit": 5, "offset": 0}),
-        ("v1/supply-contracts/attachments", {"documentId": doc, "contractNumber": num, "buildingId": bld, "measurementNumber": 1}),
-        ("v1/supply-contracts/attachments", {"documentId": doc, "contractNumber": num, "buildingId": bld, "supplierId": c.get("supplierId")}),
-        ("v1/supply-contracts/items", {}),
+        ("v1/supply-contracts/all", {"limit": 200, "offset": 0}),
+        ("v1/supply-contracts/all", {"limit": 500, "offset": 0}),
+        ("v1/supply-contracts/measurements/all", {"limit": 200, "offset": 0}),
+        ("v1/supply-contracts/attachments/all", {}),
+        ("v1/supply-contracts/attachments/all", {"limit": 5, "offset": 0}),
+        ("v1/supply-contracts/attachments/all", {"documentId": doc, "contractNumber": num}),
+        ("v1/supply-contracts/attachments/all", {"documentId": doc, "contractNumber": num, "buildingId": bld}),
+        ("v1/supply-contracts/attachments/all", {"documentId": doc, "contractNumber": num, "buildingId": bld, "limit": 5, "offset": 0}),
+        ("v1/supply-contracts/buildings", {"documentId": doc, "contractNumber": num}),
+        ("v1/supply-contracts/buildings", {"documentId": doc, "contractNumber": num, "buildingId": bld}),
+        ("v1/supply-contracts/addenda", {"documentId": doc, "contractNumber": num}),
+        ("v1/supply-contracts/addenda", {"documentId": doc, "contractNumber": num, "buildingId": bld}),
+        ("v1/supply-contracts/addenda/items", {"documentId": doc, "contractNumber": num, "buildingId": bld}),
+        ("v1/supply-contracts", {"documentId": doc, "contractNumber": num}),
+        ("v1/supply-contracts", {"documentId": doc, "contractNumber": num, "buildingId": bld}),
     ]
     for caminho, params in cand:
         rot = caminho.replace(str(doc), "{doc}").replace(str(num), "{num}").replace(str(bld), "{bld}")
