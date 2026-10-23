@@ -136,7 +136,7 @@ def test_pagina_obras_e_contratos_so_editor_e_caixinhas(conn, dados):
         assert set(obras["Obra"]) == {"Lote 03", "Angra"}
         # marca a obra "Angra" -> credores e contratos acompanham
         pos = list(obras["Obra"]).index("Angra")
-        chave_o = SEL.chave("oc_obras", "", ())
+        chave_o = SEL.chave("oc_obras", "", (), False)
         e.session_state[chave_o] = {"selection": {"rows": [pos], "columns": []}}
         e.run()
         assert not e.exception, e.exception
@@ -146,7 +146,7 @@ def test_pagina_obras_e_contratos_so_editor_e_caixinhas(conn, dados):
         assert "Saldo" not in contratos.columns                                  # com obra marcada o saldo não existe (nada de "None" na tela)
         assert set(contratos["Contrato"]) == {"CT-2", "CT-3"}
         # marca o contrato CT-2 -> aparecem as medicoes
-        chave_k = SEL.chave("oc_contr", "", (), ("109",), ())
+        chave_k = SEL.chave("oc_contr", "", (), False, ("109",), ())
         e.session_state[chave_o] = {"selection": {"rows": [pos], "columns": []}}                # o AppTest nao guarda a marcacao entre execucoes: repete
         e.session_state[chave_k] = {"selection": {"rows": [list(contratos["Contrato"]).index("CT-2")], "columns": []}}
         e.run()
@@ -159,3 +159,20 @@ def test_pagina_obras_e_contratos_so_editor_e_caixinhas(conn, dados):
 def test_situacoes_da_api_em_portugues():
     assert CS._pt("PARTIALLY_MEASURED") == "Parcialmente medido" and CS._pt("COMPLETED") == "Concluído" and CS._pt("APPROVED") == "Aprovada"
     assert CS._pt("SOMETHING_NEW") == "Something new" and CS._pt("Em andamento") == "Em andamento" and CS._pt(None) == ""
+
+
+def test_pendentes_e_cancelados_ficam_fora_dos_totais_por_padrao(monkeypatch):
+    c = [_bruto_c("CT", "1", "Alfa Ltda", 10, [(104, "Lote 03")], 600, 400),
+         _bruto_c("CT", "9", None, None, [(104, "Lote 03")], 40000, 0, st="PENDING", obj="Contrato modelo"),
+         _bruto_c("CT", "8", "Gama", 30, [(104, "Lote 03")], 100, 0, st="CANCELED")]
+    d = CS.normalizar(c, [])
+    assert [x["chave"] for x in CS.filtrar(d, incluir_inativos=False)] == ["CT-1"]
+    assert len(CS.filtrar(d)) == 3 and len(CS.filtrar(d, incluir_inativos=False, situacoes=["Pendente"])) == 1      # situacao escolhida a dedo sempre vale
+    assert CS.fora_do_calculo(d) == {"contratos": 2, "total": 40100.0, "sem_credor": 1}
+    monkeypatch.setattr(CS, "carregar", lambda forcar=False: d)
+    r, _ = FERR.executar(None, "contratos", {})
+    assert r["contratado"] == 1000 and r["pendentes_e_cancelados"]["fora_dos_totais"]["contratos"] == 2
+    r2, _ = FERR.executar(None, "contratos", {"incluir_pendentes": True})
+    assert r2["contratado"] == 41100 and r2["pendentes_e_cancelados"] == "incluidos"
+    r3, _ = FERR.executar(None, "contratos", {"situacao_contem": "pendente"})
+    assert r3["contratos_no_recorte"] == 1 and r3["contratado"] == 40000

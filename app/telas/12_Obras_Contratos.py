@@ -52,10 +52,15 @@ if not dados["contratos"]:
 NOMES_OBRA = {o["id"]: o["nome"] for c in dados["contratos"] for o in c["obras"]}
 
 # ------------------------------------------------------------------ filtros gerais (valem para as tres tabelas)
-f1, f2 = st.columns([2, 1])
+f1, f2, f3 = st.columns([2, 1, 1], vertical_alignment="bottom")
 busca = f1.text_input("Buscar (credor, obra, objeto ou nº do contrato)", key="oc_busca", placeholder="ex.: terraplenagem, 104, Lote 03")
 situacoes = f2.multiselect("Situação do contrato", sorted({c["situacao"] for c in dados["contratos"]}), key="oc_sit", placeholder="todas")
-base = {"contratos": CS.filtrar(dados, situacoes=situacoes, busca=busca), "medicoes": dados["medicoes"]}
+inativos = f3.checkbox("Incluir pendentes e cancelados", key="oc_inativos", help="Contratos Pendentes (ainda não firmados, muitos sem credor) e Cancelados ficam fora dos totais por padrão. Escolher uma situação acima sempre mostra essa situação.")
+base = {"contratos": CS.filtrar(dados, situacoes=situacoes, busca=busca, incluir_inativos=inativos), "medicoes": dados["medicoes"]}
+_fora = CS.fora_do_calculo(dados)
+if not inativos and not situacoes and _fora["contratos"]:
+    st.caption(f"Fora dos totais por padrão: {_fora['contratos']} contratos pendentes ou cancelados (R$ {_fora['total'] / 1e6:,.2f} mi".replace(",", "X").replace(".", ",").replace("X", ".")
+               + (f", {_fora['sem_credor']} sem credor" if _fora["sem_credor"] else "") + "). Marque “Incluir pendentes e cancelados” para vê-los.")
 if not base["contratos"]:
     st.info("Nenhum contrato com esses filtros.")
     st.stop()
@@ -84,7 +89,7 @@ def _mi(v) -> str:
 # ------------------------------------------------------------------ obras (1º passo do fluxo; tudo na mesma tela, de cima para baixo)
 df_o = CS.df_obras(base)
 st.markdown("### 1 · Obras")
-ev_o = _tabela(df_o, SEL.chave("oc_obras", busca, tuple(situacoes)), ["Obra", "Contratos", "Compartilhados", "Credores", "Contratado", "Medido", "% medido"], altura=300)
+ev_o = _tabela(df_o, SEL.chave("oc_obras", busca, tuple(situacoes), inativos), ["Obra", "Contratos", "Compartilhados", "Credores", "Contratado", "Medido", "% medido"], altura=300)
 st.caption("Contratado = soma dos contratos que incluem a obra (contrato com mais de uma obra conta inteiro em cada uma; coluna “Compartilhados”). "
            "Medido = soma das medições lançadas na obra (mão de obra + material). Marque obras para filtrar os credores e contratos logo abaixo.")
 sel_o = SEL.selecionadas(ev_o, df_o)
@@ -94,7 +99,7 @@ ROT_O = SEL.rotulo(sel_o["Obra"], "todas as obras")
 # ------------------------------------------------------------------ credores
 df_c = CS.df_credores(base, ob_ids)
 st.markdown(f"### 2 · Credores · {ROT_O}")
-ev_c = _tabela(df_c, SEL.chave("oc_cred", busca, tuple(situacoes), tuple(ob_ids)), ["Credor", "Contratos", "Obras", "Contratado", "Medido", "% medido"], altura=300)
+ev_c = _tabela(df_c, SEL.chave("oc_cred", busca, tuple(situacoes), inativos, tuple(ob_ids)), ["Credor", "Contratos", "Obras", "Contratado", "Medido", "% medido"], altura=300)
 st.caption("Com obras marcadas, só contam os contratos dessas obras e o medido é o dessas obras. Marque credores para filtrar os contratos logo abaixo.")
 sel_c = SEL.selecionadas(ev_c, df_c)
 cr_ids = list(sel_c["_id"])
@@ -110,7 +115,7 @@ k[0].metric("Contratos", f"{len(df_k)}", border=True)
 k[1].metric("Contratado", _mi(tot), border=True)
 k[2].metric("Medido", _mi(med), delta=(f"{med / tot:.0%} do contratado" if tot > 0.005 else None), delta_color="off", border=True)
 k[3].metric("Medições lançadas", f"{nmed}", border=True)
-ev_k = _tabela(df_k, SEL.chave("oc_contr", busca, tuple(situacoes), tuple(ob_ids), tuple(cr_ids)),
+ev_k = _tabela(df_k, SEL.chave("oc_contr", busca, tuple(situacoes), inativos, tuple(ob_ids), tuple(cr_ids)),
                ["Contrato", "Credor", "Obras", "Situação", "Início", "Fim", "Mão de obra", "Material", "Total", "Medido"] + ([] if ob_ids else ["Saldo"]) + ["Medições"],
                altura=min(35 * (len(df_k) + 1) + 3, 380))
 st.caption("Saldo = Total − Medido (a coluna some com obras marcadas, porque o total do contrato não se divide por obra). Marque contratos para ver o detalhe, as medições e os anexos.")

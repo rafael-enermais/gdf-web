@@ -21,6 +21,7 @@ import pandas as pd
 import contratos_sienge as CS
 import dexie_aprendizado as APR
 import dexie_conhecimento as K
+import guia_app as GUIA
 import historico as HIST
 import diretoria_dados as DD
 import indicadores_dados as IND
@@ -465,6 +466,11 @@ def conhecimento(conn, e) -> tuple:
     return K.consultar(e.get("tema"), e.get("busca")), None
 
 
+def guia_do_app(conn, e) -> tuple:
+    """Guia do app (mapa do menu, o que cada tela faz, quem ve o que, 'onde faco X' e textos da Ajuda). Texto estatico da equipe; a Dexie explica, nao opera as telas."""
+    return GUIA.consultar(e.get("pagina"), e.get("busca")), None
+
+
 # ------------------------------------------------------------------ catalogo para o modelo (nome -> funcao + descricao + parametros)
 _MES = {"type": "string", "description": "Mes no formato AAAA-MM (ex.: 2026-09)."}
 _INI = {"type": "string", "description": "Primeiro mes do periodo, AAAA-MM."}
@@ -488,7 +494,8 @@ def contratos(conn, e) -> tuple:
     ob_ids = {o["id"] for c in dados["contratos"] for o in c["obras"] if t_obra and t_obra in _norm_busca(o["nome"])}
     if t_obra and not ob_ids:
         return {"filtros": filtros, "contratos_no_recorte": 0, "aviso": "Nenhuma obra com contrato tem esse texto no nome."}, None
-    lista = CS.filtrar(dados, obras=ob_ids, busca=e.get("busca") or "")
+    com_pendentes = bool(e.get("incluir_pendentes")) or bool(t_sit)                  # mesma regra da pagina: Pendente/Cancelado fora dos totais, salvo pedido (ou situacao pedida)
+    lista = CS.filtrar(dados, obras=ob_ids, busca=e.get("busca") or "", incluir_inativos=com_pendentes)
     lista = [c for c in lista if (not t_cred or t_cred in _norm_busca(c["credor"])) and (not t_sit or t_sit in _norm_busca(c["situacao"]))]
     if not lista:
         return {"filtros": filtros or None, "contratos_no_recorte": 0, "aviso": "Nenhum contrato de suprimentos nesse recorte (confira os textos de obra, credor e situacao)."}, None
@@ -502,6 +509,7 @@ def contratos(conn, e) -> tuple:
     n = _limite(e.get("limite"), 15, 100)
     res = {"filtros": filtros or None, "contratos_no_recorte": len(linhas), "contratado": round(sum(x["total"] for x in linhas), 2), "medido": round(sum(x["medido"] for x in linhas), 2),
            "medicoes_lancadas": sum(x["medicoes"] for x in linhas), "dados_buscados_em": dados["quando"],
+           "pendentes_e_cancelados": ("incluidos" if com_pendentes else {"fora_dos_totais": CS.fora_do_calculo(dados), "como_ver": "chame de novo com incluir_pendentes=true ou situacao_contem='pendente'"}),
            "observacao": "Contratado = valor total do contrato (um contrato de varias obras conta inteiro). Com obra_contem, 'medido' so' conta as medicoes dessas obras. So' contratos de SUPRIMENTOS (os de venda nao estao liberados)."}
     por = str(e.get("agrupar_por") or "").strip().lower()
     if por in ("credor", "obra", "situacao"):
@@ -555,6 +563,7 @@ TOOLS = [
     _t("contratos", "CONTRATOS de suprimentos do Sienge (API): valor contratado e medido, por obra, credor ou situacao, ou a lista dos maiores. Filtra por obra_contem, credor_contem, situacao_contem e busca (texto livre: objeto, numero). Cada chamada usa dados guardados por ate 1 hora. So' suprimentos; contratos de venda e o conteudo dos anexos nao estao disponiveis.",
        {"obra_contem": {"type": "string", "description": "Parte do nome da obra (ex.: 'Lote 03', 'Angra')."}, "credor_contem": _CREDOR_TXT, "situacao_contem": {"type": "string", "description": "Parte da situacao do contrato."},
         "busca": {"type": "string", "description": "Texto livre (objeto, numero do contrato, empresa)."}, "agrupar_por": {"type": "string", "enum": ["credor", "obra", "situacao"], "description": "Agrupa os totais; sem isso lista os maiores contratos."},
+        "incluir_pendentes": {"type": "boolean", "description": "true inclui contratos Pendentes (ainda nao firmados, muitos sem credor) e Cancelados nos totais; padrao false, igual a pagina Obras e contratos."},
         "limite": {"type": "integer", "description": "Quantos itens listar (padrao 15, maximo 100)."}}),
     _t("administracao", "Administracao no periodo: pago por grupo, unidade e credor, e orcado x realizado (desvio positivo = gastou mais que o orcado).", {"mes_ini": _INI, "mes_fim": _FIM}, ["mes_ini", "mes_fim"]),
     _t("pessoas", "Pessoas no mes: folha CLT (colaboradores, salarios, hora extra, custo, por empresa e obra), colaboradores PJ e a serie mensal de hora extra.", {"mes": _MES}, ["mes"]),
@@ -566,12 +575,14 @@ TOOLS = [
     _t("logs", "Historico de acoes do app (importacoes, relatorios, edicoes, erros, avisos). Filtro opcional por nivel.", {"nivel": {"type": "string", "enum": ["INFO", "AVISO", "ERRO"]}, "limite": _LIM}),
     _t("conhecimento", "Base de conhecimento interna: reforma tributária (visão geral, cronograma 2026-2033, construção/incorporação, impacto na gestão), demonstrações e CPCs, fórmulas de indicadores, tributos vigentes e glossário do GDF. Sem tema nem busca devolve o índice. Use para perguntas de contabilidade e tributos e para explicar como o app calcula.",
        {"tema": {"type": "string", "enum": list(K.TEMAS), "description": "Chave do tema."}, "busca": {"type": "string", "description": "Palavras para achar temas (ex.: split payment, RET)."}}),
+    _t("guia_do_app", "GUIA DO APP: mapa do menu, o que cada tela e aba faz, quem ve o que (editor x visualizador), 'onde eu faco X' e os passos da pagina Ajuda (fluxo do mes, Painel EnerMais V2, o que fazer quando algo nao bate). Use quando a pessoa perguntar onde fica algo, como fazer um processo ou qual o proximo passo de um fluxo. Sem argumentos devolve o menu; pagina=<nome> detalha uma tela; busca=<palavras> acha tela, tarefa e trecho da Ajuda.",
+       {"pagina": {"type": "string", "description": "Nome (ou parte) da tela, ex.: 'Obras e contratos', 'Central de dados'."}, "busca": {"type": "string", "description": "Palavras da tarefa, ex.: 'desfazer importacao folha', 'dar acesso diretor'."}}),
     _t("importacoes", "Arquivos importados na V2 (DRE, folha, projecao, orcamento, historico): mes, arquivo, quem importou, se esta ativo e quantas edicoes tem.",
        {"tipo": {"type": "string", "enum": ["DRE", "FOLHA", "PROJECAO", "ORCAMENTO", "HISTORICO"]}, "limite": _LIM}),
 ]
 
 FUNCOES = {"visao_geral": visao_geral, "resultado_periodo": resultado_periodo, "dre_mes": dre_mes, "serie_mensal": serie_mensal, "conferencia_ano": conferencia_ano, "aprendizados": aprendizados, "obras_mes": obras_mes, "despesas": despesas, "pagamentos": pagamentos, "contratos": contratos, "administracao": administracao,
-           "pessoas": pessoas, "conhecimento": conhecimento, "indicadores": indicadores, "financiamentos": financiamentos, "receita_mensal": receita_mensal, "sincronizacoes": sincronizacoes, "logs": logs,
+           "pessoas": pessoas, "conhecimento": conhecimento, "guia_do_app": guia_do_app, "indicadores": indicadores, "financiamentos": financiamentos, "receita_mensal": receita_mensal, "sincronizacoes": sincronizacoes, "logs": logs,
            "importacoes": importacoes}
 
 
@@ -584,7 +595,7 @@ def executar(conn, nome: str, entrada) -> tuple:
         entrada = {}
     try:
         res, tab = fn(conn, entrada)
-        return (res if nome == "conhecimento" else enxugar(res)), tab        # a base de conhecimento e' texto nosso, revisado: nao se corta em 300 caracteres
+        return (res if nome in ("conhecimento", "guia_do_app") else enxugar(res)), tab        # a base de conhecimento e o guia do app sao texto nosso, revisado: nao se corta em 300 caracteres
     except ErroEntrada as exc:
         return {"erro": str(exc)}, None
     except Exception as exc:                                # noqa: BLE001  (o texto do erro de banco nao vai para o modelo nem para a tela)

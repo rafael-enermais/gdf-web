@@ -160,12 +160,24 @@ def medido_por_contrato(medicoes: list, obras: set | None = None) -> dict:
     return out
 
 
-def filtrar(dados: dict, obras=None, credores=None, situacoes=None, busca: str = "") -> list:
-    """Contratos que passam pelos filtros (ids de obra, ids de credor, situacoes, texto livre em credor/objeto/numero/obra)."""
+SIT_FORA = ("Pendente", "Cancelado")        # ainda nao valem como contrato firmado: ficam fora dos totais, a menos que a pessoa peca
+
+
+def fora_do_calculo(dados: dict) -> dict:
+    """Quantos contratos e quanto (R$) ficam de fora quando pendentes/cancelados nao entram, e quantos deles nem tem credor."""
+    fora = [c for c in dados["contratos"] if c["situacao"] in SIT_FORA]
+    return {"contratos": len(fora), "total": round(sum(c["total"] for c in fora), 2), "sem_credor": sum(1 for c in fora if not c["credor_id"])}
+
+
+def filtrar(dados: dict, obras=None, credores=None, situacoes=None, busca: str = "", incluir_inativos: bool = True) -> list:
+    """Contratos que passam pelos filtros (ids de obra, ids de credor, situacoes, texto livre em credor/objeto/numero/obra).
+    Com incluir_inativos=False e nenhuma situacao escolhida, contratos Pendentes e Cancelados ficam de fora (situacao escolhida a dedo sempre vale)."""
     obras, credores, situacoes = set(obras or []), set(credores or []), set(situacoes or [])
     t = _txt(busca).lower()
     out = []
     for c in dados["contratos"]:
+        if not situacoes and not incluir_inativos and c["situacao"] in SIT_FORA:
+            continue
         if obras and not _tem(c, obras):
             continue
         if credores and c["credor_id"] not in credores:
