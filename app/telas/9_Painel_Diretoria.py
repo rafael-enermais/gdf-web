@@ -4,6 +4,7 @@ Unica pagina do papel VISUALIZADOR. Cada aba abre com o resumo (formula / KPIs) 
 Os dados vem do banco. O resultado fica guardado (cache de ate 30 min) e se renova SOZINHO quando o 'carimbo' do banco muda (carga do Sienge, upload,
 regra ou de-para); o botao Atualizar agora limpa na hora (util logo depois de gerar algo). Nao grava nada. So' a aba aberta e' calculada."""
 import datetime as dt
+import time
 
 import altair as alt
 import pandas as pd
@@ -26,6 +27,7 @@ from fuso import agora_br
 NAVY, ORANGE, AZUL, CINZA = "#171C60", "#F99D20", "#5C6091", "#B9C3D4"
 BOM, RUIM = "#1F8A55", "#C0392B"
 
+_T0 = time.perf_counter()                                       # medidor de tempo da tela (aparece so' para quem edita, no rodape)
 usuario = usuario_atual()
 conn = get_conn()
 sidebar_rodape()
@@ -41,9 +43,9 @@ def _sem_latex(f):
 _cap, _md, _info, _warn = _sem_latex(st.caption), _sem_latex(st.markdown), _sem_latex(st.info), _sem_latex(st.warning)
 
 
-@st.cache_data(ttl=5, show_spinner=False)
+@st.cache_data(ttl=30, show_spinner=False)
 def _carimbo(_conn) -> str:
-    """Estado dos dados no banco (1 consulta barata; guardada 5 s para cliques seguidos). Faz parte da chave dos caches abaixo."""
+    """Estado dos dados no banco (varias consultas ao banco, por isso guardado 30 s: cliques seguidos nao repetem). Faz parte da chave dos caches abaixo."""
     return P.carimbo_dados(_conn)
 
 
@@ -68,30 +70,83 @@ def _pagos(_conn, mes_ini: str, mes: str, carimbo: str):
     """Contas pagas de `mes_ini` ate o mes (credor, centro de custo, obra) + as contas excluidas das Despesas pelas regras. Devolve (linhas, prefixos_fora)."""
     regras = P.regras_ativas(_conn, "DESPESAS")
     linhas = DD.pagos_detalhe(_conn, mes_ini, mes, sem_previsao=P.exclui_previsao(regras))
-    return linhas, P.prefixos_excluidos(regras)
+    return DD.para_df(linhas), P.prefixos_excluidos(regras)                    # ja' como tabela (DataFrame): guardar/ler do cache e' ~10x mais rapido que lista de dicts
 
 
-@st.cache_data(ttl=1800, show_spinner="Somando os meses do período…")
+@st.cache_data(ttl=1800, show_spinner=False)
+def _pj_mes(_conn, mes_ini: str, mes: str, carimbo: str) -> dict:
+    """PJ do mes (contas pagas 'Salarios PJ'); guardado: o calculo nao se repete a cada clique."""
+    return DD.pj_do_mes(_pagos(_conn, mes_ini, mes, carimbo)[0], mes)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _pj_obra(_conn, mes_ini: str, mes: str, carimbo: str) -> list:
+    return DD.pj_por_obra(_pagos(_conn, mes_ini, mes, carimbo)[0], mes)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _credores_pj_nomes(_conn, mes_ini: str, mes: str, carimbo: str) -> set:
+    return DD.credores_pj(_pagos(_conn, mes_ini, mes, carimbo)[0])
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _despesas(_conn, mes_ini: str, mes: str, carimbo: str) -> pd.DataFrame:
+    """Contas pagas sem as contas excluidas das Despesas pelas regras (guardado)."""
+    df, fora = _pagos(_conn, mes_ini, mes, carimbo)
+    return DD.despesas_df(df, fora)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _despesas_sem_pj(_conn, mes_ini: str, mes: str, carimbo: str) -> pd.DataFrame:
+    """Despesas sem os credores que sao colaboradores PJ (eles ja' estao na lista de colaboradores)."""
+    return DD.sem_credores(_despesas(_conn, mes_ini, mes, carimbo), _credores_pj_nomes(_conn, mes_ini, mes, carimbo))
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _pessoas_df(_conn, mes_ini: str, mes: str, carimbo: str) -> pd.DataFrame:
+    return DD.pessoas_df(_pagos(_conn, mes_ini, mes, carimbo)[0])
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _pessoas_sem_grupo(_conn, mes_ini: str, mes: str, carimbo: str) -> pd.DataFrame:
+    return DD.sem_grupo_enermais(_pessoas_df(_conn, mes_ini, mes, carimbo), _nucleos_grupo(_conn, carimbo))
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _folha_colaboradores(_conn, mes: str, carimbo: str) -> list:
+    return P.folha_colaboradores(_conn, mes)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _termo_mes(_conn, m: str, carimbo: str):
+    """Termos do Resultado de UM mes (DRE confirmado > API padrao; PDF so' antes da API; None onde nao ha dado). Guardado por mes: trocar o periodo reaproveita os meses ja' calculados."""
+    return P.termos_do_mes(_conn, m)
+
+
 def _termos_meses(_conn, meses_t: tuple, carimbo: str) -> list:
-    """Termos do Resultado de cada mes (DRE confirmado > API padrao; PDF so' antes da API; None onde nao ha dado)."""
-    return [P.termos_do_mes(_conn, m) for m in meses_t]
+    return [_termo_mes(_conn, m, carimbo) for m in meses_t]
 
 
-@st.cache_data(ttl=1800, show_spinner="Somando as obras do período…")
+@st.cache_data(ttl=1800, show_spinner=False)
+def _obras_aux(_conn, carimbo: str):
+    """Apoio da tabela de obras (nomes extras e meses com obras), guardado."""
+    return P.nomes_obras_extra(_conn), set(P.meses_com_obras(_conn))
+
+
+@st.cache_data(ttl=1800, show_spinner="Somando as obras do mês…")
+def _obras_mes(_conn, m: str, carimbo: str):
+    """(tabela de obras SEM reagrupar, projecao x realizado) de UM mes, ou (None, None) se nao ha dado. A tabela vem da fonte do mes (API padrao; PDF so' se confirmado em PDF)."""
+    extra, com_obras = _obras_aux(_conn, carimbo)
+    ob_m = P.obras_do_mes(_conn, m) if m in com_obras else None
+    px = None
+    if ob_m:
+        pj_ = P.projecao_do_mes(_conn, m)
+        px = P.projecao_x_realizado(pj_, ob_m, extra) if pj_ else None
+    return ob_m, px
+
+
 def _obras_meses(_conn, meses_t: tuple, carimbo: str):
-    """Para cada mes: (tabela de obras SEM reagrupar, projecao x realizado) ou (None, None) se nao ha dado no mes. A tabela vem da fonte do mes
-    (PDF oficial se a contabilidade confirmou com PDF; senao a API do Sienge, que e' o padrao)."""
-    extra = P.nomes_obras_extra(_conn)
-    com_obras = set(P.meses_com_obras(_conn))
-    saida = []
-    for m in meses_t:
-        ob_m = P.obras_do_mes(_conn, m) if m in com_obras else None
-        px = None
-        if ob_m:
-            pj_ = P.projecao_do_mes(_conn, m)
-            px = P.projecao_x_realizado(pj_, ob_m, extra) if pj_ else None
-        saida.append((ob_m, px))
-    return saida
+    return [_obras_mes(_conn, m, carimbo) for m in meses_t]
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -253,7 +308,9 @@ MES_INI_G = PER.somar_meses(mes, -11)                        # GRAFICOS: sempre 
 MESES_G = PER.meses_entre(MES_INI_G, mes)
 ACUM = PER.curto(mes_ini, mes)                               # cabecalho de coluna: 'Jan–Out/26'
 UM_MES = mes_ini == mes
+_T_CAB = time.perf_counter() - _T0                          # cabecalho + carimbo + listas de meses
 ctx = _ctx(conn, mes, CARIMBO)
+_T_CTX = time.perf_counter() - _T0 - _T_CAB                 # contexto do mes (cartoes, obras, adm...): lido do cache na maioria dos cliques
 _cap(f"Dados do banco em {ctx['gerado_em']} · DRE de {_rot(mes)}: **{ctx['dre']['origem']}**" + (" · confirmado pela contabilidade" if ctx["dre"].get("quem") else " · ainda não confirmado")
      + f" · período: **{PER_ROT}**")
 if h4.button("Atualizar agora", key="dir_atualizar"):
@@ -272,9 +329,15 @@ adm_orc = orc_mes["total"]["orcado"] if orc_mes else None
 resultado = round(bdi - adm_real, 2) if adm_real is not None else None
 
 _TODAS = bool(st.session_state.get("dir_todas_abas"))        # so' os testes ligam: renderiza todas as abas de uma vez
+@st.cache_data(ttl=30, show_spinner=False)
+def _acessos(_conn, email: str):
+    """(e' editor?, mostra Investimentos?) guardado 30 s: sao 3 consultas ao banco que nao precisam repetir a cada clique."""
+    eh_editor = acesso.papel(_conn, email) != acesso.VISUALIZADOR
+    return eh_editor, eh_editor or acesso.investimentos_para_visualizador(_conn)
+
+
 try:                                                         # editor ve tudo; visualizador so' ve Investimentos se o editor liberou (SQL-29). Na duvida (erro), esconde.
-    _eh_editor = acesso.papel(conn, usuario) != acesso.VISUALIZADOR
-    _mostra_inv = _eh_editor or acesso.investimentos_para_visualizador(conn)
+    _eh_editor, _mostra_inv = _acessos(conn, usuario)
 except Exception:
     _eh_editor, _mostra_inv = False, False
 _rotulos = ["Resultado", "Obras", "Administração", "Despesas", "Pessoas", "Indicadores financeiros", "Financiamentos"] + (["Investimentos"] if _mostra_inv else [])
@@ -285,14 +348,12 @@ aba_inv = _abas[7] if _mostra_inv else None
 
 # ------------------------------------------------------------------ dados compartilhados entre abas (PJ e colaboradores)
 def _pagos_df():
-    linhas, fora = _pagos(conn, mes_ini, mes, CARIMBO)
-    return DD.para_df(linhas), fora
+    return _pagos(conn, mes_ini, mes, CARIMBO)
 
 
 def _colaboradores():
     """Colaboradores do mes: CLT (recibos da folha) + PJ (contas pagas 'Salarios PJ'). -> dict com total, obra, adm, pj, por_obra_pj; None onde falta fonte."""
-    df, _ = _pagos_df()
-    pj = DD.pj_do_mes(df, mes)
+    pj = _pj_mes(conn, mes_ini, mes, CARIMBO)
     clt = pes["folha"]["total"]["colab"] if pes else None
     return {"pj": pj, "clt": clt}
 
@@ -525,8 +586,7 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
                 _cap(f"Soma de {_n_ob} {'mês' if _n_ob == 1 else 'meses'} com dados por obra em {PER_ROT} (PDF oficial ou API do Sienge)." + (f" Sem dados (fora da soma): {', '.join(_rot(m) for m in _falt_ob)}." if _falt_ob else "")
                      + " Colaboradores = os do mês de referência; faturamento e custo por colaborador = média mensal do período.")
             colab_info = _colaboradores()
-            dfp_pj, _fora_pj = _pagos_df()
-            pj_linhas = DD.pj_por_obra(dfp_pj, mes)                                   # cada PJ aparece em todas as obras em que recebeu (com o %)
+            pj_linhas = _pj_obra(conn, mes_ini, mes, CARIMBO)                                   # cada PJ aparece em todas as obras em que recebeu (com o %)
             pj_obra = {}
             for _x in pj_linhas:
                 pj_obra.setdefault(_x["obra"], set()).add(_x["credor"])
@@ -587,7 +647,6 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
             _cap("Colaboradores = CLT da folha do mês + PJ alocado na obra onde mais recebeu em “Salários PJ” (contas pagas). Obras sem projeção não têm BDI previsto.")
 
             # ---- cascata da obra clicada: principais credores + colaboradores alocados (o clique na linha escolhe a obra nos dois blocos)
-            dfp_ob, fora_ob = _pagos_df()
             nomes_ob = {l["obra"]: (RPP._nome_obra(l, nome_cheio) or l["obra"]) for l in ob["linhas"]}
             nao_obra = ("ADM", "99", "")
             proprias_l = sorted(proprias)
@@ -598,9 +657,9 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
                     return cod
                 return None if cod in nao_obra or cod == "sem de-para" else "DEM"
 
-            regs_c = [{"Nome": c["nome"], "Função": c["cargo"], "Tipo": "CLT", "dest": _destino_ob(c["obra"])} for c in P.folha_colaboradores(conn, mes)]
+            regs_c = [{"Nome": c["nome"], "Função": c["cargo"], "Tipo": "CLT", "dest": _destino_ob(c["obra"])} for c in _folha_colaboradores(conn, mes, CARIMBO)]
             _fant = _fantasias(conn, CARIMBO)
-            for x in DD.pj_por_obra(dfp_ob, mes):
+            for x in _pj_obra(conn, mes_ini, mes, CARIMBO):
                 _nf = DD.nome_fantasia(x["credor"], _fant)                                     # contabilidade 21/10: PJ aparece pelo nome fantasia do cadastro do credor
                 regs_c.append({"Nome": _nf, "Função": f"Prestador de serviço (PJ) — {round(x['pct'] * 100)}% nesta obra" + (f" · razão social: {x['credor']}" if _nf != x["credor"] else ""),
                                "Tipo": "PJ", "dest": _destino_ob(x["obra"])})
@@ -615,9 +674,8 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
                 st.session_state["dir_col_obra"] = "ALL"
 
             _md(f"**Principais credores · {nomes_ob.get(cod_sel, cod_sel) if cod_sel and cod_sel != 'DEM' else ('demais obras' if cod_sel == 'DEM' else 'todas as obras')}**")
-            dd_ob = DD.despesas_df(dfp_ob, fora_ob)
-            _pj_nomes = DD.credores_pj(dfp_ob)                                         # contabilidade 21/10: quem e' colaborador PJ ja' esta na lista de colaboradores, nao em credores
-            dd_ob = DD.sem_credores(dd_ob, _pj_nomes)
+            _pj_nomes = _credores_pj_nomes(conn, mes_ini, mes, CARIMBO)               # contabilidade 21/10: quem e' colaborador PJ ja' esta na lista de colaboradores, nao em credores
+            dd_ob = _despesas_sem_pj(conn, mes_ini, mes, CARIMBO)
             if cod_sel == "DEM":
                 alvo = [c for c in dd_ob["obra"].unique() if c not in proprias and c not in nao_obra] if len(dd_ob) else []
             else:
@@ -669,6 +727,7 @@ if aba_adm.open or _TODAS:
             o, ac, so = ap["orc_mes"], ap["orc_per"], ap["serie_orc"]
             linhas_mes, linhas_per = ap["linhas_mes"], ap["linhas_per"]
             grp_sel = None
+            contas_sel: list = []                                      # filtro de conta (so' aparece com um grupo selecionado)
             if o or ac:
                 k = st.columns(5)
                 k[0].metric(f"Orçado {_rot(mes)}", _mi(o["total"]["orcado"]) if o else "–", border=True)
@@ -717,6 +776,13 @@ if aba_adm.open or _TODAS:
                     cs = [x for x in base_c["contas"] if _no_g(x["codigo"])]
                     _md(f"**Contas do grupo {filtro_g} — orçado × realizado ({PER_ROT})**")
                     _cap("Maiores estouros primeiro; desvio negativo = gastou menos que o orçado.")
+                    _opc_c = {x["codigo"]: f"{x['codigo']} · {x['conta']}" for x in cs}
+                    if st.session_state.get("dir_adm_contas"):                                       # trocou de grupo: tira da selecao o que nao existe mais
+                        st.session_state["dir_adm_contas"] = [c for c in st.session_state["dir_adm_contas"] if c in _opc_c]
+                    contas_sel = st.multiselect("Filtrar por conta (ex.: Seguros, Aluguéis)", list(_opc_c), format_func=_opc_c.get, key="dir_adm_contas", placeholder="Todas as contas do grupo",
+                                                help="Mostra só as contas escolhidas aqui e, mais abaixo, quem recebeu nelas (unidade → credor → contas).")
+                    if contas_sel:
+                        cs = [x for x in cs if x["codigo"] in contas_sel]
                 else:
                     cs = base_c["acima"]
                     _md(f"**Contas que mais passaram do orçado ({PER_ROT})**")
@@ -727,13 +793,13 @@ if aba_adm.open or _TODAS:
                     _cap("Nenhuma conta com orçamento neste filtro.")
             if linhas_per or linhas_mes:
                 filtro_cod = grp_sel["Código"] if grp_sel else None
-                _no_grupo = lambda c: (not filtro_cod) or c == filtro_cod or c.startswith(filtro_cod + ".")      # noqa: E731
+                _no_grupo = lambda c: ((not filtro_cod) or c == filtro_cod or c.startswith(filtro_cod + ".")) and ((not contas_sel) or any(c == k or c.startswith(k + ".") for k in contas_sel))      # noqa: E731
                 chaves_dir = _outros_dir(conn, CARIMBO)
                 df_l = DD.marcar_outros_dir(pd.DataFrame(linhas_mes, columns=["plano_cod", "plano_nome", "credor", "unidade", "valor"]), chaves_dir)
                 df_l = df_l[df_l["plano_cod"].map(_no_grupo)] if len(df_l) else df_l
                 df_a = DD.marcar_outros_dir(pd.DataFrame(linhas_per or linhas_mes, columns=["plano_cod", "plano_nome", "credor", "unidade", "valor"]), chaves_dir)
                 df_a = df_a[df_a["plano_cod"].map(_no_grupo)] if len(df_a) else df_a
-                _md("#### Quem recebeu: unidade → credor → contas" + (f" · grupo {filtro_cod}" if filtro_cod else ""))
+                _md("#### Quem recebeu: unidade → credor → contas" + (f" · grupo {filtro_cod}" if filtro_cod else "") + (f" · {len(contas_sel)} conta(s) filtrada(s)" if contas_sel else ""))
                 if not len(df_l) and not len(df_a):
                     _info("Nenhum pagamento da administração neste grupo no período.")
                 else:
@@ -794,7 +860,7 @@ if aba_desp.open or _TODAS:
         if not len(dfp):
             _info("Falta sincronizar as contas pagas do período.")
         else:
-            dd = DD.despesas_df(dfp, fora)
+            dd = _despesas(conn, mes_ini, mes, CARIMBO)
             ms = PER.meses_entre(mes_ini, mes)
             rots = [m[5:] + "/" + m[2:4] for m in ms]
             tot_ano = float(dd["valor"].sum()) if len(dd) else 0.0
@@ -828,8 +894,7 @@ if aba_desp.open or _TODAS:
                 if mes_ini <= MES_INI_G:
                     dd12 = dd
                 else:                                                            # periodo curto: carrega os 12 meses so' para o grafico (cartoes e tabelas seguem o periodo)
-                    _l12, _f12 = _pagos(conn, MES_INI_G, mes, CARIMBO)
-                    dd12 = DD.despesas_df(DD.para_df(_l12), _f12)
+                    dd12 = _despesas(conn, MES_INI_G, mes, CARIMBO)
                 vals = DD.serie_mensal(dd12, MESES_G, conta)
                 estilo.altair(_barras_mes([m[5:] + "/" + m[2:4] for m in MESES_G], vals, destaque=len(MESES_G) - 1), width="stretch")
                 cr = DD.agrupar(dd, "credor", mes, conta=conta)
@@ -929,7 +994,7 @@ if aba_pes.open or _TODAS:
                     _cap("A série mensal de HE aparece com 2 ou mais meses de folha (ou com o histórico do painel).")
             # custos prioritarios com pessoas, por colaborador
             if len(dfp):
-                pdf_ = DD.pessoas_df(dfp)
+                pdf_ = _pessoas_df(conn, mes_ini, mes, CARIMBO)
                 _md("**Custos prioritários com pessoas — por colaborador**")
                 tabp = DD.tabela_pessoas(pdf_, mes, n_mes, soma_antes, meses=ms)
                 todas = st.radio("Linhas", ["Top 5", "Todas"], horizontal=True, key="dir_pes_linhas", label_visibility="collapsed")
@@ -949,7 +1014,7 @@ if aba_pes.open or _TODAS:
                     _cap(f"Contas de pessoal de obra (2.01.02) e ADM (2.02.01), sem salários CLT/PJ e premiações. Total do mês (todas as contas): {_m(tot_m)}. "
                                "R$/colab. acumulado = acumulado até o mês anterior ÷ soma do headcount mensal desses meses" + ("." if soma_antes else " (indisponível sem o headcount dos meses anteriores)."))
                     d1, d2 = st.columns(2)
-                    pdf_cr = DD.sem_grupo_enermais(pdf_, _nucleos_grupo(conn, CARIMBO))       # contabilidade 21/10: credores do grupo ENERMAIS fora das listas
+                    pdf_cr = _pessoas_sem_grupo(conn, mes_ini, mes, CARIMBO)       # contabilidade 21/10: credores do grupo ENERMAIS fora das listas
                     with d1:
                         cr = DD.agrupar(pdf_cr, "credor", mes, conta=conta_p)
                         _md(f"**Principais credores · {conta_p or 'todas as contas'}**")
@@ -1021,6 +1086,7 @@ def _controle_investimentos():
     if novo != atual:
         try:
             acesso.definir_investimentos_para_visualizador(conn, novo, usuario)
+            _acessos.clear()
             st.toast("Aba Investimentos " + ("liberada para o visualizador." if novo else "escondida do visualizador."), icon="✅")
         except Exception as exc:
             st.error(f"Não consegui salvar a escolha: {exc}")
@@ -1030,3 +1096,7 @@ def _controle_investimentos():
 if aba_inv is not None and (aba_inv.open or _TODAS):
     with aba_inv:
         DI.aba_financiamentos(conn, CARIMBO, "investimentos", _controle_investimentos)
+
+
+if _eh_editor:
+    _cap(f"Tempo para montar esta tela: {time.perf_counter() - _T0:.1f} s (cabeçalho {_T_CAB:.1f} s · dados do mês {_T_CTX:.1f} s · abas e tabelas o restante). Só quem edita vê esta linha.")

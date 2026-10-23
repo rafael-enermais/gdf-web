@@ -85,7 +85,7 @@ def test_pergunta_com_texto_escondido_chega_limpa_ao_modelo(pergunta):
 
 def test_nenhuma_ferramenta_escreve_livre_ou_roda_sql():
     nomes = {t["name"] for t in DC.TOOLS}
-    permitidas = {"visao_geral", "resultado_periodo", "dre_mes", "serie_mensal", "conferencia_ano", "obras_mes", "despesas", "administracao", "pessoas", "conhecimento",
+    permitidas = {"visao_geral", "resultado_periodo", "dre_mes", "serie_mensal", "conferencia_ano", "obras_mes", "despesas", "pagamentos", "administracao", "pessoas", "conhecimento",
                   "indicadores", "financiamentos", "receita_mensal", "sincronizacoes", "logs", "importacoes", "montar_grafico", "propor_acao",
                   "aprendizados", "propor_aprendizado"}
     extras = nomes - permitidas

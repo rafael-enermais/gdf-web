@@ -1007,3 +1007,51 @@ def test_pdf_da_conversa_inteira_com_tabela_e_conversa_vazia():
     with pytest.raises(ValueError):
         DR.gerar_conversa_pdf([], "ana@x", "21/10/2026 20:00")
     assert DR.gerar_conversa_pdf([{"role": "user", "content": "só uma"}], None, "21/10/2026 20:00")[:5] == b"%PDF-"
+
+
+@pg
+def test_pagamentos_individuais_e_filtros_por_conta_e_credor(conn):
+    """v0.40.0: lista de pagamentos individuais + filtros conta_contem/conta_codigo/credor_contem (so leitura, parametrizado)."""
+    _ingerir_p(conn)
+    ini = {"mes_ini": "2026-09", "mes_fim": "2026-09"}
+    tudo, tab = FERR.executar(conn, "pagamentos", {**ini, "limite": 5})
+    assert "erro" not in tudo and tudo["pagamentos_no_recorte"] >= 1 and len(tudo["pagamentos"]) <= 5 and tab
+    assert {"data", "credor", "documento", "conta", "centro_de_custo", "valor"} <= set(tab[0])
+    datas = [x["data"] for x in tudo["pagamentos"]]
+    assert datas == sorted(datas, reverse=True)                                   # mais recentes primeiro
+    # o total do recorte vale para TODOS os pagamentos (nao so' os listados) e bate com a aba Despesas
+    desp, _ = FERR.executar(conn, "despesas", {**ini, "agrupar_por": "credor"})
+    assert round(tudo["total_pago_no_recorte"], 2) == round(desp["total_pago"], 2)
+    # filtro por credor (sem acento/caixa) reduz o recorte
+    cred = tudo["pagamentos"][0]["credor"]
+    parte = cred.split()[0].upper()
+    f1, _ = FERR.executar(conn, "pagamentos", {**ini, "credor_contem": parte})
+    assert 1 <= f1["pagamentos_no_recorte"] <= tudo["pagamentos_no_recorte"] and all(parte.lower() in x["credor"].lower() for x in f1["pagamentos"])
+    # filtro por codigo de conta (prefixo) e por nome da conta
+    cod = tudo["pagamentos"][0]["conta"].split(" ")[0]
+    f2, _ = FERR.executar(conn, "pagamentos", {**ini, "conta_codigo": cod})
+    assert f2["pagamentos_no_recorte"] >= 1 and all(x["conta"].startswith(cod) for x in f2["pagamentos"])
+    nome = tudo["pagamentos"][0]["conta"].split("·", 1)[-1].strip().split()[0]
+    f3, _ = FERR.executar(conn, "pagamentos", {**ini, "conta_contem": nome})
+    assert f3["pagamentos_no_recorte"] >= 1
+    # varios termos com "|" e filtro em 'despesas'
+    f4, _ = FERR.executar(conn, "pagamentos", {**ini, "credor_contem": f"{parte} | zzzinexistente"})
+    assert f4["pagamentos_no_recorte"] == f1["pagamentos_no_recorte"]
+    d2, _ = FERR.executar(conn, "despesas", {**ini, "agrupar_por": "credor", "credor_contem": parte})
+    assert "erro" not in d2 and d2["total_pago"] <= desp["total_pago"]
+    # nada casa -> aviso, sem erro; texto malicioso so' vira parametro (nao executa)
+    vazio, _ = FERR.executar(conn, "pagamentos", {**ini, "credor_contem": "'; drop table gdf.pnl_titulo; --"})
+    assert "aviso" in vazio and "erro" not in vazio
+    assert FERR.executar(conn, "pagamentos", {**ini, "limite": 5})[0]["pagamentos_no_recorte"] == tudo["pagamentos_no_recorte"]
+    assert "aviso" in FERR.executar(conn, "pagamentos", {"mes_ini": "2020-01", "mes_fim": "2020-01"})[0]
+
+
+def _ingerir_p(conn):
+    from test_painel_db_pg import _ingerir
+    _ingerir(conn, lado="P", tipo="P")
+
+
+def test_termos_busca_sem_acento_e_sem_curinga():
+    import diretoria_dados as DD
+    assert DD._termos_busca("Seguro | ALUGUÉL; a") == ["seguro", "aluguel"]
+    assert DD._termos_busca("50%_off") == ["50off"] and DD._termos_busca("") == [] and DD._termos_busca(None) == []

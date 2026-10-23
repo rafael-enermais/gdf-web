@@ -291,8 +291,26 @@ def obras_mes(conn, e) -> tuple:
 _AGRUPAR = {"conta": "plano_nome", "credor": "credor", "obra": "obra", "centro_de_custo": "cc", "mes": "mes"}
 
 
+def _filtrar_conta_credor(df, e):
+    """Filtros opcionais do pedido: conta_codigo (prefixo, ex.: 2.02.05), conta_contem (parte do nome da conta, ex.: 'seguro | aluguel') e credor_contem."""
+    if not len(df):
+        return df, {}
+    filtros = {}
+    cod = str(e.get("conta_codigo") or "").strip().rstrip(".")
+    if cod:
+        df = df[df["plano_cod"].map(lambda c: c == cod or c.startswith(cod + "."))]
+        filtros["conta_codigo"] = cod
+    for chave, col in (("conta_contem", "plano_nome"), ("credor_contem", "credor")):
+        termos = DD._termos_busca(e.get(chave))
+        if termos:
+            norm = df[col].map(_norm_busca)
+            df = df[norm.map(lambda x: any(t in x for t in termos))]
+            filtros[chave] = " | ".join(termos)
+    return df, filtros
+
+
 def despesas(conn, e) -> tuple:
-    """Contas pagas no periodo (mesma base e regras da aba Despesas da Diretoria), agrupadas por conta, credor, obra, centro de custo ou mes."""
+    """Contas pagas no periodo (mesma base e regras da aba Despesas da Diretoria), agrupadas por conta, credor, obra, centro de custo ou mes. Aceita filtro por conta e credor."""
     ini, fim = _intervalo(e.get("mes_ini"), e.get("mes_fim"))
     por = str(e.get("agrupar_por") or "conta")
     if por not in _AGRUPAR:
@@ -300,15 +318,36 @@ def despesas(conn, e) -> tuple:
     regras = _tenta(conn, P.regras_ativas, "DESPESAS") or []
     df = DD.para_df(DD.pagos_detalhe(conn, ini, fim, sem_previsao=P.exclui_previsao(regras)))
     df = DD.despesas_df(df, P.prefixos_excluidos(regras)) if str(e.get("incluir_contas_excluidas")).lower() not in ("true", "1", "sim") else df
+    df, filtros = _filtrar_conta_credor(df, e)
     if not len(df):
-        return {"periodo": f"{ini} a {fim}", "aviso": "Sem contas pagas no periodo (ou o Sienge ainda nao foi sincronizado)."}, None
+        return {"periodo": f"{ini} a {fim}", "filtros": filtros or None, "aviso": "Sem contas pagas no periodo para esse recorte (ou o Sienge ainda nao foi sincronizado)."}, None
     col = _AGRUPAR[por]
     g = df.groupby(col)["valor"].sum()
     g = g.sort_index() if por == "mes" else g.sort_values(ascending=False)
     total = round(float(df["valor"].sum()), 2)
     n = _limite(e.get("limite"), 15, 40)
     linhas = [{por: (k or "(vazio)"), "valor": round(float(v), 2), "pct": round(float(v) / total, 4) if abs(total) > 0.004 else None} for k, v in g.items()]
-    return {"periodo": f"{ini} a {fim}", "agrupado_por": por, "total_pago": total, "itens": len(linhas), "maiores": linhas[:n]}, _tabela(linhas)
+    res = {"periodo": f"{ini} a {fim}", "agrupado_por": por, "total_pago": total, "itens": len(linhas), "maiores": linhas[:n]}
+    if filtros:
+        res["filtros"] = filtros
+    return res, _tabela(linhas)
+
+
+def pagamentos(conn, e) -> tuple:
+    """Lista de pagamentos INDIVIDUAIS (data, credor, documento, conta, centro de custo, valor), mais recentes primeiro, com filtro por conta e credor. Mesma base e regras da aba Despesas."""
+    ini, fim = _intervalo(e.get("mes_ini"), e.get("mes_fim"))
+    regras = _tenta(conn, P.regras_ativas, "DESPESAS") or []
+    fora = [] if str(e.get("incluir_contas_excluidas")).lower() in ("true", "1", "sim") else P.prefixos_excluidos(regras)
+    n = _limite(e.get("limite"), 20, 200)
+    filtros = {k: str(e.get(k)).strip()[:80] for k in ("conta_codigo", "conta_contem", "credor_contem") if str(e.get(k) or "").strip()}
+    r = DD.pagamentos_lista(conn, ini, fim, sem_previsao=P.exclui_previsao(regras), prefixos_fora=fora, conta_cod=e.get("conta_codigo") or "",
+                            conta_txt=e.get("conta_contem") or "", credor_txt=e.get("credor_contem") or "", limite=n)
+    if not r["n"]:
+        return {"periodo": f"{ini} a {fim}", "filtros": filtros or None, "aviso": "Nenhum pagamento nesse recorte (confira o periodo, a conta ou o credor; ou o Sienge ainda nao foi sincronizado)."}, None
+    res = {"periodo": f"{ini} a {fim}", "filtros": filtros or None, "pagamentos_no_recorte": r["n"], "total_pago_no_recorte": r["total"], "mostrando": len(r["linhas"]), "pagamentos": r["linhas"]}
+    if r["n"] > len(r["linhas"]):
+        res["aviso"] = f"Mostrando os {len(r['linhas'])} mais recentes de {r['n']}; o total considera todos. Peca mais (limite ate 200) ou estreite o filtro."
+    return res, _tabela(r["linhas"])
 
 
 def administracao(conn, e) -> tuple:
@@ -431,6 +470,11 @@ _FIM = {"type": "string", "description": "Ultimo mes do periodo (inclusive), AAA
 _LIM = {"type": "integer", "description": "Quantos itens devolver (maximo 40)."}
 
 
+_CONTA_TXT = {"type": "string", "description": "Parte do NOME da conta, sem acento; varias separadas por | (ex.: 'aluguel | locacao | seguro')."}
+_CONTA_COD = {"type": "string", "description": "Codigo (ou comeco do codigo) da conta do plano financeiro, ex.: 2.02.05 (todas as contas do grupo)."}
+_CREDOR_TXT = {"type": "string", "description": "Parte do nome do credor, sem acento."}
+
+
 def _t(nome, descricao, props=None, obrigatorios=None):
     return {"name": nome, "description": descricao, "input_schema": {"type": "object", "properties": props or {}, "required": obrigatorios or []}}
 
@@ -446,8 +490,14 @@ TOOLS = [
     _t("aprendizados", "Anotacoes ATIVAS da equipe (regras da casa, definicoes e conhecimento aprovados): consulte quando a pergunta tocar regra/convencao do app. 'busca' filtra por palavra (opcional).",
        {"busca": {"type": "string", "description": "Palavra a procurar (opcional)."}}),
     _t("obras_mes", "Receita, custo, BDI e margem por obra no mes, com as maiores lucros e prejuizos (DRE oficial por obra).", {"mes": _MES, "limite": _LIM}, ["mes"]),
-    _t("despesas", "Contas pagas no periodo (mesma base da aba Despesas), agrupadas por conta, credor, obra, centro_de_custo ou mes.",
+    _t("despesas", "Contas pagas no periodo (mesma base da aba Despesas), agrupadas por conta, credor, obra, centro_de_custo ou mes. Aceita FILTRO por tipo de conta (conta_contem, ex.: 'aluguel | locacao | seguro'; ou conta_codigo, ex.: 2.02.05) e por credor_contem.",
        {"mes_ini": _INI, "mes_fim": _FIM, "agrupar_por": {"type": "string", "enum": list(_AGRUPAR), "description": "Como agrupar (padrao: conta)."}, "limite": _LIM,
+        "incluir_contas_excluidas": {"type": "boolean", "description": "true para incluir tambem as contas que as regras tiram das Despesas (pessoal, encargos, transferencias)."},
+        "conta_contem": _CONTA_TXT, "conta_codigo": _CONTA_COD, "credor_contem": _CREDOR_TXT},
+       ["mes_ini", "mes_fim"]),
+    _t("pagamentos", "LISTA de pagamentos INDIVIDUAIS (data, credor, documento, conta, centro de custo, valor), mais recentes primeiro, para perguntas como 'ultimos 6 gastos de aluguel' ou 'o que pagamos ao credor X'. Filtra por conta (conta_contem ou conta_codigo) e credor_contem; o total do recorte vale para todos os pagamentos que casam, nao so' os listados. Os dados saem tambem na tabela/Excel/PDF do painel ao lado.",
+       {"mes_ini": _INI, "mes_fim": _FIM, "conta_contem": _CONTA_TXT, "conta_codigo": _CONTA_COD, "credor_contem": _CREDOR_TXT,
+        "limite": {"type": "integer", "description": "Quantos pagamentos listar (padrao 20, maximo 200; ate 40 seguem para a conversa e todos vao para a tabela)."},
         "incluir_contas_excluidas": {"type": "boolean", "description": "true para incluir tambem as contas que as regras tiram das Despesas (pessoal, encargos, transferencias)."}},
        ["mes_ini", "mes_fim"]),
     _t("administracao", "Administracao no periodo: pago por grupo, unidade e credor, e orcado x realizado (desvio positivo = gastou mais que o orcado).", {"mes_ini": _INI, "mes_fim": _FIM}, ["mes_ini", "mes_fim"]),
@@ -464,7 +514,7 @@ TOOLS = [
        {"tipo": {"type": "string", "enum": ["DRE", "FOLHA", "PROJECAO", "ORCAMENTO", "HISTORICO"]}, "limite": _LIM}),
 ]
 
-FUNCOES = {"visao_geral": visao_geral, "resultado_periodo": resultado_periodo, "dre_mes": dre_mes, "serie_mensal": serie_mensal, "conferencia_ano": conferencia_ano, "aprendizados": aprendizados, "obras_mes": obras_mes, "despesas": despesas, "administracao": administracao,
+FUNCOES = {"visao_geral": visao_geral, "resultado_periodo": resultado_periodo, "dre_mes": dre_mes, "serie_mensal": serie_mensal, "conferencia_ano": conferencia_ano, "aprendizados": aprendizados, "obras_mes": obras_mes, "despesas": despesas, "pagamentos": pagamentos, "administracao": administracao,
            "pessoas": pessoas, "conhecimento": conhecimento, "indicadores": indicadores, "financiamentos": financiamentos, "receita_mensal": receita_mensal, "sincronizacoes": sincronizacoes, "logs": logs,
            "importacoes": importacoes}
 

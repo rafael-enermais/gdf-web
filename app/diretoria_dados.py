@@ -78,6 +78,51 @@ def pagos_detalhe(conn, mes_ini: str, mes_fim: str, sem_previsao: bool = False) 
     return []
 
 
+_SEM_ACENTO_SQL = "translate(lower({col}), 'áàâãäéèêëíìîïóòôõöúùûüç', 'aaaaaeeeeiiiiooooouuuuc')"
+
+
+def _termos_busca(txt) -> list:
+    """'seguro | aluguel' -> ['seguro', 'aluguel'] (sem acento, minusculo, sem % e _)."""
+    base = unicodedata.normalize("NFKD", str(txt or "")).encode("ascii", "ignore").decode().lower()
+    return [t for t in (x.strip().replace("%", "").replace("_", "") for x in re.split(r"[|;]", base)) if len(t) >= 2][:6]
+
+
+def pagamentos_lista(conn, mes_ini: str, mes_fim: str, sem_previsao: bool = False, prefixos_fora=(), conta_cod: str = "", conta_txt: str = "", credor_txt: str = "", limite: int = 30) -> dict:
+    """Lista de PAGAMENTOS INDIVIDUAIS (baixa x rateio) do periodo, mais recentes primeiro, com filtro por conta (codigo ou parte do nome) e por credor (parte do nome).
+    Valor = liquido da baixa x % do rateio (mesma base da aba Despesas). -> {'n', 'total', 'linhas': [{'data','credor','documento','conta','centro_de_custo','valor'}]}; o total vale para TODOS os que casam, nao so' os listados."""
+    where, par = ["b.lado='P'", "b.data_pagamento >= %s::date", "b.data_pagamento < (%s::date + interval '1 month')"], [f"{mes_ini}-01", f"{mes_fim}-01"]
+    if sem_previsao:
+        where.append("COALESCE(upper(t.previsao),'') <> 'S'")
+    for p in prefixos_fora or ():
+        where.append("NOT (r.plano_cod = %s OR r.plano_cod LIKE %s)")
+        par += [p, p + ".%"]
+    cod = str(conta_cod or "").strip().rstrip(".")
+    if cod and re.fullmatch(r"[0-9.]+", cod):
+        where.append("(r.plano_cod = %s OR r.plano_cod LIKE %s)")
+        par += [cod, cod + ".%"]
+    for col, txt in (("r.plano_nome", conta_txt), ("t.contraparte_nome", credor_txt)):
+        termos = _termos_busca(txt)
+        if termos:
+            where.append("(" + " OR ".join(f"{_SEM_ACENTO_SQL.format(col=col)} LIKE %s" for _ in termos) + ")")
+            par += [f"%{t}%" for t in termos]
+    base = f"""SELECT b.data_pagamento AS data, COALESCE(NULLIF(trim(t.contraparte_nome),''),'(sem credor)') AS credor, COALESCE(t.numero_doc,'') AS numero, COALESCE(t.doc_nome,'') AS doc,
+                      r.plano_cod AS cod, COALESCE(r.plano_nome,'') AS conta, COALESCE(NULLIF(trim(r.centro_custo_nome),''),'(sem centro de custo)') AS cc,
+                      sum(b.liquido * r.percentual / 100.0) AS valor
+               FROM pnl_v_baixa b
+               JOIN pnl_v_rateio r ON r.lado=b.lado AND r.bill_id=b.bill_id AND r.installment_id=b.installment_id
+               JOIN pnl_titulo t ON t.lado=b.lado AND t.bill_id=b.bill_id AND t.installment_id=b.installment_id
+               WHERE {' AND '.join(where)}
+               GROUP BY b.data_pagamento, b.seq, t.bill_id, t.installment_id, 2, 3, 4, r.plano_cod, r.plano_nome, r.centro_custo_nome"""
+    with conn.cursor() as cur:
+        cur.execute(f"SELECT count(*), COALESCE(sum(x.valor),0) FROM ({base}) x", par)
+        n, total = cur.fetchone()
+        cur.execute(f"SELECT * FROM ({base}) x ORDER BY x.data DESC, x.valor DESC LIMIT %s", par + [int(limite)])
+        linhas = cur.fetchall()
+    return {"n": int(n), "total": round(float(total or 0), 2),
+            "linhas": [{"data": d.isoformat() if d else "", "credor": cr, "documento": (f"{doc} {num}".strip() or "–"), "conta": f"{cod} · {conta}".strip(" ·"), "centro_de_custo": cc, "valor": round(float(v or 0), 2)}
+                       for d, cr, num, doc, cod, conta, cc, v in linhas]}
+
+
 # ------------------------------------------------------------------ base em DataFrame
 def para_df(linhas: list) -> pd.DataFrame:
     df = pd.DataFrame(linhas or [], columns=COLUNAS)
@@ -90,16 +135,16 @@ def despesas_df(df: pd.DataFrame, prefixos_fora: list) -> pd.DataFrame:
     """Contas pagas SEM as contas excluidas pelas regras da aba Despesas (pessoal, encargos, transferencias...)."""
     if not len(df):
         return df
-    return df[~df["plano_cod"].map(lambda c: _excluido(c, prefixos_fora))].copy()
+    return df[~_map_unico(df["plano_cod"], lambda c: _excluido(c, prefixos_fora))].copy()
 
 
 def pessoas_df(df: pd.DataFrame) -> pd.DataFrame:
     """Custos prioritarios com pessoas: contas 2.01.02 e 2.02.01, SEM salarios CLT/PJ e premiacoes. 'plano_nome' ja vem sem o sufixo Obra/ADM."""
     if not len(df):
         return df
-    m = df["plano_cod"].map(lambda c: _excluido(c, PESSOAS) and c not in SALARIOS_E_PREMIACOES)
+    m = _map_unico(df["plano_cod"], lambda c: _excluido(c, PESSOAS) and c not in SALARIOS_E_PREMIACOES)
     out = df[m].copy()
-    out["plano_nome"] = out["plano_nome"].map(nome_conta_pessoas)
+    out["plano_nome"] = _map_unico(out["plano_nome"], nome_conta_pessoas) if len(out) else out["plano_nome"]
     return out
 
 
@@ -165,6 +210,25 @@ def tabela_pessoas(df_pess: pd.DataFrame, mes: str, colab_mes: int | None, colab
     return out
 
 
+def _map_unico(serie: pd.Series, fn) -> pd.Series:
+    """serie.map(fn) calculando `fn` so' uma vez por valor distinto (as colunas de conta/obra repetem muito: 60 mil linhas, poucas dezenas de valores)."""
+    return serie.map({u: fn(u) for u in serie.unique()})
+
+
+def _mascara_pj(df: pd.DataFrame) -> pd.Series:
+    """True nas linhas de conta 'Salarios PJ' (mesma regra de `eh_pj`), sem percorrer linha a linha."""
+    pares = list(zip(df["plano_cod"], df["plano_nome"]))
+    cache = {p: eh_pj(*p) for p in set(pares)}
+    return pd.Series([cache[p] for p in pares], index=df.index, dtype=bool)
+
+
+def _destinos(d: pd.DataFrame) -> pd.Series:
+    """Destino de cada pagamento ('ADM', codigo da obra do de-para ou 'sem de-para'), sem percorrer linha a linha (mesma regra de `_destino_linha`)."""
+    adm = d["plano_cod"].str.startswith("2.02.01") | (d["grupo"] == "ADM")
+    obra = d["obra"].where(d["obra"].fillna("").astype(bool), "sem de-para")
+    return obra.where(~adm, "ADM")
+
+
 def nome_fantasia(credor: str, mapa: dict | None) -> str:
     """Nome a mostrar para um colaborador PJ: o NOME FANTASIA do cadastro do credor (pedido da contabilidade, 21/10/2026); sem fantasia cadastrada, a razao social como veio."""
     if not mapa or not credor:
@@ -181,27 +245,22 @@ def pj_do_mes(df: pd.DataFrame, mes: str) -> dict:
     vazio = {"total": 0, "obra": 0, "adm": 0, "por_obra": {}, "colaboradores": []}
     if not len(df):
         return vazio
-    d = df[(df["mes"] == mes) & df.apply(lambda r: eh_pj(r["plano_cod"], r["plano_nome"]), axis=1)] if len(df) else df
+    d = df[(df["mes"] == mes) & _mascara_pj(df)]
     if not len(d):
         return vazio
-
-    def destino(r) -> str:
-        if r["plano_cod"].startswith("2.02.01") or r["grupo"] == "ADM":
-            return "ADM"
-        return r["obra"] or "sem de-para"
-
-    d = d.assign(destino=d.apply(destino, axis=1))
-    por = d.groupby(["credor", "destino"])["valor"].sum().reset_index()
-    tot_credor = por.groupby("credor")["valor"].sum()
-    colabs, n_obra = [], {}
-    for credor, sub in por.groupby("credor"):
-        if tot_credor[credor] <= 0.005:
-            continue                                                    # estornos/zerados nao sao colaborador no mes
-        sub = sub.assign(ord=sub["destino"].map(lambda x: 1 if x == "ADM" else 0)).sort_values(["valor", "ord"], ascending=[False, True])
-        dest, val = sub.iloc[0]["destino"], float(tot_credor[credor])
-        colabs.append({"credor": credor, "destino": dest, "valor": round(val, 2)})
-        if dest != "ADM":
-            n_obra[dest] = n_obra.get(dest, 0) + 1
+    d = d.assign(destino=_destinos(d))
+    por = d.groupby(["credor", "destino"], as_index=False)["valor"].sum()
+    por["total"] = por.groupby("credor")["valor"].transform("sum")
+    por = por[por["total"] > 0.005]                                     # estornos/zerados nao sao colaborador no mes
+    if not len(por):
+        return vazio
+    por["ord"] = (por["destino"] == "ADM").astype(int)                  # empate de valor: a obra vence a administracao
+    topo = por.sort_values(["credor", "valor", "ord", "destino"], ascending=[True, False, True, True], kind="mergesort").drop_duplicates("credor")
+    colabs = [{"credor": c, "destino": dest, "valor": round(float(t), 2)} for c, dest, t in zip(topo["credor"], topo["destino"], topo["total"])]
+    n_obra: dict = {}
+    for c in colabs:
+        if c["destino"] != "ADM":
+            n_obra[c["destino"]] = n_obra.get(c["destino"], 0) + 1
     n_adm = sum(1 for c in colabs if c["destino"] == "ADM")
     return {"total": len(colabs), "obra": len(colabs) - n_adm, "adm": n_adm, "por_obra": n_obra, "colaboradores": sorted(colabs, key=lambda c: -c["valor"])}
 
@@ -219,10 +278,10 @@ def pj_por_obra(df: pd.DataFrame, mes: str) -> list:
     -> [{'obra','credor','valor','pct'}] ordenado por obra e valor."""
     if not len(df):
         return []
-    d = df[(df["mes"] == mes) & df.apply(lambda r: eh_pj(r["plano_cod"], r["plano_nome"]), axis=1)]
+    d = df[(df["mes"] == mes) & _mascara_pj(df)]
     if not len(d):
         return []
-    d = d.assign(destino=d.apply(_destino_linha, axis=1))
+    d = d.assign(destino=_destinos(d))
     por = d.groupby(["credor", "destino"])["valor"].sum().reset_index()
     tot = por.groupby("credor")["valor"].sum()
     out = []
@@ -248,8 +307,7 @@ def credores_pj(df: pd.DataFrame) -> set:
     """Credores que sao colaboradores PJ: quem recebeu em conta de 'Salarios PJ' no periodo carregado. Saem da lista de credores das obras (a pessoa ja' esta em colaboradores)."""
     if not len(df):
         return set()
-    m = df.apply(lambda r: eh_pj(r["plano_cod"], r["plano_nome"]), axis=1)
-    return set(df.loc[m, "credor"])
+    return set(df.loc[_mascara_pj(df), "credor"])
 
 
 def sem_credores(df: pd.DataFrame, credores) -> pd.DataFrame:
@@ -297,19 +355,17 @@ def rotular_obras(df: pd.DataFrame, nomes: dict) -> pd.DataFrame:
     centros da administracao -> 'Administração'; codigo DEM -> 'Demais obras'; sem de-para -> 'Sem obra (<centro de custo>)'.
     Ex.: 'EE - ANASTACIO - LOTE 11' e 'CON - ANASTACIO - LOTE 11' caem na mesma obra."""
     out = df.copy()
-
-    def rot(r) -> str:
-        cod = (r["obra"] or "").strip()
-        if r["grupo"] == "ADM" or cod in ("ADM", "99"):
-            return "Administração"
-        if cod == "DEM":
-            return "Demais obras"
-        if not cod or cod == "sem de-para":
-            return f"Sem obra ({r['cc']})"
-        nome = (nomes or {}).get(cod)
-        return f"{cod} · {nome}" if nome else cod
-
-    out["obra_rot"] = out.apply(rot, axis=1) if len(out) else []
+    if not len(out):
+        out["obra_rot"] = []
+        return out
+    nomes = nomes or {}
+    cod = out["obra"].fillna("").str.strip()
+    adm = (out["grupo"] == "ADM") | cod.isin(["ADM", "99"])
+    sem = (cod == "") | (cod == "sem de-para")
+    com_nome = cod.map(lambda c: f"{c} · {nomes[c]}" if nomes.get(c) else c)          # so' calcula uma vez por obra distinta (map com dict abaixo)
+    rot = com_nome.where(~sem, "Sem obra (" + out["cc"] + ")")
+    rot = rot.where(cod != "DEM", "Demais obras")
+    out["obra_rot"] = rot.where(~adm, "Administração")
     return out
 
 
