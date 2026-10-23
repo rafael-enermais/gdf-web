@@ -68,18 +68,26 @@ if _papel == acesso.VISUALIZADOR:
     st.navigation([st.Page("telas/9_Painel_Diretoria.py", title="Painel da Diretoria", icon="📊", default=True, url_path="diretoria")]).run()
     st.stop()
 
-paginas = [
-    st.Page(pagina_inicio, title="Início", icon="🏠", default=True, url_path="inicio"),
-    st.Page("telas/1_Importar_Balancete.py", title="Importar balancete", icon="📥", url_path="importar"),
-    st.Page("telas/2_Demonstrativos.py", title="Demonstrativos", icon="📊", url_path="demonstrativos"),
-    st.Page("telas/5_Relatorio_PDF.py", title="Relatório PDF", icon="📄", url_path="relatorio"),
-    st.Page("telas/6_Painel.py", title="Painel", icon="📈", url_path="painel"),
-    st.Page("telas/8_Painel_EnerMais.py", title="Painel EnerMais (em construção)", icon="🏗️", url_path="painel-enermais"),
-    _PAGINA_DIRETORIA,
-    st.Page("telas/10_Dexie.py", title="Dexie (assistente IA)", icon="🤖", url_path="dexie"),
-    st.Page("telas/11_Metricas.py", title="Métricas do mês", icon="🎯", url_path="metricas"),
-    st.Page("telas/3_Historico.py", title="Histórico", icon="🗂️", url_path="historico"),
-    st.Page("telas/4_Mapa_de_Contas.py", title="Mapa de contas", icon="🧭", url_path="mapa"),
-    st.Page("telas/7_Ajuda.py", title="Ajuda", icon="❓", url_path="ajuda"),
-]
+# Menu em SECOES (so' editores). Nenhuma tela foi removida nem mudou de endereco; so' o agrupamento e alguns nomes ficaram mais claros.
+paginas = {
+    "": [st.Page(pagina_inicio, title="Início", icon="🏠", default=True, url_path="inicio")],
+    "Painéis": [
+        _PAGINA_DIRETORIA,
+        st.Page("telas/12_Obras_Contratos.py", title="Obras e contratos", icon="🏗️", url_path="obras-contratos"),
+        st.Page("telas/11_Metricas.py", title="Métricas do mês", icon="🎯", url_path="metricas"),
+    ],
+    "Assistente": [st.Page("telas/10_Dexie.py", title="Dexie (assistente IA)", icon="🤖", url_path="dexie")],
+    "Dados e regras": [
+        st.Page("telas/8_Painel_EnerMais.py", title="Central de dados", icon="🗄️", url_path="painel-enermais"),
+    ],
+    "Balancete (contabilidade)": [
+        st.Page("telas/1_Importar_Balancete.py", title="Importar balancete", icon="📥", url_path="importar"),
+        st.Page("telas/2_Demonstrativos.py", title="Demonstrativos", icon="📊", url_path="demonstrativos"),
+        st.Page("telas/6_Painel.py", title="Painel do balancete", icon="📈", url_path="painel"),
+        st.Page("telas/5_Relatorio_PDF.py", title="Relatório PDF", icon="📄", url_path="relatorio"),
+        st.Page("telas/3_Historico.py", title="Histórico", icon="🗂️", url_path="historico"),
+        st.Page("telas/4_Mapa_de_Contas.py", title="Mapa de contas", icon="🧭", url_path="mapa"),
+    ],
+    "Ajuda": [st.Page("telas/7_Ajuda.py", title="Ajuda", icon="❓", url_path="ajuda")],
+}
 st.navigation(paginas).run()

@@ -29,9 +29,9 @@ usuario = usuario_atual()
 conn = get_conn()
 sidebar_rodape()
 
-st.title("Painel EnerMais")
-st.caption("Em construção (V2): aqui o painel de resultados do Grupo EnerMais passa a ser montado direto com os dados do Sienge. "
-           "Por enquanto: sincronizar o Sienge, conferir com o CSV de contas pagas e ver uma prévia da aba Despesas.")
+st.title("Central de dados")
+st.caption("Onde a contabilidade alimenta e confere o Painel EnerMais (antes chamada “Painel EnerMais (em construção)”): sincronizar o Sienge, importar arquivos, conferir com o CSV, "
+           "ajustar regras e ver o histórico. Os painéis de leitura estão em “Painéis” (Painel da Diretoria e Obras e contratos).")
 
 if not P.v2_instalado(conn):
     st.warning("As tabelas do Painel (V2) ainda não foram criadas no banco. Falta executar o arquivo `sql/v2_painel_schema.sql` "

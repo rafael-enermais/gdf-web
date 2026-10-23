@@ -18,6 +18,7 @@ import re
 
 import pandas as pd
 
+import contratos_sienge as CS
 import dexie_aprendizado as APR
 import dexie_conhecimento as K
 import historico as HIST
@@ -25,6 +26,7 @@ import diretoria_dados as DD
 import indicadores_dados as IND
 import painel_db as P
 import periodo as PER
+import sienge_api as SIENGE
 from fuso import agora_br
 
 MAX_SERIE = 24                   # meses por serie (cada mes monta um DRE)
@@ -474,6 +476,56 @@ _CONTA_TXT = {"type": "string", "description": "Parte do NOME da conta, sem acen
 _CONTA_COD = {"type": "string", "description": "Codigo (ou comeco do codigo) da conta do plano financeiro, ex.: 2.02.05 (todas as contas do grupo)."}
 _CREDOR_TXT = {"type": "string", "description": "Parte do nome do credor, sem acento."}
 
+def contratos(conn, e) -> tuple:
+    """Contratos de SUPRIMENTOS do Sienge (API, somente leitura; mesma base da pagina 'Obras e contratos'): valores, medido, a liberar, por obra ou por credor, com filtros por texto."""
+    try:
+        dados = CS.carregar()
+    except SIENGE.ErroSienge as exc:
+        raise ErroEntrada(f"Nao consegui buscar os contratos no Sienge agora: {str(exc)[:200]}") from None
+    filtros = {k: str(e.get(k)).strip()[:80] for k in ("obra_contem", "credor_contem", "situacao_contem", "busca") if str(e.get(k) or "").strip()}
+    t_obra, t_sit = _norm_busca(e.get("obra_contem")), _norm_busca(e.get("situacao_contem"))
+    t_cred = _norm_busca(e.get("credor_contem"))
+    ob_ids = {o["id"] for c in dados["contratos"] for o in c["obras"] if t_obra and t_obra in _norm_busca(o["nome"])}
+    if t_obra and not ob_ids:
+        return {"filtros": filtros, "contratos_no_recorte": 0, "aviso": "Nenhuma obra com contrato tem esse texto no nome."}, None
+    lista = CS.filtrar(dados, obras=ob_ids, busca=e.get("busca") or "")
+    lista = [c for c in lista if (not t_cred or t_cred in _norm_busca(c["credor"])) and (not t_sit or t_sit in _norm_busca(c["situacao"]))]
+    if not lista:
+        return {"filtros": filtros or None, "contratos_no_recorte": 0, "aviso": "Nenhum contrato de suprimentos nesse recorte (confira os textos de obra, credor e situacao)."}, None
+    med = CS.medido_por_contrato(dados["medicoes"], ob_ids)
+    linhas = []
+    for c in lista:
+        m = med.get(c["chave"], {})
+        linhas.append({"contrato": c["chave"], "credor": c["credor"], "obras": ", ".join(o["nome"] for o in c["obras"]), "situacao": c["situacao"], "inicio": c["inicio"], "fim": c["fim"],
+                       "mao_de_obra": c["mao_obra"], "material": c["material"], "total": c["total"], "medido": round(m.get("medido", 0.0), 2), "a_liberar": round(m.get("a_liberar", 0.0), 2),
+                       "objeto": c["objeto"][:120]})
+    n = _limite(e.get("limite"), 15, 100)
+    res = {"filtros": filtros or None, "contratos_no_recorte": len(linhas), "contratado": round(sum(x["total"] for x in linhas), 2), "medido": round(sum(x["medido"] for x in linhas), 2),
+           "a_liberar": round(sum(x["a_liberar"] for x in linhas), 2), "dados_buscados_em": dados["quando"],
+           "observacao": "Contratado = valor total do contrato (um contrato de varias obras conta inteiro). Com obra_contem, 'medido' e 'a_liberar' so' contam as medicoes dessas obras. So' contratos de SUPRIMENTOS (os de venda nao estao liberados)."}
+    por = str(e.get("agrupar_por") or "").strip().lower()
+    if por in ("credor", "obra", "situacao"):
+        grupos: dict = {}
+        for x, c in zip(linhas, lista):
+            chaves = [o["nome"] for o in c["obras"]] or ["(sem obra)"] if por == "obra" else [x[por]]
+            for ch in chaves:
+                g = grupos.setdefault(ch, {por: ch, "contratos": 0, "contratado": 0.0, "medido": 0.0})
+                g["contratos"] += 1
+                g["contratado"] += x["total"]
+                g["medido"] += x["medido"]
+        gl = sorted(({**g, "contratado": round(g["contratado"], 2), "medido": round(g["medido"], 2)} for g in grupos.values()), key=lambda g: -g["contratado"])
+        res["agrupado_por"] = por
+        res["grupos"] = gl[:n]
+        if por == "obra":
+            res["aviso_agrupamento"] = "Contrato de mais de uma obra aparece em cada uma (a soma dos grupos passa do total)."
+        return res, _tabela(gl)
+    ordem = sorted(linhas, key=lambda x: -x["total"])
+    res["contratos"] = ordem[:n]
+    if len(ordem) > n:
+        res["aviso"] = f"Mostrando os {n} maiores de {len(ordem)}; os totais consideram todos. Peca mais (limite ate 100) ou estreite o filtro."
+    return res, _tabela(ordem)
+
+
 
 def _t(nome, descricao, props=None, obrigatorios=None):
     return {"name": nome, "description": descricao, "input_schema": {"type": "object", "properties": props or {}, "required": obrigatorios or []}}
@@ -500,6 +552,10 @@ TOOLS = [
         "limite": {"type": "integer", "description": "Quantos pagamentos listar (padrao 20, maximo 200; ate 40 seguem para a conversa e todos vao para a tabela)."},
         "incluir_contas_excluidas": {"type": "boolean", "description": "true para incluir tambem as contas que as regras tiram das Despesas (pessoal, encargos, transferencias)."}},
        ["mes_ini", "mes_fim"]),
+    _t("contratos", "CONTRATOS de suprimentos do Sienge (API): valor contratado, medido e a liberar, por obra, credor ou situacao, ou a lista dos maiores. Filtra por obra_contem, credor_contem, situacao_contem e busca (texto livre: objeto, numero). Cada chamada usa dados guardados por ate 1 hora. So' suprimentos; contratos de venda e o conteudo dos anexos nao estao disponiveis.",
+       {"obra_contem": {"type": "string", "description": "Parte do nome da obra (ex.: 'Lote 03', 'Angra')."}, "credor_contem": _CREDOR_TXT, "situacao_contem": {"type": "string", "description": "Parte da situacao do contrato."},
+        "busca": {"type": "string", "description": "Texto livre (objeto, numero do contrato, empresa)."}, "agrupar_por": {"type": "string", "enum": ["credor", "obra", "situacao"], "description": "Agrupa os totais; sem isso lista os maiores contratos."},
+        "limite": {"type": "integer", "description": "Quantos itens listar (padrao 15, maximo 100)."}}),
     _t("administracao", "Administracao no periodo: pago por grupo, unidade e credor, e orcado x realizado (desvio positivo = gastou mais que o orcado).", {"mes_ini": _INI, "mes_fim": _FIM}, ["mes_ini", "mes_fim"]),
     _t("pessoas", "Pessoas no mes: folha CLT (colaboradores, salarios, hora extra, custo, por empresa e obra), colaboradores PJ e a serie mensal de hora extra.", {"mes": _MES}, ["mes"]),
     _t("indicadores", "Indicadores financeiros do periodo: prazo medio de recebimento e pagamento, ciclo, necessidade de capital de giro, gasto diario e inadimplencia de hoje.", {"mes_ini": _INI, "mes_fim": _FIM}, ["mes_ini", "mes_fim"]),
@@ -514,7 +570,7 @@ TOOLS = [
        {"tipo": {"type": "string", "enum": ["DRE", "FOLHA", "PROJECAO", "ORCAMENTO", "HISTORICO"]}, "limite": _LIM}),
 ]
 
-FUNCOES = {"visao_geral": visao_geral, "resultado_periodo": resultado_periodo, "dre_mes": dre_mes, "serie_mensal": serie_mensal, "conferencia_ano": conferencia_ano, "aprendizados": aprendizados, "obras_mes": obras_mes, "despesas": despesas, "pagamentos": pagamentos, "administracao": administracao,
+FUNCOES = {"visao_geral": visao_geral, "resultado_periodo": resultado_periodo, "dre_mes": dre_mes, "serie_mensal": serie_mensal, "conferencia_ano": conferencia_ano, "aprendizados": aprendizados, "obras_mes": obras_mes, "despesas": despesas, "pagamentos": pagamentos, "contratos": contratos, "administracao": administracao,
            "pessoas": pessoas, "conhecimento": conhecimento, "indicadores": indicadores, "financiamentos": financiamentos, "receita_mensal": receita_mensal, "sincronizacoes": sincronizacoes, "logs": logs,
            "importacoes": importacoes}
 
