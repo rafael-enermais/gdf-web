@@ -130,7 +130,8 @@ def test_pagina_obras_e_contratos_so_editor_e_caixinhas(conn, dados):
         e.session_state["auth_session"] = SimpleNamespace(user=SimpleNamespace(email="contabilidade@empresa.com"))
         e.run()
         assert not e.exception, e.exception
-        assert [t.label for t in e.tabs] == ["Obras", "Credores", "Contratos"] and len(e.dataframe) >= 3
+        assert len(e.tabs) == 0 and len(e.dataframe) >= 3                      # sem abas: tudo na mesma tela, de cima para baixo
+        assert [m.value for m in e.markdown if m.value.startswith("### ")][:3] == ["### 1 · Obras", "### 2 · Credores · todas as obras", "### 3 · Contratos · todas as obras · todos os credores"]
         obras = e.dataframe[0].value
         assert set(obras["Obra"]) == {"Lote 03", "Angra"}
         # marca a obra "Angra" -> credores e contratos acompanham
