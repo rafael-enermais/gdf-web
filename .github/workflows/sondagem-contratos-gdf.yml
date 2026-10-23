@@ -1,0 +1,26 @@
+# GDF - sondagem de CONTRATOS no Sienge (somente leitura; nao grava nada). Sob demanda: Actions > "Sondagem contratos GDF" > Run workflow.
+# Imprime so' codigos HTTP, contagens e NOMES de campos (o repositorio e' publico). Secrets: SIENGE_USER, SIENGE_PASSWORD, SIENGE_BASE_URL.
+name: Sondagem contratos GDF
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sondar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Sondar contratos
+        env:
+          SIENGE_USER: ${{ secrets.SIENGE_USER }}
+          SIENGE_PASSWORD: ${{ secrets.SIENGE_PASSWORD }}
+          SIENGE_BASE_URL: ${{ secrets.SIENGE_BASE_URL }}
+          PYTHONUNBUFFERED: "1"
+        run: python scripts/sondagem_contratos_gdf.py
