@@ -141,7 +141,7 @@ def visao_geral(conn, _e) -> tuple:
 
 
 def resultado_periodo(conn, e) -> tuple:
-    """Resultado da Diretoria (Receita - Custos = BDI - Administracao = Resultado) mes a mes e somado, dos meses com dado (DRE confirmado > PDF > API do Sienge, padrao). Cada mes diz a fonte."""
+    """Resultado da Diretoria (Receita - Custos = BDI - Administracao = Resultado) mes a mes e somado, dos meses com dado (DRE confirmado > API do Sienge, padrao; PDF so' antes da API). Cada mes diz a fonte."""
     ini, fim = _intervalo(e.get("mes_ini"), e.get("mes_fim"))
     meses = PER.meses_entre(ini, fim)
     termos = [_tenta(conn, P.termos_do_mes, m) for m in meses]
@@ -168,7 +168,7 @@ def resultado_periodo(conn, e) -> tuple:
 
 
 def _dre_resolvido(conn, mes: str) -> tuple:
-    """DRE do mes pela regra unica do app (painel_db.dre_resolvido): confirmado > oficial (PDF) > API do Sienge (padrao). Devolve (dre, origem)."""
+    """DRE do mes pela regra unica do app (painel_db.dre_resolvido): confirmado > API do Sienge (padrao); PDF so' antes da API. Devolve (dre, origem)."""
     r = P.dre_resolvido(conn, mes)
     if not r:
         return P.dre_do_mes([]), "Sem dados no mes (nem DRE nem titulos emitidos)"
@@ -202,7 +202,7 @@ def serie_mensal(conn, e) -> tuple:
 
 
 def _termos_app(conn, mes: str) -> dict:
-    """Receita, custo, BDI e administracao do mes como o APP calcula hoje (DRE confirmado > PDF > API padrao; BDI = receita - custos)."""
+    """Receita, custo, BDI e administracao do mes como o APP calcula hoje (DRE confirmado > API padrao; BDI = receita - custos)."""
     t = _tenta(conn, P.termos_do_mes, mes)
     if t:
         return {"rec": t["rec"], "cus": t["cus"], "bdi": t["bdi"], "adm": t["adm_real"], "origem": t["fonte"]}
@@ -381,7 +381,7 @@ def financiamentos(conn, e) -> tuple:
 
 
 def receita_mensal(conn, e) -> tuple:
-    """Receita bruta mes a mes (DRE confirmado > PDF > API) com a variacao sobre o mes anterior."""
+    """Receita bruta mes a mes (DRE confirmado > API) com a variacao sobre o mes anterior."""
     h = _hoje()
     serie = P.receita_mensal(conn, mes_atual=f"{h.year}-{h.month:02d}")
     n = _limite(e.get("ultimos_meses"), 24, 60)

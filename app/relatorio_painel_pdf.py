@@ -70,7 +70,7 @@ def montar_ctx(conn, mes: str, gerado_em: str = "") -> dict:
                       "manuais": sorted(k for k, f in fontes.items() if f == "MANUAL")}
     else:
         d = r["dre"] if r else P.dre_do_mes([])
-        origem = {"pdf": "DRE oficial (PDF) — ainda não confirmado", "api": "API do Sienge (padrão) — a conferir"}.get(r["fonte"] if r else "", "Sem dados no mês")
+        origem = {"pdf": "DRE oficial (PDF) — mês anterior à API", "api": "API do Sienge (padrão) — a conferir"}.get(r["fonte"] if r else "", "Sem dados no mês")
         ctx["dre"] = {"linhas": d["linhas"], "valores": d["valores"], "origem": origem, "fontes": {}, "quem": None, "quando": None,
                       "observacao": None, "manuais": []}
     import datetime as _dt

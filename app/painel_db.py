@@ -853,15 +853,16 @@ def obras_da_api(conn, mes: str) -> dict | None:
 
 
 def fonte_obras(conn, mes: str) -> str | None:
-    """De onde vem a tabela de Obras do mes: 'PDF' ou 'API' (None se nao ha dado). Regra: a confirmacao do mes manda (PDF so' se os CUSTOS DIRETOS
-    04.* foram confirmados todos em PDF e o PDF existe); sem confirmacao, o PDF importado vale se existir; sem PDF, a API e' o padrao."""
+    """De onde vem a tabela de Obras do mes: 'PDF' ou 'API'. Regra (a mesma do `dre_resolvido`): API e' o padrao; o PDF so' vale se a contabilidade confirmou os CUSTOS
+    DIRETOS 04.* todos em PDF (e o PDF existe) ou se o mes e' anterior a rotina de emissao da API e ha PDF. PDF importado sem confirmacao NAO entra: fica para conferencia."""
     imp = dre_importacao_ativa(conn, mes)
     conf = confirmacao_ativa(conn, mes) if confirmacao_instalada(conn) else None
     if conf:
         fontes = conf["fontes"] or {}
         custos = [f for k, f in fontes.items() if k.startswith("04.")]
         return "PDF" if imp and custos and all(f == "PDF" for f in custos) else "API"
-    return "PDF" if imp else "API"
+    ini = cobertura_emissao_ini(conn)
+    return "PDF" if imp and ini and mes < ini else "API"
 
 
 def obras_do_mes(conn, mes: str) -> dict | None:
@@ -977,18 +978,19 @@ def contas_api_padrao(conn, mes: str) -> list:
 
 
 def dre_resolvido(conn, mes: str) -> dict | None:
-    """DRE do mes pela prioridade unica do app: 1) CONFIRMADO (a fonte que a contabilidade escolheu por linha); 2) DRE oficial (PDF) importado, ainda sem
-    confirmacao; 3) API do Sienge com as regras padrao (padrao para meses novos: ninguem precisa gerar PDF). Devolve {'dre', 'fonte', 'origem', 'conf', 'imp'}
-    com fonte em 'confirmado' | 'pdf' | 'api', ou None se o mes nao tem dado (API vazia ou mes anterior a rotina de emissao, que so' tem residuos)."""
+    """DRE do mes pela prioridade unica do app: 1) CONFIRMADO (a fonte que a contabilidade escolheu por linha); 2) API do Sienge com as regras padrao (FLUXO PADRAO:
+    ninguem precisa gerar PDF). O DRE oficial (PDF) e' OPCIONAL: serve para conferir contra a API e so' entra no fluxo (a) se a contabilidade o escolher numa linha da
+    confirmacao ou (b) em meses ANTERIORES a rotina de emissao da API (la a base so' tem residuos). Devolve {'dre', 'fonte', 'origem', 'conf', 'imp'}
+    com fonte em 'confirmado' | 'api' | 'pdf' (so' no caso b), ou None se o mes nao tem dado."""
     conf = confirmacao_ativa(conn, mes) if confirmacao_instalada(conn) else None
     if conf:
         return {"dre": dre_de_folhas(conf["valores"] or {}), "fonte": "confirmado", "origem": "DRE confirmado pela contabilidade", "conf": conf, "imp": None}
-    imp = dre_importacao_ativa(conn, mes)
-    if imp:
-        contas = [{"plano_cod": c, "plano_nome": "", "valor": v} for c, v in dre_contas_importadas(conn, imp["id"]).items()]
-        return {"dre": dre_do_mes(contas), "fonte": "pdf", "origem": "DRE oficial (PDF), ainda nao confirmado", "conf": None, "imp": imp}
     ini = cobertura_emissao_ini(conn)
     if ini and mes < ini:
+        imp = dre_importacao_ativa(conn, mes)
+        if imp:
+            contas = [{"plano_cod": c, "plano_nome": "", "valor": v} for c, v in dre_contas_importadas(conn, imp["id"]).items()]
+            return {"dre": dre_do_mes(contas), "fonte": "pdf", "origem": "DRE oficial (PDF): mes anterior a API", "conf": None, "imp": imp}
         return None
     dre = dre_do_mes(contas_api_padrao(conn, mes) or [])
     if abs(dre["valores"]["01"]) < 0.005 and abs(dre["valores"]["04"]) < 0.005:
@@ -997,7 +999,7 @@ def dre_resolvido(conn, mes: str) -> dict | None:
 
 
 def termos_do_mes(conn, mes: str) -> dict | None:
-    """Os cinco termos do Resultado de UM mes: receita, custos diretos e BDI (= receita - custos) do DRE do mes (`dre_resolvido`: confirmado > PDF > API),
+    """Os cinco termos do Resultado de UM mes: receita, custos diretos e BDI (= receita - custos) do DRE do mes (`dre_resolvido`: confirmado > API; PDF so' antes da API),
     administracao (orcamento ADM: realizado e orcado) e a projecao (receita e BDI previstos). A tabela de obras (projecao x realizado) vem da mesma fonte
     (`obras_do_mes`). None se o mes nao tem dado. Valores None quando falta a fonte (sem orcamento, sem projecao). 'fonte' diz de onde vieram os numeros."""
     r = dre_resolvido(conn, mes)
@@ -1417,8 +1419,8 @@ def adm_resumo(linhas: list, chaves_outros: list | None = None, nomes: dict | No
 
 # ---------------------------------------------------------------- Receita mes a mes (aba Pessoas: linha "Receita: var. % s/ mes anterior")
 def receita_mensal(conn, mes_atual: str | None = None, sem_distrato: bool = True) -> list:
-    """Receita bruta por mes, da fonte mais confiavel que existir: 1) DRE CONFIRMADO do mes (linha 01.01); 2) DRE oficial importado (PDF, linha 01);
-    3) reconstrucao pela API (titulos emitidos no mes, sem previsao e sem NF desfeita). O mes em andamento ('mes_atual') fica de fora (incompleto).
+    """Receita bruta por mes: 1) DRE CONFIRMADO do mes (linha 01.01); 2) API (titulos emitidos no mes, sem previsao e sem NF desfeita), o padrao; o DRE oficial
+    importado (PDF) so' vale em meses anteriores a rotina de emissao da API. O mes em andamento ('mes_atual') fica de fora (incompleto).
     Meses so' com API (sem DRE importado/confirmado) ANTES da primeira sincronizacao de emissao ficam de fora: la a base tem so' residuos de titulos
     antigos (receita parcial, variacao % absurda). Devolve [{'mes','receita','fonte','var'}] em ordem; 'var' = variacao sobre o mes anterior (fracao)
     so' quando os dois meses vieram da lista e o anterior e' > 0."""
@@ -1434,14 +1436,13 @@ def receita_mensal(conn, mes_atual: str | None = None, sem_distrato: bool = True
         conf = confirmacao_ativa(conn, m)
         if conf and "01.01" in (conf["valores"] or {}):
             rec, fonte = float(conf["valores"]["01.01"]), "DRE confirmado"
-        if rec is None:
+        if rec is None and cobertura_ini and m < cobertura_ini:            # antes da rotina de emissao da API: so' o PDF (se houver) serve
             imp = dre_importacao_ativa(conn, m)
-            if imp:
-                rec = round(sum(o["linhas"].get("01", 0.0) for o in dre_por_obra_importado(conn, imp["id"]).values()), 2)
-                fonte = "DRE oficial (PDF)"
-        if rec is None:
-            if cobertura_ini and m < cobertura_ini:
+            if not imp:
                 continue
+            rec = round(sum(o["linhas"].get("01", 0.0) for o in dre_por_obra_importado(conn, imp["id"]).values()), 2)
+            fonte = "DRE oficial (PDF)"
+        if rec is None:
             rec = float(dre_do_mes(resultado_por_conta(conn, m, sem_previsao=True, sem_distrato=sem_distrato))["valores"]["01"])
             fonte = "API (a conferir)"
         if abs(rec) > 0.004:

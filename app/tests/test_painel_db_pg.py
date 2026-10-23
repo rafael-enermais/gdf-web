@@ -587,7 +587,8 @@ def test_tela_obras_mostra_tabela(conn):
     import hashlib
     b, dre = _pdf_lido()
     P.gravar_dre(conn, dre, "dre.pdf", hashlib.sha256(b).hexdigest(), "teste@x")
-    with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", side_effect=_uploader_por_chave({})):
+    with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", side_effect=_uploader_por_chave({})), \
+            patch("painel_db.fonte_obras", return_value="PDF"):                       # v0.39.0: PDF so' vale se confirmado em PDF; aqui simulamos essa escolha
         at = _tela(conn).run()
     assert not at.exception, at.exception
     assert at.tabs[4].label == "Obras (prévia)"
@@ -958,7 +959,7 @@ def test_relatorio_pdf_do_painel_rascunho(conn):
     b, dre = _pdf_lido()
     P.gravar_dre(conn, dre, "dre.pdf", hashlib.sha256(b).hexdigest(), "teste@x")
     ctx = RPP.montar_ctx(conn, "2026-09", "19/10/2026 10:00")
-    assert ctx["dre"]["origem"].startswith("DRE oficial") and ctx["pessoas"] is None and ctx["obras"] is not None
+    assert ctx["dre"]["origem"].startswith("API do Sienge") and ctx["pessoas"] is None and ctx["obras"] is not None
     pdf = RPP.gerar_pdf_painel(ctx, gerado_em="19/10/2026 10:00")
     assert pdf[:5] == b"%PDF-" and pdf.count(b"/Type /Page\n") + pdf.count(b"/Type /Page ") >= 10
     # mes sem nada: nenhuma pagina estoura, todas viram aviso

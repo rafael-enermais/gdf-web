@@ -105,7 +105,8 @@ def test_pdf_e_diretoria_usam_o_historico(conn):
         assert not any("O acumulado do ano aparece quando" in i.value for i in at.info)
         assert not any("O acumulado do ano aparece quando" in i.value for i in at.info)
         rec_acc = next(m for m in at.metric if m.label == "Receita (base-line)")
-        assert rec_acc.value == "R$ 900"
+        assert rec_acc.value == "R$ 2 mil"                                                     # realizado do ano = soma jan-set pela API (so' set/26 tem dado no teste), nao o historico (R$ 900)
+        assert any("Conferência: histórico" in e.label for e in at.expander)               # tabela app x historico da contabilidade
         at.selectbox(key="dir_ano_linha").select("Custos").run()                            # escolher outra linha do desvio nao quebra
         assert not at.exception, at.exception
     with conn.cursor() as cur:

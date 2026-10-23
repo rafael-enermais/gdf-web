@@ -42,11 +42,22 @@ def test_api_e_pdf_do_teste_realmente_diferem(base):
     assert abs(api["04"] - pdf["04"]) > 0.01                       # sem isso os testes abaixo nao provariam nada
 
 
-def test_sem_confirmacao_com_pdf_usa_o_pdf(base):
+def test_pdf_sem_confirmacao_nao_entra_no_fluxo_so_a_api(base):
+    """v0.39.0: o PDF virou opcional (conferencia). Importado e sem confirmacao, o mes segue pela API em tudo."""
+    api = P.dre_do_mes(P.contas_api_padrao(base, MES))["valores"]
     r = P.dre_resolvido(base, MES)
-    assert r["fonte"] == "pdf" and P.fonte_obras(base, MES) == "PDF"
+    assert r["fonte"] == "api" and P.fonte_obras(base, MES) == "API"
     t = P.termos_do_mes(base, MES)
-    assert t["fonte"] == "pdf" and t["cus"] == abs(r["dre"]["valores"]["04"])
+    assert t["fonte"] == "api" and t["cus"] == abs(api["04"]) and t["rec"] == api["01"]
+    assert P.obras_do_mes(base, MES)["fonte"] == "API"
+
+
+def test_pdf_so_vale_em_mes_anterior_a_api(base, monkeypatch):
+    """Antes da rotina de emissao da API a base so' tem residuos: ali o PDF importado (se houver) e' a unica fonte."""
+    monkeypatch.setattr(P, "cobertura_emissao_ini", lambda conn: "2026-10")
+    r = P.dre_resolvido(base, MES)
+    assert r["fonte"] == "pdf" and P.fonte_obras(base, MES) == "PDF" and P.obras_do_mes(base, MES)["fonte"] == "PDF"
+    assert P.dre_resolvido(base, "2026-07") is None                   # sem PDF e sem API nesse mes: sem dado
 
 
 def test_confirmacao_em_api_manda_no_custo_da_diretoria_apesar_do_pdf(base):

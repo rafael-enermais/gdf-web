@@ -249,9 +249,9 @@ def test_ferramentas_leem_o_banco_real(conn):
 
     r, tab = FERR.executar(conn, "resultado_periodo", {"mes_ini": "2026-08", "mes_fim": "2026-09"})
     assert "aviso" in r and r["meses_sem_dre_confirmado"] == ["2026-08", "2026-09"]                # nada confirmado: o Dexie diz isso, nao inventa
-    assert r["meses_sem_dados"] == ["2026-08"] and r["fonte_por_mes"] == {"2026-09": "pdf"}        # set/26 usa o PDF importado (sem confirmacao); ago/26 nao tem dado
+    assert r["meses_sem_dados"] == ["2026-08"] and r["fonte_por_mes"] == {"2026-09": "api"}        # set/26: PDF importado sem confirmacao NAO entra no fluxo (API e padrao); ago/26 nao tem dado
     m, tab = FERR.executar(conn, "dre_mes", {"mes": "2026-09"})
-    assert m["linhas"] and "oficial" in m["origem"] and tab
+    assert m["linhas"] and "API" in m["origem"] and tab
     sm, tab = FERR.executar(conn, "serie_mensal", {"mes_ini": "2026-08", "mes_fim": "2026-09"})
     assert sm["serie"] and {"mes", "receita", "custo_direto", "bdi", "origem"} <= set(tab[0])
     o, _ = FERR.executar(conn, "obras_mes", {"mes": "2026-09"})

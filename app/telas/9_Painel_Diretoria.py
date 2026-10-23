@@ -73,7 +73,7 @@ def _pagos(_conn, mes_ini: str, mes: str, carimbo: str):
 
 @st.cache_data(ttl=1800, show_spinner="Somando os meses do período…")
 def _termos_meses(_conn, meses_t: tuple, carimbo: str) -> list:
-    """Termos do Resultado de cada mes (DRE confirmado > PDF > API padrao; None onde nao ha dado)."""
+    """Termos do Resultado de cada mes (DRE confirmado > API padrao; PDF so' antes da API; None onde nao ha dado)."""
     return [P.termos_do_mes(_conn, m) for m in meses_t]
 
 
@@ -298,33 +298,83 @@ def _colaboradores():
 
 
 # ------------------------------------------------------------------ 1) RESULTADO
-def _termos(modo: str):
-    """Receita - Custo = BDI - Administracao = Resultado: [(chave, rotulo, real, previsto, quanto_maior_melhor)]. Previsto None quando nao ha fonte."""
+def _termos(modo: str = "mes"):
+    """Receita - Custo = BDI - Administracao = Resultado do MES de referencia: [(chave: (realizado, previsto))]. Previsto None quando nao ha fonte."""
     rec_p = bdi_p = cus_p = None
     if proj and abs(proj["receita_proj_total"]) > 0.005:
         rec_p = proj["receita_proj_total"]
         bdi_p = proj["total"]["bdi_proj"]
         cus_p = round(rec_p - bdi_p, 2)
     res_p = round(bdi_p - adm_orc, 2) if bdi_p is not None and adm_orc is not None else None
-    atual = {"rec": (rec, rec_p), "cus": (cus, cus_p), "bdi": (bdi, bdi_p), "adm": (adm_real, adm_orc), "res": (resultado, res_p)}
-    if modo == "mes":
-        return atual
-    if not hist:
-        return None
+    return {"rec": (rec, rec_p), "cus": (cus, cus_p), "bdi": (bdi, bdi_p), "adm": (adm_real, adm_orc), "res": (resultado, res_p)}
+
+
+def _mes_anterior(m: str) -> str:
+    return PER.somar_meses(m, -1)
+
+
+def _historico_cobre() -> bool:
+    return bool(hist and hist.get("ate") in (mes, _mes_anterior(mes)))
+
+
+def _ano_pela_api():
+    """Ano ate o mes: o REALIZADO (receita, custos, BDI) e' a soma mes a mes de janeiro ate o mes pela mesma regra de fonte do app (confirmado > API). O que a API nao
+    fornece, previsto (projecao) e administracao (orcamento ADM), completa-se com o historico do painel da contabilidade ate o mes anterior + o mes atual do app.
+    -> (termos ou None, meses fora da soma, True se o historico completou algo)."""
+    t, falt = _termos_periodo()
+    if not t:
+        return None, falt, False
+    if not _historico_cobre():
+        return t, falt, False
     ate, ac, dev = hist["ate"], hist["acumulado"], hist.get("desvio_acumulado", {})
-    ant = f"{int(mes[:4]) - (1 if mes[5:] == '01' else 0)}-{(int(mes[5:]) - 2) % 12 + 1:02d}"
-    if ate != mes and ate != ant:
-        return None
-    out = {}
-    for k in ("rec", "cus", "bdi", "adm", "res"):
+    atual, usou = _termos("mes"), False
+    out = dict(t)
+
+    def do_hist(k):
         real_h = ac.get(k)
         prev_h = (real_h - dev[k]) if real_h is not None and k in dev else None
         if ate == mes:
-            out[k] = (real_h, prev_h)
-        else:                                                     # historico ate o mes anterior + o mes atual
-            r_m, p_m = atual[k]
-            out[k] = (None if real_h is None or r_m is None else real_h + r_m, None if prev_h is None or p_m is None else prev_h + p_m)
-    return out
+            return real_h, prev_h
+        r_m, p_m = atual[k]
+        return (None if real_h is None or r_m is None else real_h + r_m, None if prev_h is None or p_m is None else prev_h + p_m)
+
+    for k in ("rec", "cus", "bdi", "adm"):
+        real, prev = out[k]
+        h_real, h_prev = do_hist(k)
+        if prev is None and h_prev is not None:
+            prev, usou = h_prev, True
+        if k == "adm" and real is None and h_real is not None:
+            real, usou = h_real, True
+        out[k] = (real, prev)
+    bdi_real, bdi_prev = out["bdi"]
+    adm_real_, adm_prev_ = out["adm"]
+    res_real, res_prev = out["res"]
+    if res_real is None and bdi_real is not None and adm_real_ is not None:
+        res_real, usou = round(bdi_real - adm_real_, 2), True
+    h_res_prev = do_hist("res")[1]
+    if res_prev is None:
+        res_prev = round(bdi_prev - adm_prev_, 2) if bdi_prev is not None and adm_prev_ is not None else h_res_prev
+        usou = usou or res_prev is not None
+    out["res"] = (res_real, res_prev)
+    return out, falt, usou
+
+
+def _comparar_historico():
+    """Tabela de conferencia: acumulado do historico da contabilidade (ate o mes que ele cobre) x o mesmo periodo pelo app (confirmado/API). Nao entra em nenhuma conta."""
+    if not _historico_cobre():
+        return None
+    ate = hist["ate"]
+    ms_h = PER.meses_entre(mes_ini, ate)
+    app = P.somar_termos(_termos_meses(conn, tuple(ms_h), CARIMBO))
+    if not app:
+        return None
+    nomes = {"rec": "Receita (base-line)", "cus": "Custos diretos", "bdi": "BDI", "adm": "Administração", "res": "Resultado"}
+    linhas = []
+    for k, nome in nomes.items():
+        h_, a_ = hist["acumulado"].get(k), app[k][0]
+        linhas.append({"Linha": nome, f"Histórico da contabilidade (até {_rot(ate)})": _m(h_) if h_ is not None else "–", "App (confirmado/API)": _m(a_) if a_ is not None else "–",
+                       "Diferença (app − histórico)": _m(a_ - h_) if h_ is not None and a_ is not None else "–"})
+    return pd.DataFrame(linhas), ate
 
 
 def _termos_periodo():
@@ -337,8 +387,8 @@ def _termos_periodo():
 def _formula(modo: str, termos=None):
     termos = termos if termos is not None else _termos(modo)
     if not termos:
-        _info("Não há dados de DRE (confirmado, PDF ou API do Sienge) em nenhum mês deste período." if modo == "per" else
-              "O acumulado do ano aparece quando o histórico do painel da contabilidade cobre o mês escolhido (Importações (V2) → Histórico do painel).")
+        _info("Não há dados de DRE (confirmado ou API do Sienge) em nenhum mês deste período." if modo == "per" else
+              "Não há dados de DRE no ano até este mês.")
         return
     rot = [("rec", "Receita (base-line)", True), ("cus", "Custos diretos", False), ("bdi", "BDI", True), ("adm", "Administração", False), ("res", "Resultado", True)]
     cols = st.container(key="dir_formula").columns([5, 1, 5, 1, 5, 1, 5, 1, 5], vertical_alignment="center")
@@ -370,21 +420,24 @@ if aba_res.open or _TODAS:
         if modo_per == PER.MES:
             _formula("mes")
         else:
-            _t_acc = _termos("acc") if modo_per == PER.ANO else None                                            # ano ate o mes: do historico do painel da contabilidade, quando cobre o mes
-            if _t_acc:
-                _formula("acc", _t_acc)
-                _cap(f"Acumulado do ano (jan–{mes[5:]}) vindo do histórico do painel da contabilidade.")
+            _ano = modo_per == PER.ANO
+            _t_per, _falt, _usou_h = _ano_pela_api() if _ano else (*_termos_periodo(), False)
+            if _t_per:
+                _formula("per", _t_per)
             else:
-                _t_per, _falt = _termos_periodo()
-                if _t_per:
-                    _formula("per", _t_per)
-                else:
-                    _warn(f"Nenhum mês de {PER_ROT} tem dados de DRE (confirmado, PDF ou API do Sienge); abaixo, o resultado do mês de referência ({_rot(mes)}).")
-                    _formula("mes")
-                if _t_per:
-                    _cap(f"Soma de {len(_t_per['meses'])} {'mês' if len(_t_per['meses']) == 1 else 'meses'} com dados em {PER_ROT}: {', '.join(_rot(m) for m in _t_per['meses'])}. Fonte de cada mês: confirmado pela contabilidade, PDF ou API do Sienge (padrão)."
-                         + (f" Fora da soma por falta de dados: {', '.join(_rot(m) for m in _falt)}." if _falt else "")
-                         + " Administração/Resultado só aparecem se todos os meses somados têm Orçamento ADM; previsto só se todos têm projeção.")
+                _warn(f"Nenhum mês de {PER_ROT} tem dados de DRE (confirmado ou API do Sienge); abaixo, o resultado do mês de referência ({_rot(mes)}).")
+                _formula("mes")
+            if _t_per:
+                _cap(f"Soma de {len(_t_per['meses'])} {'mês' if len(_t_per['meses']) == 1 else 'meses'} com dados em {PER_ROT}: {', '.join(_rot(m) for m in _t_per['meses'])}. Fonte de cada mês: confirmado pela contabilidade ou API do Sienge (padrão; o PDF só entra se a contabilidade o escolher na confirmação)."
+                     + (f" Fora da soma por falta de dados: {', '.join(_rot(m) for m in _falt)}." if _falt else "")
+                     + (" Previsto e administração (que a API não fornece) completados com o histórico do painel da contabilidade até o mês anterior + o mês atual do app." if _usou_h
+                        else " Administração/Resultado só aparecem se todos os meses somados têm Orçamento ADM; previsto só se todos têm projeção."))
+            if _ano:
+                _cmp = _comparar_historico()
+                if _cmp is not None:
+                    with st.expander(f"Conferência: histórico da contabilidade × app (jan–{_rot(_cmp[1])})"):
+                        st.dataframe(_cmp[0], hide_index=True, width="stretch")
+                        _cap("Só para conferir: o histórico (HTML da contabilidade) não entra na conta do realizado. Diferença costuma vir de ajustes manuais do BM/reclassificações que a API não traz; se a contabilidade quiser um ajuste fixo no app, é só pedir.")
         g1, g2 = st.columns(2)
         with g1:
             _md("**Desvio mensal (realizado − previsto)**")

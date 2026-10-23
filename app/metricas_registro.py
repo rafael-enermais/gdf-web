@@ -114,7 +114,7 @@ def _termos_mes(conn, mes: str) -> dict | None:
     t = _tenta(conn, P.termos_do_mes, mes)
     if not t:
         return None
-    nomes = {"confirmado": "DRE confirmado pela contabilidade", "pdf": "DRE oficial (PDF), ainda nao confirmado", "api": "API do Sienge (padrao, a conferir)"}
+    nomes = {"confirmado": "DRE confirmado pela contabilidade", "pdf": "DRE oficial (PDF): mes anterior a API", "api": "API do Sienge (padrao, a conferir)"}
     return {"rec": t["rec"], "bdi": t["bdi"], "rec_p": t["rec_p"], "bdi_p": t["bdi_p"], "fonte": nomes.get(t["fonte"], t["fonte"])}
 
 
