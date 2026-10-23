@@ -65,7 +65,57 @@ def main() -> int:
         print(f"{rot}: HTTP 200, {len(itens)} itens na pagina ({time.monotonic() - t0:.1f}s){extra}")
         if itens:
             print("   campos: " + ", ".join(nomes_de_campos(itens[0])[:80]))
+    anexos(cli)
     return 0
+
+
+def anexos(cli) -> None:
+    """Fase 2 (anexos): mostra o NOME dos links (rel) que a API devolve no contrato e na medicao e testa caminhos candidatos de anexos/itens
+    com o primeiro contrato. Imprime so' codigos HTTP, nomes de links/campos e contagens (nunca ids, valores ou nomes)."""
+    print("--- fase 2: anexos e itens ---")
+    try:
+        c = (S.lista(cli.get("v1/supply-contracts/all", {"limit": 1, "offset": 0})) or [None])[0]
+        m = (S.lista(cli.get("v1/supply-contracts/measurements/all", {"limit": 1, "offset": 0})) or [None])[0]
+    except S.ErroSienge as e:
+        print(f"falha ao ler o primeiro contrato: {str(e)[:80]}")
+        return
+    for nome, reg in (("contrato", c), ("medicao", m)):
+        if not isinstance(reg, dict):
+            continue
+        rels = [l.get("rel") for l in (reg.get("links") or []) if isinstance(l, dict)]
+        print(f"{nome}: rels dos links = {rels}")
+        suspeitos = [k for k in reg if any(t in k.lower() for t in ("attach", "anex", "file", "arquiv", "document", "url"))]
+        print(f"{nome}: campos com cara de anexo/arquivo = {suspeitos}")
+    if not isinstance(c, dict):
+        return
+    doc, num = c.get("documentId"), c.get("contractNumber")
+    bld = ((c.get("buildings") or [{}])[0]).get("buildingId")
+    cand = [
+        ("v1/supply-contracts/attachments", {"documentId": doc, "contractNumber": num, "buildingId": bld}),
+        ("v1/supply-contracts/attachments", {"documentId": doc, "contractNumber": num}),
+        (f"v1/supply-contracts/{doc}/{num}/attachments", {}),
+        (f"v1/supply-contracts/{doc}/{num}/{bld}/attachments", {}),
+        (f"v1/supply-contracts/{doc}/{num}", {}),
+        ("v1/supply-contracts/all/attachments", {"documentId": doc, "contractNumber": num}),
+        ("v1/supply-contracts/items", {"documentId": doc, "contractNumber": num, "buildingId": bld}),
+        ("v1/supply-contracts/items", {"documentId": doc, "contractNumber": num}),
+        ("v1/supply-contracts/items/all", {"documentId": doc, "contractNumber": num}),
+        ("v1/supply-contracts/measurements/attachments", {"documentId": doc, "contractNumber": num}),
+        ("v1/supply-contracts/measurements/all", {"documentId": doc, "contractNumber": num, "limit": 5}),
+        ("v1/attachments", {"documentId": doc, "contractNumber": num}),
+    ]
+    for caminho, params in cand:
+        rot = caminho.replace(str(doc), "{doc}").replace(str(num), "{num}").replace(str(bld), "{bld}")
+        pars = sorted(k for k, v in params.items() if v is not None)
+        try:
+            resp = cli.get(caminho, {k: v for k, v in params.items() if v is not None})
+        except S.ErroSienge as e:
+            cod = str(e).split("HTTP ")[1][:3] if "HTTP " in str(e) else "rede"
+            print(f"{rot} {pars}: HTTP {cod}")
+            continue
+        itens = S.lista(resp)
+        campos = nomes_de_campos(itens[0])[:40] if itens else (sorted(resp.keys())[:15] if isinstance(resp, dict) else [])
+        print(f"{rot} {pars}: HTTP 200, {len(itens)} itens | campos: {', '.join(campos)}")
 
 
 if __name__ == "__main__":
