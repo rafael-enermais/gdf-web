@@ -11,6 +11,7 @@ import pandas as pd
 import streamlit as st
 
 import acesso
+import custos_obra_nivel as CON
 import estilo
 import diretoria_dados as DD
 import diretoria_indicadores_ui as DI
@@ -147,6 +148,12 @@ def _obras_mes(_conn, m: str, carimbo: str):
 
 def _obras_meses(_conn, meses_t: tuple, carimbo: str):
     return [_obras_mes(_conn, m, carimbo) for m in meses_t]
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _custos_nivel(_conn, mes_ini: str, mes: str, carimbo: str) -> list:
+    """Linhas (obra, mes, conta, resultado) dos titulos emitidos no periodo, so' contas das 7 categorias de custo por obra (guardado)."""
+    return P.custos_obra_linhas(_conn, mes_ini, mes)
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -702,6 +709,20 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
                                "Tipo": "PJ", "dest": _destino_ob(x["obra"])})
             col_df = pd.DataFrame([r for r in regs_c if r["dest"]], columns=["Nome", "Função", "Tipo", "dest"])
             _rot_obras = _txt_sel([("demais obras" if c == "DEM" else nomes_ob.get(c, c)) for c in cods_sel], "todas as obras")
+            # ---- custos por categoria (relatorio "Custos por obra - nivel" da contabilidade): segue as obras marcadas na tabela
+            _md(f"**Custos por categoria · {_rot_obras}**")
+            _lin_n = _custos_nivel(conn, mes_ini, mes, CARIMBO)
+            _tab_n = CON.tabela(_lin_n, cods_sel, lambda o: o if o in proprias else "DEM", mes) if _lin_n else []
+            if _tab_n and abs(_tab_n[0]["periodo"]) > 0.005:
+                st.dataframe(pd.DataFrame({"Código": [x["codigo"] for x in _tab_n],
+                                           "Categoria": [("      " if "." in x["codigo"] else "") + x["categoria"] for x in _tab_n],
+                                           f"Acumulado {ACUM}": [_m(x["periodo"]) for x in _tab_n],
+                                           "% do total": [F.pct_br(x["pct"]) if x["pct"] is not None else "–" for x in _tab_n],
+                                           _rot(mes): [_m(x["mes"]) if abs(x["mes"]) > 0.005 else "–" for x in _tab_n]}), hide_index=True, width="stretch", height=min(35 * (len(_tab_n) + 1) + 3, 735))
+                _cap(f"Custos dos títulos emitidos em {PER_ROT} (análise “comprometido”, como no relatório de custos por obra da contabilidade), sem previsões e títulos desfeitos e sem os centros da administração. "
+                     "Segue as obras marcadas na tabela acima (nenhuma marcada = todas). Valor negativo é crédito. O total pode diferir da coluna “Custos” da tabela de obras, que usa só as contas do DRE.")
+            else:
+                _cap("Sem custos por categoria para esta seleção (faltam títulos emitidos no período ou o de-para de centros de custo → obra).")
             _md(f"**Principais credores · {_rot_obras}**")
             _pj_nomes = _credores_pj_nomes(conn, mes_ini, mes, CARIMBO)               # contabilidade 21/10: quem e' colaborador PJ ja' esta na lista de colaboradores, nao em credores
             dd_ob = _despesas_sem_pj(conn, mes_ini, mes, CARIMBO)

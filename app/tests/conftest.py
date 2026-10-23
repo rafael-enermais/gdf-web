@@ -142,6 +142,8 @@ def pg_dsn():
 def conn(pg_dsn):
     """Conexao (como superuser de teste, igual ao app: autocommit) com o schema `gdf` LIMPO a cada teste."""
     import psycopg2
+    import painel_db
+    painel_db.limpar_memo()   # a memoria curta do app e' por conexao; cada teste comeca limpo
     c = psycopg2.connect(pg_dsn)
     c.autocommit = True
     with c.cursor() as cur:

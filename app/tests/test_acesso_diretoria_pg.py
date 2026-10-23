@@ -144,6 +144,10 @@ def test_painel_da_diretoria_cinco_abas_com_tudo(conn):
         at.session_state["dir_todas_abas"] = True
         at.run()
         assert not at.exception, at.exception
+        _tit = [m.value for m in at.markdown]                                                       # v0.42.0: 'Custos por categoria' vem ANTES dos principais credores
+        _i_cat = [i for i, t in enumerate(_tit) if "Custos por categoria" in t]
+        _i_cred = [i for i, t in enumerate(_tit) if "Principais credores" in t]
+        assert _i_cat and _i_cred and _i_cat[0] < _i_cred[0], (_i_cat, _i_cred)
         nomes_pj = [list(d.value["Nome"]) for d in at.dataframe if "Nome" in d.value.columns and "Função" in d.value.columns]          # lista de colaboradores da aba Obras
         assert nomes_pj and any("Colab Fantasia" in n for n in nomes_pj[0]) and not any(n == "COLABORADOR TESTE" for n in nomes_pj[0]), nomes_pj
         pj_exp = [d.value for d in at.dataframe if "Colaborador PJ" in d.value.columns]                                                 # expander "PJ do mes" da aba Pessoas
@@ -257,3 +261,4 @@ def test_periodo_personalizado_pede_primeiro_o_inicio_depois_o_fim(conn):
         assert not at.exception, at.exception
         assert at.selectbox(key="dir_mes_ate").options == [ultimo]
         assert at.selectbox(key="dir_mes_ate").value == f"{ultimo[3:]}-{ultimo[:2]}"
+

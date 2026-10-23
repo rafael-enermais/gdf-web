@@ -13,11 +13,33 @@ import json
 
 from psycopg2.extras import Json, execute_values
 
+import time
+
 import db
 
 # Base da HE (contabilidade 20/10/2026): "pode descontar tudo, considere somente os salarios liquidos" -> todos os descontos do recibo saem da base
 
 TABELAS_V2 = ("pnl_sync", "pnl_titulo", "pnl_baixa", "pnl_rateio", "pnl_regra", "pnl_obra", "pnl_centro_custo")
+
+
+
+# ---------------------------------------------------------------- memoria curta (a abertura do Painel da Diretoria repetia as mesmas consultas pequenas, uma por mes)
+_MEMO: dict = {}
+
+
+def _memo(chave, ttl: float, fn):
+    """Guarda por `ttl` segundos o resultado de `fn()` (chave inclui a conexao). Quem GRAVA dados que essas consultas leem chama `limpar_memo()`."""
+    agora = time.monotonic()
+    h = _MEMO.get(chave)
+    if h is not None and agora - h[0] < ttl:
+        return h[1]
+    v = fn()
+    _MEMO[chave] = (agora, v)
+    return v
+
+
+def limpar_memo() -> None:
+    _MEMO.clear()
 
 
 def v2_instalado(conn) -> bool:
@@ -39,6 +61,7 @@ def finalizar_sync(conn, sync_id: int, status: str, n_tit=0, n_bx=0, n_rt=0, val
     with conn.cursor() as cur:
         cur.execute("UPDATE pnl_sync SET status=%s, n_titulos=%s, n_baixas=%s, n_rateios=%s, valor_liquido=%s, erro=%s, finalizado_em=now() WHERE id=%s",
                     (status, n_tit, n_bx, n_rt, valor, (erro or None) and erro[:500], sync_id))
+    limpar_memo()
 
 
 def _tem_coluna(cur, tabela: str, coluna: str) -> bool:
@@ -49,6 +72,7 @@ def _tem_coluna(cur, tabela: str, coluna: str) -> bool:
 def gravar_normalizado(conn, sync_id: int, norm: dict) -> dict:
     """Grava titulos, baixas e rateios (upsert) numa unica transacao. Devolve contagens e o liquido total das baixas."""
     tit, bx, rt = norm["titulos"], norm["baixas"], norm["rateios"]
+    limpar_memo()
     with db.transacao(conn):
         with conn.cursor() as cur:
             if tit:
@@ -98,6 +122,7 @@ def gravar_normalizado(conn, sync_id: int, norm: dict) -> dict:
                         centro_custo_id=EXCLUDED.centro_custo_id, centro_custo_nome=EXCLUDED.centro_custo_nome, percentual=EXCLUDED.percentual""",
                                [(r["lado"], r["bill_id"], r["installment_id"], r["linha"], sync_id, r["plano_cod"], r["plano_nome"],
                                  r["centro_custo_id"], r["centro_custo_nome"], r["percentual"]) for r in rt], page_size=500)
+    limpar_memo()
     return {"titulos": len(tit), "baixas": len(bx), "rateios": len(rt), "liquido": round(sum((b["liquido"] or 0) for b in bx), 2)}
 
 
@@ -556,7 +581,17 @@ def _filtro_desfeitos(sem_desfeitos: bool) -> str:
 
 
 def centro_grupo_instalado(conn) -> bool:
-    """True se a tabela do de-para (sql/v2_centro_grupo.sql) existe E ja tem linhas (os dados vem do vault)."""
+    """True se a tabela do de-para (sql/v2_centro_grupo.sql) existe E ja tem linhas (os dados vem do vault). So' o 'sim' fica guardado (5 min)."""
+    h = _MEMO.get(("cg_inst", id(conn)))
+    if h is not None and time.monotonic() - h[0] < 300:
+        return True
+    ok = _centro_grupo_instalado_sql(conn)
+    if ok:
+        _MEMO[("cg_inst", id(conn))] = (time.monotonic(), True)
+    return ok
+
+
+def _centro_grupo_instalado_sql(conn) -> bool:
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT count(*) FROM pnl_centro_grupo")
@@ -730,6 +765,7 @@ def gravar_dre(conn, dre: dict, arquivo: str, sha256: str, usuario: str | None) 
             iid = cur.fetchone()[0]
             execute_values(cur, "INSERT INTO pnl_dre_valor (importacao_id, obra_cod, obra_nome, linha, conta, conta_nome, valor) VALUES %s",
                            [(iid, v["obra"], nomes.get(v["obra"]), v["linha"] or "", v["conta"], v["nome"] if v["conta"] else None, v["valor"]) for v in dre["valores"]])
+    limpar_memo()
     registrar_log(conn, "DRE_PDF_IMPORTADO", "AVISO" if dre["avisos"] else "INFO", usuario, mes[:7],
                   {"arquivo": arquivo, "sha256": sha256[:16], "importacao_id": iid, "linhas": len(dre["valores"]), "obras": len(dre["obras"]), "avisos": dre["avisos"]})
     return {"repetido": False, "id": iid, "mes": mes[:7]}
@@ -745,16 +781,26 @@ def meses_com_dre(conn) -> list:
         return []
 
 
+def _dre_importacoes_ativas(conn) -> dict:
+    """{'AAAA-MM': importacao ativa do DRE} de todos os meses numa consulta so' (tabela pequena); guardado 15 s."""
+    def ler():
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""SELECT to_char(mes,'YYYY-MM'), id, arquivo_nome, importado_por, importado_em, n_linhas, status FROM pnl_importacao
+                               WHERE tipo='DRE' AND escopo='' AND ativo ORDER BY id""")
+                return {m: {"id": i, "arquivo": a, "quem": q, "quando": w, "linhas": n, "status": st} for m, i, a, q, w, n, st in cur.fetchall()}
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return {}
+    return _memo(("dre_imp", id(conn)), 15, ler)
+
+
 def dre_importacao_ativa(conn, mes: str) -> dict | None:
     """Importacao ativa do DRE em PDF para o mes ('AAAA-MM'), ou None (tambem None se o SQL ainda nao foi rodado)."""
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""SELECT id, arquivo_nome, importado_por, importado_em, n_linhas, status FROM pnl_importacao
-                           WHERE tipo='DRE' AND mes=%s::date AND escopo='' AND ativo ORDER BY id DESC LIMIT 1""", (f"{mes}-01",))
-            r = cur.fetchone()
-    except Exception:
-        return None
-    return {"id": r[0], "arquivo": r[1], "quem": r[2], "quando": r[3], "linhas": r[4], "status": r[5]} if r else None
+    return _dre_importacoes_ativas(conn).get(mes)
 
 
 def dre_contas_importadas(conn, importacao_id: int) -> dict:
@@ -958,7 +1004,11 @@ def somar_projecoes(projs: list) -> dict | None:
 
 
 def cobertura_emissao_ini(conn) -> str | None:
-    """Primeiro mes ('AAAA-MM') com a rotina diaria de emissao funcionando (antes disso a base so' tem residuos de titulos antigos)."""
+    """Primeiro mes ('AAAA-MM') com a rotina diaria de emissao funcionando (antes disso a base so' tem residuos de titulos antigos). Guardado 2 min."""
+    return _memo(("cob_emi", id(conn)), 120, lambda: _cobertura_emissao_ini_sql(conn))
+
+
+def _cobertura_emissao_ini_sql(conn) -> str | None:
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT to_char(min(mes), 'YYYY-MM') FROM pnl_sync WHERE lado='R' AND tipo_data='I' AND status <> 'ERRO'")
@@ -974,7 +1024,9 @@ def cobertura_emissao_ini(conn) -> str | None:
 def contas_api_padrao(conn, mes: str) -> list:
     """Contas do mes reconstruidas pela API com as regras padrao (as mesmas da tela Resultado): sem previsao, sem NF desfeita, sem titulo desfeito
     e so' centros de obra (sem ADM) quando o de-para existe."""
-    return resultado_por_conta(conn, mes, sem_previsao=True, so_obras=centro_grupo_instalado(conn), sem_distrato=True, sem_desfeitos=True)
+    # guardado 60 s: a abertura do Painel da Diretoria pede o mesmo mes varias vezes (DRE, termos, obras); sync/importacao/confirmacao limpam
+    return _memo(("contas_api", id(conn), mes), 60,
+                 lambda: resultado_por_conta(conn, mes, sem_previsao=True, so_obras=centro_grupo_instalado(conn), sem_distrato=True, sem_desfeitos=True))
 
 
 def dre_resolvido(conn, mes: str) -> dict | None:
@@ -1069,9 +1121,43 @@ def resultado_por_obra_api(conn, mes: str, sem_previsao: bool = False, sem_distr
     return saida
 
 
+def custos_obra_linhas(conn, mes_ini: str, mes_fim: str, sem_previsao: bool = True, sem_desfeitos: bool = True) -> list:
+    """Base da tabela "Custos por categoria" da aba Obras: [(codigo_obra, 'AAAA-MM', plano_cod, resultado)] dos titulos EMITIDOS de mes_ini ate mes_fim (analise
+    'comprometido', como no relatorio da contabilidade), so' as contas que entram nas 7 categorias (custos_obra_nivel), sem centros ADM e com as mesmas regras padrao
+    da tabela de Obras (sem previsao, sem titulos desfeitos). Resultado = com sinal do DRE (custo negativo). Sem a tabela de de-para: []."""
+    import custos_obra_nivel as CON
+    filtro = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
+    filtro += " " + _filtro_distrato(True) + " " + _filtro_desfeitos(sem_desfeitos)
+    with conn.cursor() as cur:
+        try:
+            cur.execute(f"""SELECT COALESCE(g.codigo_obra,'sem de-para'), to_char(t.data_emissao,'YYYY-MM'), t.lado, r.plano_cod, sum(t.valor_original * r.percentual / 100.0)
+                            FROM pnl_titulo t JOIN pnl_v_rateio r ON r.lado=t.lado AND r.bill_id=t.bill_id AND r.installment_id=t.installment_id
+                            LEFT JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id
+                            WHERE t.data_emissao >= %s::date AND t.data_emissao < (%s::date + interval '1 month') {filtro}
+                              AND COALESCE(g.grupo,'') <> 'ADM' AND r.plano_cod = ANY(%s)
+                            GROUP BY 1, 2, t.lado, r.plano_cod""", (f"{mes_ini}-01", f"{mes_fim}-01", list(CON.CONTAS)))
+            return [(o, m, plano, round(_sinal_resultado(lado, plano) * float(v or 0), 2)) for o, m, lado, plano, v in cur.fetchall()]
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return []
+
+
 # ---------------------------------------------------------------- Confirmacao do DRE do mes (fonte escolhida por linha)
 def confirmacao_instalada(conn) -> bool:
-    """True se o SQL da confirmacao do DRE (sql/v2_dre_confirmacao.sql) ja foi executado."""
+    """True se o SQL da confirmacao do DRE (sql/v2_dre_confirmacao.sql) ja foi executado. So' o 'sim' fica guardado (5 min)."""
+    h = _MEMO.get(("conf_inst", id(conn)))
+    if h is not None and time.monotonic() - h[0] < 300:
+        return True
+    ok = _confirmacao_instalada_sql(conn)
+    if ok:
+        _MEMO[("conf_inst", id(conn))] = (time.monotonic(), True)
+    return ok
+
+
+def _confirmacao_instalada_sql(conn) -> bool:
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT count(*) FROM information_schema.tables WHERE table_schema='gdf' AND table_name='pnl_dre_confirmacao'")
@@ -1080,16 +1166,26 @@ def confirmacao_instalada(conn) -> bool:
         return False
 
 
+def _confirmacoes_ativas(conn) -> dict:
+    """{'AAAA-MM': confirmacao ativa} de todos os meses numa consulta so' (poucas linhas); guardado 15 s."""
+    def ler():
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""SELECT to_char(mes,'YYYY-MM'), id, fontes, valores, confirmado_por, confirmado_em, observacao, resumo FROM pnl_dre_confirmacao
+                               WHERE ativo ORDER BY id""")
+                return {m: {"id": i, "fontes": f, "valores": v, "quem": q, "quando": w, "observacao": o, "resumo": r} for m, i, f, v, q, w, o, r in cur.fetchall()}
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return {}
+    return _memo(("dre_conf", id(conn)), 15, ler)
+
+
 def confirmacao_ativa(conn, mes: str) -> dict | None:
     """Confirmacao ativa do DRE do mes ('AAAA-MM'): {'id','fontes','valores','quem','quando','observacao','resumo'} ou None."""
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""SELECT id, fontes, valores, confirmado_por, confirmado_em, observacao, resumo FROM pnl_dre_confirmacao
-                           WHERE mes=%s::date AND ativo ORDER BY id DESC LIMIT 1""", (f"{mes}-01",))
-            r = cur.fetchone()
-    except Exception:
-        return None
-    return {"id": r[0], "fontes": r[1], "valores": r[2], "quem": r[3], "quando": r[4], "observacao": r[5], "resumo": r[6]} if r else None
+    return _confirmacoes_ativas(conn).get(mes)
 
 
 def carimbo_dados(conn) -> str:
@@ -1229,6 +1325,7 @@ def gravar_confirmacao(conn, mes: str, fontes: dict, valores: dict, usuario: str
                         (f"{mes}-01", usuario, (observacao or None), json.dumps(fontes), json.dumps({k: round(float(v), 2) for k, v in valores.items()}),
                          json.dumps(resumo or {}), dre_importacao_id))
             novo = cur.fetchone()[0]
+    limpar_memo()
     registrar_log(conn, "DRE_CONFIRMADO", "INFO", usuario, mes, {"confirmacao_id": novo, "substituiu": ant[0] if ant else None, "fontes": fontes,
                                                                   "resumo": resumo or {}, "observacao": (observacao or "")[:200]})
     return {"id": novo, "mes": mes, "substituiu": ant[0] if ant else None}
@@ -1938,6 +2035,7 @@ def importacao_definir_ativo(conn, imp_id: int, ativo: bool, usuario: str | None
             cur.execute("UPDATE pnl_importacao SET ativo=%s WHERE id=%s", (ativo, imp_id))
             cur.execute("INSERT INTO pnl_edicao (importacao_id, tabela, campo, valor_antes, valor_depois, acao, motivo, quem) VALUES (%s,'pnl_importacao','ativo',%s,%s,%s,%s,%s)",
                         (imp_id, str(ja).lower(), str(ativo).lower(), "REATIVOU" if ativo else "DESATIVOU", motivo, usuario))
+    limpar_memo()
     registrar_log(conn, "IMPORTACAO_REATIVADA" if ativo else "IMPORTACAO_FORA_DE_USO", "AVISO", usuario, mes.strftime("%Y-%m"),
                   {"importacao_id": imp_id, "tipo": tipo, "escopo": escopo, "substituiu": subst})
     return {"mudou": True, "tipo": tipo, "mes": mes.strftime("%Y-%m"), "substituiu": subst}
