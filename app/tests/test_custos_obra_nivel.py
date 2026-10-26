@@ -8,7 +8,7 @@ pg = pytest.mark.pg
 
 
 def test_mapa_cobre_as_categorias_do_relatorio():
-    assert len(C.MAPA) == 383 and set(C.MAPA.values()) == {"01.01", "02.01", "03.01", "03.02", "04.01", "05.03", "05.04", "06.01", "06.02", "06.03", "06.04", "07.01"}
+    assert len(C.MAPA) == 384 and set(C.MAPA.values()) == {"01.01", "02.01", "03.01", "03.02", "04.01", "05.03", "05.04", "06.01", "06.02", "06.03", "06.04", "07.01"}
     assert C.MAPA["2.01.02.01"] == "01.01" and C.MAPA["2.01.02.16"] == "05.03" and C.MAPA["2.01.04.01"] == "02.01"
     assert {c for c, _ in C.CATEGORIAS if "." in c} >= set(C.MAPA.values())                    # toda categoria usada tem nome na tabela
 

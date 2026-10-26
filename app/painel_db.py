@@ -575,9 +575,10 @@ def _filtro_desfeitos(sem_desfeitos: bool) -> str:
     custo API x PDF em ~R$ 200 mil (de R$ 272 mil para R$ 69 mil, fora INSS/FGTS em guia, que a contabilidade disse que entra depois do PDF)."""
     if not sem_desfeitos:
         return ""
-    return """AND NOT (t.lado='P' AND (upper(trim(COALESCE(t.doc_id,''))) = 'AEJ'
+    # v0.48.0: o mesmo vale para a RECEITA (titulo a receber cancelado/substituido no Sienge e' trocado por outro; o app contava os dois: obras 100, 104 e 118 = R$ 473 mil).
+    return """AND NOT ((t.lado='P' AND upper(trim(COALESCE(t.doc_id,''))) = 'AEJ')
                    OR (SELECT COALESCE(sum(dx.bruto),0) FROM pnl_baixa dx WHERE dx.lado=t.lado AND dx.bill_id=t.bill_id AND dx.installment_id=t.installment_id
-                       AND dx.tipo_oper_id IN (3,5,8)) >= GREATEST(COALESCE(t.valor_original,0) - 0.01, 0.01)))"""
+                       AND dx.tipo_oper_id IN (3,5,8)) >= GREATEST(COALESCE(t.valor_original,0) - 0.01, 0.01))"""
 
 
 def centro_grupo_instalado(conn) -> bool:
@@ -1115,6 +1116,38 @@ def somar_termos(lista: list) -> dict | None:
             "meses": [t["mes"] for t in lista]}
 
 
+CONTA_JUROS, CONTA_DESCONTO, CONTA_IMPOSTO = "2.03.01.09", "2.03.01.11", "2.09.01.00"
+
+
+def _extras_baixa(conn, filtro: str, mes_ini: str, mes_fim: str, por_mes: bool = False) -> list:
+    """Parte do Custo Total do Sienge que vem da BAIXA do titulo a pagar (confirmado pela Suellen em 26/10/2026): Custo = valor da nota - impostos retidos + juros e multas pagos - descontos recebidos.
+    Devolve [(obra, 'AAAA-MM' ou '', {conta: resultado com sinal})]: juros+multa em 2.03.01.09 (custo), descontos em 2.03.01.11 (credito), imposto retido em 2.09.01.00 (credito).
+    Rateado pelo percentual do rateio do titulo, no mes de EMISSAO do titulo (como o relatorio do Sienge), sem centros ADM e com os mesmos filtros do custo. Conferido exato na obra 100 (jan-set/26)."""
+    mes = "to_char(t.data_emissao,'YYYY-MM')" if por_mes else "''"
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""SELECT COALESCE(g.codigo_obra,'sem de-para'), {mes}, sum(r.percentual/100.0*b.j), sum(r.percentual/100.0*b.d), sum(r.percentual/100.0*b.i)
+                            FROM pnl_titulo t JOIN pnl_v_rateio r ON r.lado=t.lado AND r.bill_id=t.bill_id AND r.installment_id=t.installment_id
+                            LEFT JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id
+                            JOIN (SELECT lado, bill_id, installment_id, sum(COALESCE(juros,0)+COALESCE(multa,0)) j, sum(COALESCE(desconto,0)) d, sum(COALESCE(imposto,0)) i
+                                  FROM pnl_baixa GROUP BY 1,2,3) b ON b.lado=t.lado AND b.bill_id=t.bill_id AND b.installment_id=t.installment_id
+                            WHERE t.lado='P' AND t.data_emissao >= %s::date AND t.data_emissao < (%s::date + interval '1 month') {filtro}
+                              AND COALESCE(g.grupo,'') <> 'ADM'
+                            GROUP BY 1, 2""", (f"{mes_ini}-01", f"{mes_fim}-01"))
+            saida = []
+            for o, m, j, d, i in cur.fetchall():
+                ex = {CONTA_JUROS: -round(float(j or 0), 2), CONTA_DESCONTO: round(float(d or 0), 2), CONTA_IMPOSTO: round(float(i or 0), 2)}
+                saida.append((o, m, {k: v for k, v in ex.items() if v}))
+            return saida
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return []
+
+
+
 def resultado_por_obra_api(conn, mes: str, sem_previsao: bool = False, sem_distrato: bool = True, sem_desfeitos: bool = True) -> dict:
     """Mesmo calculo do resultado_por_conta, agrupado pelo codigo da obra do de-para: {codigo_obra: {linha_dre: valor}} (+ 'sem de-para')."""
     ini = f"{mes}-01"
@@ -1135,6 +1168,10 @@ def resultado_por_obra_api(conn, mes: str, sem_previsao: bool = False, sem_distr
     for cod_obra, lado, plano, v in linhas:
         c = por_obra.setdefault(cod_obra, {})
         c[plano] = round(c.get(plano, 0.0) + _sinal_resultado(lado, plano) * float(v or 0), 2)
+    for cod_obra, _m, ex in _extras_baixa(conn, filtro, mes, mes):
+        c = por_obra.setdefault(cod_obra, {})
+        for plano, v in ex.items():
+            c[plano] = round(c.get(plano, 0.0) + v, 2)
     saida = {}
     import custos_obra_nivel as CON
     for cod_obra, contas in por_obra.items():
@@ -1158,7 +1195,10 @@ def custos_obra_linhas(conn, mes_ini: str, mes_fim: str, sem_previsao: bool = Tr
                             WHERE t.data_emissao >= %s::date AND t.data_emissao < (%s::date + interval '1 month') {filtro}
                               AND COALESCE(g.grupo,'') <> 'ADM' AND r.plano_cod = ANY(%s)
                             GROUP BY 1, 2, t.lado, r.plano_cod""", (f"{mes_ini}-01", f"{mes_fim}-01", list(CON.CONTAS)))
-            return [(o, m, plano, round(_sinal_resultado(lado, plano) * float(v or 0), 2)) for o, m, lado, plano, v in cur.fetchall()]
+            saida = [(o, m, plano, round(_sinal_resultado(lado, plano) * float(v or 0), 2)) for o, m, lado, plano, v in cur.fetchall()]
+            for o, m, ex in _extras_baixa(conn, filtro, mes_ini, mes_fim, por_mes=True):
+                saida += [(o, m, plano, v) for plano, v in ex.items()]
+            return saida
         except Exception:
             try:
                 conn.rollback()
