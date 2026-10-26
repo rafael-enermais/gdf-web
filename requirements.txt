@@ -1,7 +1,7 @@
 # Versoes FIXAS (as mesmas que rodam em producao no EGC / Streamlit Cloud, Python 3.14).
 # Motivo: com ">=" cada redeploy puxa a versao mais nova e uma atualizacao pode quebrar o app sem ninguem ter mexido no codigo.
 # Para atualizar de proposito: trocar a versao aqui, rodar os testes e publicar.
-streamlit==1.65.0
+streamlit==1.66.1
 supabase==2.32.0
 psycopg2-binary==2.9.13
 pandas==3.0.6
@@ -10,3 +10,5 @@ reportlab==5.0.1
 pdfplumber==0.11.10
 tzdata==2025.2
 anthropic==1.11.0
+# Pillow 13 corrige 37 avisos de seguranca da 12.3.0; exige streamlit>=1.66.1 (GOVINFRA #01 v0.7)
+pillow==13.0.0
