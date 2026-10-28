@@ -1131,8 +1131,8 @@ if aba_pes.open or _TODAS:
                     c_[1].metric("Líquido da folha", _mi(_t["liquido"]), border=True)
                     c_[2].metric("HE + DSR", _mi(_t["he_dsr"]), (F.pct_br(_t["he_pct"]) + " da remuneração") if _t["he_pct"] is not None else None, delta_color="off", border=True)
                     c_[3].metric("Horas extras", DD.fmt_horas(_t["he_min"]) + (" h" if _t["he_min"] else ""), f"{_t['n_he']} colaboradores com HE", delta_color="off", border=True)
-                    c_[4].metric("Pensão judicial", _mi(_t["pensao"]), border=True)
-                    c_[5].metric("Taxa assistencial", _mi(_t["taxa_assist"]), border=True)
+                    c_[4].metric("Pensão judicial", _m(_t["pensao"]), border=True)                       # valores pequenos: R$ exato (em mil ficava "R$ 1 mil")
+                    c_[5].metric("Taxa assistencial", _m(_t["taxa_assist"]), border=True)
                     st.dataframe(pd.DataFrame([{"Empresa": e["empresa"], "Colab.": e["n"], "Líquido": _m(e["liquido"]), "HE + DSR": _m(e["he_dsr"]), "Horas extras": DD.fmt_horas(e["he_min"]),
                                                 "Com HE": e["n_he"], "HE ÷ remuneração": F.pct_br(e["he_pct"]) if e["he_pct"] is not None else "–", "Pensão judicial": _m(e["pensao"]),
                                                 "Taxa assistencial": _m(e["taxa_assist"])} for e in _cf["por_empresa"]]), hide_index=True, width="stretch")

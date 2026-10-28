@@ -101,3 +101,28 @@ def test_mes_sem_dado_nenhum_devolve_none(conn):
     _ingerir(conn, lado="P", tipo="I")
     _ingerir(conn, regs=income(), lado="R", tipo="I")
     assert P.dre_resolvido(conn, "2027-03") is None and P.termos_do_mes(conn, "2027-03") is None
+
+
+def test_confirmacao_em_api_acompanha_o_dado_atual_e_pdf_fica_congelado(base):
+    """v0.50.0: a confirmacao guarda a FONTE por linha; linhas em API seguem o Sienge de hoje (senao o Resultado fica velho e difere da aba Obras); PDF fica como gravado."""
+    from dados_sienge import _c, _pg, outcome
+    from dre_mapa import MAPA
+    lin = MAPA["2.01.01.04"]                                                      # linha do DRE onde o titulo novo cai
+    _confirmar(base, {"*": "API"})
+    antes = P.termos_do_mes(base, MES)
+    gravado = P.confirmacao_ativa(base, MES, ao_vivo=False)["valores"]
+    novo = {"billId": 90, "installmentId": 1, "companyId": 5, "companyName": "CONSTRUTORA", "originId": "CP", "documentIdentificationId": "NFS ", "forecastDocument": "N",
+            "creditorId": 77, "creditorName": "FORNECEDOR TESTE", "issueDate": "2026-09-10", "dueDate": "2026-09-30", "originalAmount": 5000.0,
+            "payments": [_pg(1, "2026-09-30", 5000.0)], "paymentsCategories": [_c("2010104", "Material de Consumo | Obra", 100, 1049)]}
+    _ingerir(base, regs=outcome() + [novo], lado="P", tipo="I")                    # o Sienge mudou depois da confirmacao
+    vivo = P.dre_do_mes(P.contas_api_padrao(base, MES))["valores"]
+    assert vivo[lin] != gravado[lin]                                               # o dado atual mudou
+    c = P.confirmacao_ativa(base, MES)
+    assert c["valores"][lin] == vivo[lin] and c["valores_gravados"][lin] == gravado[lin] and lin in c["ao_vivo"]
+    t = P.termos_do_mes(base, MES)
+    assert t["fonte"] == "confirmado" and t["cus"] == abs(vivo["04"]) and t["cus"] > antes["cus"]
+    assert t["cus"] == pytest.approx(abs(P.obras_do_mes(base, MES)["total"]["custo"]), abs=0.01)         # Resultado fecha com a aba Obras
+    assert P.confirmacao_ativa(base, MES, ao_vivo=False)["valores"][lin] == gravado[lin]               # o que foi gravado nao muda
+    _confirmar(base, {"*": "API", lin: "PDF"})                                                          # uma linha em PDF: continua congelada
+    c2 = P.confirmacao_ativa(base, MES)
+    assert lin not in c2["ao_vivo"] and c2["valores"][lin] == P.confirmacao_ativa(base, MES, ao_vivo=False)["valores"][lin]

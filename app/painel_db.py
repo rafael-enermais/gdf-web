@@ -917,7 +917,7 @@ def fonte_obras(conn, mes: str) -> str | None:
     """De onde vem a tabela de Obras do mes: 'PDF' ou 'API'. Regra (a mesma do `dre_resolvido`): API e' o padrao; o PDF so' vale se a contabilidade confirmou os CUSTOS
     DIRETOS 04.* todos em PDF (e o PDF existe) ou se o mes e' anterior a rotina de emissao da API e ha PDF. PDF importado sem confirmacao NAO entra: fica para conferencia."""
     imp = dre_importacao_ativa(conn, mes)
-    conf = confirmacao_ativa(conn, mes) if confirmacao_instalada(conn) else None
+    conf = confirmacao_ativa(conn, mes, ao_vivo=False) if confirmacao_instalada(conn) else None
     if conf:
         fontes = conf["fontes"] or {}
         custos = [f for k, f in fontes.items() if k.startswith("04.")]
@@ -1054,7 +1054,7 @@ def dre_resolvido(conn, mes: str) -> dict | None:
     com fonte em 'confirmado' | 'api' | 'pdf' (so' no caso b), ou None se o mes nao tem dado."""
     conf = confirmacao_ativa(conn, mes) if confirmacao_instalada(conn) else None
     if conf:
-        return {"dre": dre_de_folhas(conf["valores"] or {}), "fonte": "confirmado", "origem": "DRE confirmado pela contabilidade", "conf": conf, "imp": None}
+        return {"dre": dre_de_folhas(conf["valores"] or {}), "fonte": "confirmado", "origem": "DRE confirmado pela contabilidade" + (" (linhas da API sempre atualizadas)" if conf.get("ao_vivo") else ""), "conf": conf, "imp": None}
     ini = cobertura_emissao_ini(conn)
     if ini and mes < ini:
         imp = dre_importacao_ativa(conn, mes)
@@ -1245,9 +1245,31 @@ def _confirmacoes_ativas(conn) -> dict:
     return _memo(("dre_conf", id(conn)), 15, ler)
 
 
-def confirmacao_ativa(conn, mes: str) -> dict | None:
-    """Confirmacao ativa do DRE do mes ('AAAA-MM'): {'id','fontes','valores','quem','quando','observacao','resumo'} ou None."""
-    return _confirmacoes_ativas(conn).get(mes)
+def confirmacao_ativa(conn, mes: str, ao_vivo: bool = True) -> dict | None:
+    """Confirmacao ativa do DRE do mes ('AAAA-MM'): {'id','fontes','valores','valores_gravados','ao_vivo','quem','quando','observacao','resumo'} ou None.
+    A confirmacao guarda a FONTE escolhida por linha (API / PDF / MANUAL). v0.50.0: com `ao_vivo` (padrao) as linhas confirmadas em API seguem SEMPRE o dado atual
+    do Sienge (`contas_api_padrao`), senao o numero congelado no dia da confirmacao ficava velho (ex.: guia de INSS substituida depois no Sienge) e o Resultado
+    nao fechava com a aba Obras. Linhas PDF e MANUAL continuam com o valor gravado (e' o que a contabilidade escolheu); 'valores_gravados' guarda o original.
+    `ao_vivo=False` devolve so' o que foi gravado (tela de confirmacao, que precisa do valor MANUAL digitado)."""
+    c = _confirmacoes_ativas(conn).get(mes)
+    if not c or not ao_vivo:
+        return c
+    fontes, gravados = c.get("fontes") or {}, c.get("valores") or {}
+    linhas_api = [k for k, f in fontes.items() if f == "API"]
+    if not linhas_api:
+        return {**c, "valores_gravados": gravados, "ao_vivo": []}
+    try:
+        contas = contas_api_padrao(conn, mes) or []
+        vivo = dre_do_mes(contas)["valores"] if contas else None
+    except Exception:
+        vivo = None
+    if not vivo:                                                  # sem dado do Sienge no mes: fica o que foi gravado
+        return {**c, "valores_gravados": gravados, "ao_vivo": []}
+    valores = dict(gravados)
+    for k in linhas_api:
+        if k in vivo:
+            valores[k] = float(vivo[k])
+    return {**c, "valores": valores, "valores_gravados": gravados, "ao_vivo": linhas_api}
 
 
 def carimbo_dados(conn) -> str:

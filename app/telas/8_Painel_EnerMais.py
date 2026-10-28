@@ -280,7 +280,7 @@ if aba_res.open or _TODAS:                                   # so' a aba aberta 
             if st.session_state.get("pn2_conf_ok"):
                 st.toast(st.session_state["pn2_conf_ok"])
                 st.success(st.session_state.pop("pn2_conf_ok"))
-            conf = P.confirmacao_ativa(conn, mes_r)
+            conf = P.confirmacao_ativa(conn, mes_r, ao_vivo=False)          # tela de confirmacao: o que foi gravado (valor MANUAL digitado)
             _padrao = "API" if "API" in _fontes else "PDF"                # padrao: API (a contabilidade confere pelo PDF so' se tiver duvida)
             if not P.confirmacao_instalada(conn):
                 st.warning("Falta executar o **SQL-10** (`sql/v2_dre_confirmacao.sql`) no Supabase para gravar a confirmação. Você já pode escolher as fontes e ver o resultado.")
