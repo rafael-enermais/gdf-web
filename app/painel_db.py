@@ -78,6 +78,9 @@ def gravar_normalizado(conn, sync_id: int, norm: dict) -> dict:
             if tit:
                 com_imposto = _tem_coluna(cur, "pnl_titulo", "imposto_titulo")          # SQL-13; sem ela grava como antes (nada quebra)
                 col_extra, upd_extra = (",imposto_titulo", ", imposto_titulo=EXCLUDED.imposto_titulo") if com_imposto else ("", "")
+                com_desc = _tem_coluna(cur, "pnl_titulo", "desconto_titulo")           # SQL-40; sem ela grava como antes
+                if com_desc:
+                    col_extra, upd_extra = col_extra + ",desconto_titulo", upd_extra + ", desconto_titulo=EXCLUDED.desconto_titulo"
                 # SQL-27: "vencimento original" = o PRIMEIRO vencimento que o app viu para o titulo (o Sienge nao expõe o original por API);
                 # na primeira gravacao copia o vencimento; nas seguintes NAO sobrescreve (prorrogacao nao esconde a divida).
                 com_base = _tem_coluna(cur, "pnl_titulo", "data_vencimento_original")
@@ -100,6 +103,7 @@ def gravar_normalizado(conn, sync_id: int, norm: dict) -> dict:
                                  t["doc_nome"], t["previsao"], t["numero_doc"], t["contraparte_id"], t["contraparte_nome"], t["data_emissao"],
                                  t["data_vencimento"], t["valor_original"], t["tipo_negocio_id"], t["tipo_negocio_nome"], t["area_id"],
                                  t["area_nome"], t["projeto_id"], t["projeto_nome"]) + ((t.get("imposto_titulo"),) if com_imposto else ())
+                                + ((t.get("desconto_titulo"),) if com_desc else ())
                                 + ((t["data_vencimento"],) if com_base else ()) for t in tit],
                                page_size=500)
             if bx:
@@ -1291,7 +1295,23 @@ def carimbo_dados(conn) -> str:
                 (SELECT coalesce(max(atualizado_em)::text,'') FROM pnl_obra_sienge),
                 (SELECT coalesce(max(id),0) FROM pnl_log))""")
             base = cur.fetchone()[0] or ""
-        return base + "|" + _carimbo_financiamento(conn) + "|" + _carimbo_credores(conn)
+        return base + "|" + _carimbo_financiamento(conn) + "|" + _carimbo_credores(conn) + "|" + _carimbo_folha_pj(conn)
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return ""
+
+
+def _carimbo_folha_pj(conn) -> str:
+    """Parte do carimbo da Folha PJ (SQL-40): muda quando entra mapa, Flash ou diretoria; vazio se a tabela ainda nao existe."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT (SELECT count(*)||'/'||coalesce(max(alterado_em)::text,'') FROM pj_colaborador)||'/'||
+                                  (SELECT count(*)||'/'||coalesce(max(importado_em)::text,'')||'/'||count(*) FILTER (WHERE ativo) FROM pj_flash)||'/'||
+                                  (SELECT count(*)||'/'||coalesce(max(alterado_em)::text,'')||'/'||count(*) FILTER (WHERE ativo) FROM pj_diretoria_credor)""")
+            return cur.fetchone()[0] or ""
     except Exception:
         try:
             conn.rollback()

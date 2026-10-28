@@ -15,6 +15,7 @@ import custos_obra_nivel as CON
 import estilo
 import diretoria_dados as DD
 import diretoria_indicadores_ui as DI
+import folha_pj_ui as FPU
 import formatacao as F
 import grupo_enermais as GE
 import historico as HIST
@@ -381,10 +382,10 @@ try:                                                         # editor ve tudo; v
     _eh_editor, _mostra_inv = _acessos(conn, usuario)
 except Exception:
     _eh_editor, _mostra_inv = False, False
-_rotulos = ["Resultado", "Obras", "Administração", "Despesas", "Pessoas", "Indicadores financeiros", "Financiamentos"] + (["Investimentos"] if _mostra_inv else [])
+_rotulos = ["Resultado", "Obras", "Administração", "Despesas", "Pessoas", "Folha PJ", "Indicadores financeiros", "Financiamentos"] + (["Investimentos"] if _mostra_inv else [])
 _abas = st.tabs(_rotulos, key="dir_abas", on_change="rerun")
-aba_res, aba_ob, aba_adm, aba_desp, aba_pes, aba_ind, aba_fin = _abas[:7]
-aba_inv = _abas[7] if _mostra_inv else None
+aba_res, aba_ob, aba_adm, aba_desp, aba_pes, aba_pj, aba_ind, aba_fin = _abas[:8]
+aba_inv = _abas[8] if _mostra_inv else None
 
 
 # ------------------------------------------------------------------ dados compartilhados entre abas (PJ e colaboradores)
@@ -1201,7 +1202,15 @@ if aba_pes.open or _TODAS:
                                "onde recebeu mais no mês.")
 
 
-# ------------------------------------------------------------------ 6) INDICADORES FINANCEIROS  e  7) FINANCIAMENTOS (so' Sienge)
+# ------------------------------------------------------------------ 6) FOLHA PJ (ao lado de Pessoas; Sienge + Flash + mapa de colaboradores)
+if aba_pj.open or _TODAS:
+    with aba_pj:
+        if mes_ini != mes:
+            _cap(f"A Folha PJ mostra sempre o mês de referência ({_rot(mes)}), não soma o período.")
+        FPU.aba_folha_pj(conn, mes, CARIMBO, _rot(mes))
+
+
+# ------------------------------------------------------------------ 7) INDICADORES FINANCEIROS  e  8) FINANCIAMENTOS (so' Sienge)
 if aba_ind.open or _TODAS:
     with aba_ind:
         DI.aba_indicadores(conn, mes_ini, mes, CARIMBO)

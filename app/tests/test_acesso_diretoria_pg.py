@@ -72,7 +72,7 @@ def test_painel_da_diretoria_com_dados_e_abas(conn):
     with patch("conexao.get_conn", return_value=conn):
         at = _app_como(conn, "diretor@empresa.com").run()
         assert not at.exception, at.exception
-        assert [t.label for t in at.tabs] == ["Resultado", "Obras", "Administração", "Despesas", "Pessoas", "Indicadores financeiros", "Financiamentos"]        # Investimentos: so' o editor (ou se liberado)
+        assert [t.label for t in at.tabs] == ["Resultado", "Obras", "Administração", "Despesas", "Pessoas", "Folha PJ", "Indicadores financeiros", "Financiamentos"]        # Investimentos: so' o editor (ou se liberado)
         assert any("Receita (base-line)" == m.label for m in at.metric)
         at.session_state["dir_todas_abas"] = True                                       # renderiza todas as abas (so' a aberta roda por padrao)
         at.run()

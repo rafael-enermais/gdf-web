@@ -48,6 +48,7 @@ CREDOR_SIENGE_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_
 DEXIE_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_dexie_memoria.sql"
 APRENDIZADO_SQL = DEXIE_SQL.parent / "v2_dexie_aprendizado.sql"
 METRICA_SQL = DEXIE_SQL.parent / "v2_metrica_registro.sql"
+FOLHA_PJ_SQL = DEXIE_SQL.parent / "v2_folha_pj.sql"
 _estado = {"dsn": None, "tentou": False}
 
 
@@ -134,6 +135,7 @@ def pg_dsn():
         cur.execute(DEXIE_SQL.read_text(encoding="utf-8"))           # SQL-31: memoria da Dexie (mensagens por usuario)
         cur.execute(APRENDIZADO_SQL.read_text(encoding="utf-8"))     # SQL-33: anotacoes da Dexie (o que ela aprendeu)
         cur.execute(METRICA_SQL.read_text(encoding="utf-8"))         # SQL-34: registro mensal das metricas do painel de metas
+        cur.execute(FOLHA_PJ_SQL.read_text(encoding="utf-8"))        # SQL-40: Folha PJ (desconto do titulo, colaboradores, Flash, diretoria)
     conn.close()
     return dsn
 
@@ -147,7 +149,7 @@ def conn(pg_dsn):
     c = psycopg2.connect(pg_dsn)
     c.autocommit = True
     with c.cursor() as cur:
-        cur.execute("TRUNCATE gdf.metrica_registro_hist, gdf.metrica_registro, gdf.metrica_ocorrencia, gdf.dexie_aprendizado, gdf.dexie_mensagem, gdf.pnl_credor_sienge, gdf.pnl_vencimento_alteracao, gdf.pnl_config, gdf.pnl_financiamento_bem, gdf.pnl_historico_painel, gdf.pnl_acesso, gdf.pnl_edicao, gdf.pnl_credor_grupo, gdf.pnl_orcamento_linha, gdf.pnl_folha_recibo, gdf.pnl_folha_depto_obra, gdf.pnl_dre_confirmacao, gdf.pnl_dre_valor, gdf.pnl_centro_grupo, gdf.pnl_log, gdf.pnl_folha_evento, gdf.pnl_projecao_linha, gdf.pnl_historico_bloco, gdf.pnl_importacao, gdf.pnl_rateio, gdf.pnl_baixa, gdf.pnl_titulo, gdf.pnl_sync, gdf.pnl_centro_custo, gdf.pnl_obra, gdf.pnl_obra_sienge, gdf.pnl_plano_conta, gdf.pnl_tipo_negocio, gdf.pnl_empresa_sienge, gdf.evento, gdf.conferencia, gdf.balancete_linha, gdf.importacao, gdf.mapa_conta, gdf.apelido, gdf.relatorio, gdf.empresa RESTART IDENTITY CASCADE")
+        cur.execute("TRUNCATE gdf.pj_flash, gdf.pj_colaborador, gdf.pj_diretoria_credor, gdf.metrica_registro_hist, gdf.metrica_registro, gdf.metrica_ocorrencia, gdf.dexie_aprendizado, gdf.dexie_mensagem, gdf.pnl_credor_sienge, gdf.pnl_vencimento_alteracao, gdf.pnl_config, gdf.pnl_financiamento_bem, gdf.pnl_historico_painel, gdf.pnl_acesso, gdf.pnl_edicao, gdf.pnl_credor_grupo, gdf.pnl_orcamento_linha, gdf.pnl_folha_recibo, gdf.pnl_folha_depto_obra, gdf.pnl_dre_confirmacao, gdf.pnl_dre_valor, gdf.pnl_centro_grupo, gdf.pnl_log, gdf.pnl_folha_evento, gdf.pnl_projecao_linha, gdf.pnl_historico_bloco, gdf.pnl_importacao, gdf.pnl_rateio, gdf.pnl_baixa, gdf.pnl_titulo, gdf.pnl_sync, gdf.pnl_centro_custo, gdf.pnl_obra, gdf.pnl_obra_sienge, gdf.pnl_plano_conta, gdf.pnl_tipo_negocio, gdf.pnl_empresa_sienge, gdf.evento, gdf.conferencia, gdf.balancete_linha, gdf.importacao, gdf.mapa_conta, gdf.apelido, gdf.relatorio, gdf.empresa RESTART IDENTITY CASCADE")
         cur.execute("SET search_path = gdf, public")
     yield c
     c.close()

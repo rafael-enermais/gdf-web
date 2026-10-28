@@ -7,6 +7,7 @@ import datetime as dt
 import pandas as pd
 import streamlit as st
 
+import folha_pj_ui
 import formatacao as F
 from fuso import agora_br
 import historico
@@ -554,6 +555,7 @@ def render(conn, usuario):
     st.markdown("**Importar**")
     up_dre(conn, usuario)
     up_folha(conn, usuario)
+    folha_pj_ui.upload_secao(conn, usuario)
     up_projecao(conn, usuario)
     up_orcamento(conn, usuario)
     up_historico(conn, usuario)
