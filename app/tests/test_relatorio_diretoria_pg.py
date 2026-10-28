@@ -318,3 +318,39 @@ def test_adm_grupos_com_totalizadoras_em_destaque_e_desvio_em_mil(conn):
         assert tipo == ("sub" if cel[0].count(".") <= 1 else "norm"), cel[0]                                          # grupo de 1o nivel em destaque, como na DRE
     ch = [e for e in _bloco(d, "adm_serie")["els"] if e.get("t") == "barras"]
     assert ch and ch[0]["fmt"] == "mil" and ch[0]["unidade"] == "R$ mil" and "R$ mil" in ch[0]["titulo"]
+
+
+def test_informacao_que_cabe_numa_pagina_nao_e_partida_titulo_tabela_e_nota_juntos():
+    """Pedido da Suellen: titulo + tabela/grafico + nota de cada informacao ficam na mesma pagina quando cabem (antes o titulo ficava no fim de uma pagina e a tabela na seguinte)."""
+    import io
+    from reportlab.pdfgen import canvas
+    RD.R._registrar_fontes()
+
+    def tab(n):
+        return {"t": "tab", "head": ["Mês", "Projeção (R$)", "Para cobrir (R$)"], "pesos": [2, 2, 2], "alin": ["l", "r", "r"],
+                "rows": [("norm", [f"Linha {i}", "14.503.163", "18.843.016"]) for i in range(n)]}
+
+    nota = {"t": "nota", "texto": "Nota da informação. " + "texto " * 25}
+    formas = [
+        [{"t": "sec", "texto": "Subtítulo"}, tab(4), nota],
+        [tab(6), nota],
+        [{"t": "barras", "labels": ["a", "b", "c"], "vals": [1.0, 2.0, 3.0], "h": 110}, nota],
+        [{"t": "kpis", "itens": [{"rot": "A", "val": "1", "sub": "x"}] * 4, "n": 4}, tab(3)],
+    ]
+    achou_salto = 0
+    for k, els in enumerate(formas):
+        for pad in range(0, 650, 13):                                # a informacao comeca em varias alturas da pagina
+            cv = canvas.Canvas(io.BytesIO(), pagesize=(RD.W, RD.H), invariant=1)
+            d = RD._Doc(cv, 99, {"mes": "2026-09"})
+            d.n = 1
+            d.pagina("Resultado")
+            d.y = RD.TOPY - pad
+            d.bloco({"key": "x", "titulo": "Informação", "els": els})
+            assert d.mapa["x"] == d.n, (k, pad, d.mapa["x"], d.n)   # comecou e terminou na mesma pagina
+            achou_salto += d.mapa["x"] > 2
+    assert achou_salto > 0                                          # alguma comecou perto do fim e foi inteira para a pagina seguinte
+    # informacao maior que uma pagina continua podendo quebrar
+    cv = canvas.Canvas(io.BytesIO(), pagesize=(RD.W, RD.H), invariant=1)
+    d = RD._Doc(cv, 99, {"mes": "2026-09"}); d.n = 1; d.pagina("Resultado")
+    d.bloco({"key": "longa", "titulo": "Longa", "els": [tab(120)]})
+    assert d.n > 2

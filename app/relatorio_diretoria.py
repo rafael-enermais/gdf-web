@@ -87,8 +87,8 @@ class _Doc:
             self.pagina(self.sec, continuacao=True)
 
     # ---- elementos
-    def sec_(self, texto: str):
-        self.garante(46)
+    def sec_(self, texto: str, prox: dict | None = None):
+        self.garante(46 + (self._h_min(prox) if prox else 0.0))
         self.y = R.secao(self.c, self.y, _clip(texto, "PB", 9.5, CW))
 
     def nota_(self, texto: str):
@@ -180,8 +180,8 @@ class _Doc:
                 return [m * CW / tot for m in mins], fs
             fs -= 0.3
 
-    def tab_(self, e: dict, reserva: float = 0.0):
-        c = self.c
+    def _prep_tab(self, e: dict) -> tuple:
+        """Larguras, fonte e linhas ja' prontas (com quebra de texto) da tabela e altura total. Serve para desenhar e para medir."""
         head, rows, pesos, alin = e["head"], e["rows"], e["pesos"], e["alin"]
         fs, rh = float(e.get("fs", 6.9)), float(e.get("rh", 12.6))
         larg, fs = self._larguras(head, rows, pesos, alin, fs)
@@ -220,6 +220,12 @@ class _Doc:
                 hh_ = rh + (4 if tipo == "sec" else 0)
             prontas.append((tipo, nova, hh_))
         total_h = head_h + sum(p_[2] for p_ in prontas) + (20 if e.get("titulo") else 0)
+        return cols, fs, rh, head_h, prontas, total_h
+
+    def tab_(self, e: dict, reserva: float = 0.0):
+        c = self.c
+        head, rows = e["head"], e["rows"]
+        cols, fs, rh, head_h, prontas, total_h = self._prep_tab(e)
         if total_h <= 210 and self.y - total_h - reserva < BOT and self.y < TOPY - 40:
             self.pagina(self.sec, continuacao=True)                  # tabela pequena nao e' partida ao meio: vai inteira para a pagina seguinte
         if e.get("titulo"):
@@ -289,7 +295,7 @@ class _Doc:
         elif t == "nota":
             self.nota_(e["texto"])
         elif t == "sec":
-            self.sec_(e["texto"])
+            self.sec_(e["texto"], prox)
 
     @staticmethod
     def _h_min(e: dict | None) -> float:
@@ -307,10 +313,38 @@ class _Doc:
             return _Doc._h_nota(e)
         return 46.0
 
+    def _h_elem(self, e: dict) -> float:
+        """Altura que o elemento ocupa inteiro na pagina (mesma conta do desenho)."""
+        t = e.get("t")
+        if t == "kpis":
+            por = max(1, e.get("n", 4))
+            w = (CW - (por - 1) * 10.0) / por
+            it = e["itens"]
+            return sum(self._kpi_altura(it[i:i + por], w)[0] + 8 for i in range(0, len(it), por)) + 2
+        if t == "barras":
+            return (22 + float(e.get("h", 100)) + 24) if e.get("vals") else 0.0
+        if t == "tab":
+            return self._prep_tab(e)[5] + 10
+        if t == "nota":
+            return self._h_nota(e) - 8 + 8
+        if t == "sec":
+            return 46.0
+        return 0.0
+
+    def _h_bloco(self, els: list) -> float:
+        """Altura do bloco inteiro: titulo + todos os elementos."""
+        try:
+            return 28.0 + sum(self._h_elem(e) for e in els)
+        except Exception:                                             # noqa: BLE001
+            return 1e9                                                # nao deu para medir: usa a regra antiga (por elemento)
+
     def bloco(self, b: dict):
         els = b["els"]
         if self.quebra and self.y < TOPY - 1:
             self.pagina(self.sec, continuacao=True)                   # quebra de pagina escolhida: cada informacao no topo de uma pagina
+        hb = self._h_bloco(els)
+        if hb <= TOPY - BOT and self.y - hb < BOT and self.y < TOPY - 1:
+            self.pagina(self.sec, continuacao=True)                   # a informacao cabe numa pagina so': nao e' partida (titulo, tabela e nota ficam juntos)
         h1 = self._h_min(els[0] if els else None) + (self._h_min(els[1]) if len(els) > 1 and els[0].get("t") == "sec" else 0.0)
         self.garante(max(92.0, 30 + h1))
         self.mapa[b["key"]] = self.n
