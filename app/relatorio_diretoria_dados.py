@@ -113,15 +113,16 @@ MODELOS = {
     "Pessoas (CLT e PJ)": [k for k in TODAS_CHAVES if k.split("_")[0] in ("pes", "pj", "clt") and k not in ("pj_docs", "clt_lista")],
 }
 PERSONALIZADO = "Personalizado"
+OBS_MAX = 2000                                      # limite do texto da observacao (por aba)
 
 
 # ------------------------------------------------------------------ formatos
 def _mi(v, sinal: bool = False) -> str:
     """R$ em milhoes (ou mil), compacto, para os cartoes (igual ao painel)."""
-    if v is None:
+    if _vazio(v):
         return "–"
     a = abs(v)
-    s = ("-" if v < 0 else ("+" if sinal and v > 0 else "")) if sinal else ("−" if v < 0 else "")
+    s = "−" if v < 0 else ("+" if sinal and v > 0 else "")
     f = lambda x, c: f"{x:,.{c}f}".replace(",", "X").replace(".", ",").replace("X", ".")          # noqa: E731
     if a >= 1e6:
         return s + "R$ " + f(a / 1e6, 2) + " mi"
@@ -130,21 +131,26 @@ def _mi(v, sinal: bool = False) -> str:
     return s + "R$ " + f(a, 0)
 
 
+def _vazio(v) -> bool:
+    """None ou NaN (o pandas troca None por NaN nas colunas numericas: sem isto o PDF imprimia 'nan')."""
+    return v is None or (isinstance(v, float) and v != v)
+
+
 def _n0(v) -> str:
-    return fnum(v, 0)
+    return "–" if _vazio(v) else fnum(v, 0)
 
 
 def _n2(v) -> str:
-    return fnum(v, 2)
+    return "–" if _vazio(v) else fnum(v, 2)
 
 
 def _z0(v) -> str:
     """Numero sem centavos; zero ou vazio vira traco."""
-    return "–" if v is None or abs(v) < 0.005 else fnum(v, 0)
+    return "–" if _vazio(v) or abs(v) < 0.005 else fnum(v, 0)
 
 
 def _pc(v, d: int = 1) -> str:
-    return _pct_fmt(v, d) if v is not None else "–"
+    return _pct_fmt(v, d) if not _vazio(v) else "–"
 
 
 def _rot(m: str) -> str:
@@ -225,6 +231,7 @@ class Base:
         self.mes_ini_g = PER.somar_meses(mes, -11)
         self.meses_g = PER.meses_entre(self.mes_ini_g, mes)
         self._m: dict = {}
+        self.blocos: list = []
 
     def memo(self, chave, fn):
         if chave not in self._m:
@@ -526,6 +533,7 @@ def b_res_receita(B: Base) -> list:
     els = [barras([_rot_curto(x["mes"]) for x in serie], [x["receita"] for x in serie], fmt="mi")]
     if any(x["fonte"].startswith("API") for x in serie):
         els.append(nota("Meses com fonte “API (a conferir)” ainda não têm DRE oficial confirmado e podem mudar quando forem conferidos."))
+    els.append(nota("Cada barra é a receita bruta da DRE do mês. A soma dos meses pode diferir da “Receita (base-line)” do bloco de Resultado, que usa o critério de comparação com o previsto."))
     return els
 
 
@@ -558,7 +566,9 @@ def _regs_obras(B: Base):
             pj_obra.setdefault(x["obra"], set()).add(x["credor"])
         nome_cheio = ob.get("nome_cheio", {})
         proprias = {l["obra"] for l in ob["linhas"] if l["obra"] != "DEM"}
-        prev_por_obra = {x["codigo"]: x for x in (proj["linhas"] if proj else [])}
+        n_proj = int((proj or {}).get("meses", 1)) if proj else 0
+        prev_ok = bool(proj) and n_proj >= n_ob                       # previsto so' vale se TODOS os meses somados tem projecao (senao compara 1 mes de previsto com o periodo todo)
+        prev_por_obra = {x["codigo"]: x for x in (proj["linhas"] if (proj and prev_ok) else [])}
         import relatorio_painel_pdf as RPP
         regs = []
         for l in ob["linhas"]:
@@ -572,7 +582,7 @@ def _regs_obras(B: Base):
                          "CLT": clt, "PJ": pj_n, "Colab.": hc, "Fat./colab.": (l["receita"] / n_ob / hc) if hc and l["obra"] != "DEM" else None,
                          "Custo/colab.": (abs(l["custo"]) / n_ob / hc) if hc and l["obra"] != "DEM" else None, "Margem": l["margem"],
                          "receita_proj": pr["receita_proj"] if pr else None})
-        return {"regs": regs, "ob": ob, "proj": proj, "n_ob": n_ob, "falt": falt, "pes": pes, "pj_obra": pj_obra, "proprias": proprias, "nome_cheio": nome_cheio}
+        return {"regs": regs, "ob": ob, "proj": proj, "prev_ok": prev_ok, "n_proj": n_proj, "n_ob": n_ob, "falt": falt, "pes": pes, "pj_obra": pj_obra, "proprias": proprias, "nome_cheio": nome_cheio}
     return B.memo("regs_obras", f)
 
 
@@ -580,10 +590,17 @@ def _sem_obras(B: Base) -> list:
     return [nota("Sem dados por obra " + ("neste mês (nenhum título emitido carregado pela API e nenhum PDF importado)." if B.um_mes else "em nenhum mês deste período."))]
 
 
-def _nota_periodo_obras(B: Base, R: dict) -> list:
-    if B.um_mes:
+def _nota_periodo_obras(B: Base, R: dict, chave: str = "") -> list:
+    """Nota do periodo das Obras: aparece uma vez so' (no 1o bloco de Obras marcado que a usa), e avisa quando o previsto nao cobre o periodo todo."""
+    usa = [k for k in ("ob_kpis", "ob_tabela") if k in B.blocos]
+    if chave and usa and chave != usa[0]:
         return []
-    return [nota(f"Soma de {R['n_ob']} {'mês' if R['n_ob'] == 1 else 'meses'} com dados por obra em {B.per_rot}." + (f" Sem dados (fora da soma): {', '.join(_rot(m) for m in R['falt'])}." if R["falt"] else "")
+    ext = []
+    if R["proj"] and not R["prev_ok"]:
+        ext = [nota(f"Previsto e desvio de BDI não aparecem: a projeção de receitas existe em {R['n_proj']} de {R['n_ob']} {'mês' if R['n_ob'] == 1 else 'meses'} somados, e comparar com o período todo seria enganoso.")]
+    if B.um_mes:
+        return ext
+    return ext + [nota(f"Soma de {R['n_ob']} {'mês' if R['n_ob'] == 1 else 'meses'} com dados por obra em {B.per_rot}." + (f" Sem dados (fora da soma): {', '.join(_rot(m) for m in R['falt'])}." if R["falt"] else "")
                  + " Colaboradores = os do mês de referência; faturamento e custo por colaborador = média mensal do período.")]
 
 
@@ -611,8 +628,8 @@ def b_ob_kpis(B: Base) -> list:
     else:
         ob, proj = R["ob"], R["proj"]
         tr, tc, tb = ob["total"]["receita"], abs(ob["total"]["custo"]), ob["total"]["bdi"]
-        rec_p = proj["receita_proj_total"] if proj else None
-        bdi_p = proj["total"]["bdi_proj"] if proj else None
+        rec_p = proj["receita_proj_total"] if (proj and R["prev_ok"]) else None
+        bdi_p = proj["total"]["bdi_proj"] if (proj and R["prev_ok"]) else None
     cus_p = (rec_p - bdi_p) if rec_p is not None and bdi_p is not None else None
     n_neg = int((main["BDI real"] < 0).sum())
     itens = [K("Receita realizada", _mi(tr), _delta(tr, rec_p) or ""), K("Custos", _mi(tc), _delta(tc, cus_p) or ""), K("BDI", _mi(tb), _delta(tb, bdi_p) or ""),
@@ -620,7 +637,7 @@ def b_ob_kpis(B: Base) -> list:
     if len(main):
         mx, mn = main.loc[main["BDI real"].idxmax()], main.loc[main["BDI real"].idxmin()]
         itens += [K("Maior BDI", str(mx["Nome"] or mx["Obra"])[:26], _mi(mx["BDI real"], True)), K("Menor BDI", str(mn["Nome"] or mn["Obra"])[:26], _mi(mn["BDI real"], True))]
-    els = _nota_periodo_obras(B, R)
+    els = _nota_periodo_obras(B, R, "ob_kpis")
     if B.filtra_obra:
         els.append(sec(f"Seleção: {len(B.obras)} obra(s) · {', '.join(B.obras[:6])}{'…' if len(B.obras) > 6 else ''}"))
     els.append(kpis(itens, 3))
@@ -634,14 +651,14 @@ def b_ob_tabela(B: Base) -> list:
     sel = _selecao(B, R)
     if not len(sel):
         return [nota("Nenhuma das obras escolhidas tem movimento no período.")]
-    rows = [("norm", [str(r["Obra"]), str(r["Nome"])[:34], _n0(r["Receita"]), _n0(r["Custos"]), _z0(r["BDI previsto"]) if r["BDI previsto"] is not None else "–", _n0(r["BDI real"]),
-                      _pc(r["Desvio BDI"]), _pc(r["Margem"]), str(int(r["Colab."])), _z0(r["Fat./colab."]) if pd.notna(r["Fat./colab."]) else "–",
-                      _z0(r["Custo/colab."]) if pd.notna(r["Custo/colab."]) else "–"]) for _, r in sel.iterrows()]
+    rows = [("norm", [str(r["Obra"]), str(r["Nome"])[:34], _n0(r["Receita"]), _n0(r["Custos"]), _z0(r["BDI previsto"]), _n0(r["BDI real"]),
+                      _pc(r["Desvio BDI"]), _pc(r["Margem"]), str(int(r["Colab."])), _z0(r["Fat./colab."]),
+                      _z0(r["Custo/colab."])]) for _, r in sel.iterrows()]
     tr, tc, tb = float(sel["Receita"].sum()), float(sel["Custos"].sum()), float(sel["BDI real"].sum())
     bp = sel["BDI previsto"].dropna()
     rows.append(("tot", ["", "Total" + (" da seleção" if B.filtra_obra else ""), _n0(tr), _n0(tc), _n0(float(bp.sum())) if len(bp) else "–", _n0(tb), "", _pc(tb / tr) if abs(tr) > 0.005 else "–",
                          str(int(sel["Colab."].sum())), "", ""]))
-    return _nota_periodo_obras(B, R) + [tab(["Obra", "Nome", "Receita", "Custos", "BDI previsto", "BDI real", "Desvio BDI", "Margem", "Colab.", "Fat./colab.", "Custo/colab."],
+    return _nota_periodo_obras(B, R, "ob_tabela") + [tab(["Obra", "Nome", "Receita", "Custos", "BDI previsto", "BDI real", "Desvio BDI", "Margem", "Colab.", "Fat./colab.", "Custo/colab."],
                                             rows, [0.55, 2.3, 1.15, 1.15, 1.05, 1.1, 0.8, 0.8, 0.6, 1.0, 1.0], ["l", "l"] + ["r"] * 9, fs=6.2, rh=12.4),
                                         nota("Valores em R$ (sem centavos). Previsto = projeção de receitas do mês; obras sem projeção não têm BDI previsto. Colaboradores = CLT da folha do mês + PJ alocado na obra onde mais recebeu em “Salários PJ”.")]
 
@@ -651,7 +668,7 @@ def b_ob_detalhe(B: Base) -> list:
     if not R:
         return _sem_obras(B)
     if not B.filtra_obra:
-        return [nota("Este detalhe aparece quando há obras específicas nos filtros do relatório (como ao marcar linhas na tabela de obras).")]
+        return []                                                     # so' faz sentido com obras escolhidas: sem filtro o bloco some do relatorio
     sel = _selecao(B, R)
     if not len(sel):
         return [nota("Nenhuma das obras escolhidas tem movimento no período.")]
@@ -1063,10 +1080,10 @@ def b_pj_cards(B: Base) -> list:
         return r
     tot = FP.somar(pes)
     cards = FP.cards_empresas(pes)
-    itens = [K("Total PJ", _mi(tot["custo_total"]), f"{tot['n']} colaboradores · pago {_mi(tot['pago'])} · a pagar {_mi(tot['a_pagar'])}", dark=True)]
+    itens = [K("Total PJ", _mi(tot["custo_total"]), f"{_n0(tot['n'])} colaboradores · pago {_mi(tot['pago'])} · a pagar {_mi(tot['a_pagar'])}", dark=True)]
     for c in cards:
         itens.append(K(FP.nome_empresa_curto(c["empresa"]), _mi(c["total"]["custo_total"]),
-                       f"{c['n']} colab. · diretoria {_mi(c['diretoria']['custo_total'])} · pago {_mi(c['total']['pago'])} · a pagar {_mi(c['total']['a_pagar'])}"))
+                       f"{_n0(c['n'])} colab. · diretoria {_mi(c['diretoria']['custo_total'])} · pago {_mi(c['total']['pago'])} · a pagar {_mi(c['total']['a_pagar'])}"))
     els = [sec(f"Custo PJ · {_rot(B.mes)} (honorários + premiações + multa + ajuda de custo + vale alimentação − descontos)")]
     if _pj_filtros_txt(B):
         els.append(nota(_pj_filtros_txt(B)))
@@ -1084,7 +1101,7 @@ def b_pj_kpis(B: Base) -> list:
         return r
     t = FP.somar(pes)
     return [kpis([K("Honorários", _mi(t["honorarios"])), K("Premiações", _mi(t["premiacao"])), K("Ajuda de custo (Flash)", _mi(t["ajuda_custo"])), K("Vale alimentação (Flash)", _mi(t["alimentacao"])),
-                  K("Multa contratual", _mi(t["multa"])), K("Descontos", _mi(t["desconto"])), K("Documentos", f"{t['n_docs']:,}".replace(",", "."))], 4),
+                  K("Multa contratual", _mi(t["multa"])), K("Descontos", _mi(t["desconto"])), K("Documentos", _n0(t['n_docs']))], 4),
             nota("Descontos aparecem com sinal negativo porque reduzem o custo (o imposto retido não entra como desconto: fica no custo). Flash = premiação no cartão (ajuda de custo) e refeição/alimentação (vale alimentação).")]
 
 
@@ -1096,7 +1113,7 @@ def b_pj_top_obras(B: Base) -> list:
     top = FP.top_obras(pes)
     if not top:
         return [nota("Sem obras para destacar (só sede, diretoria ou obras com vários centros).")]
-    return [kpis([K(o["obra"][:42], _mi(o["custo_total"]), f"{o['n']} colaboradores") for o in top], 3), nota("Sem a diretoria e sem os grupos que não são obra (sede/administração e “vários centros”).")]
+    return [kpis([K(o["obra"][:42], _mi(o["custo_total"]), f"{_n0(o['n'])} colaboradores") for o in top], 3), nota("Sem a diretoria e sem os grupos que não são obra (sede/administração e “vários centros”).")]
 
 
 def b_pj_obras(B: Base) -> list:
@@ -1120,13 +1137,22 @@ def b_pj_obras(B: Base) -> list:
             nota("Valores em R$ (sem centavos). Benefícios Flash = ajuda de custo + vale alimentação. Pago e a pagar são líquidos de desconto.")] + ([nota(_pj_filtros_txt(B))] if _pj_filtros_txt(B) else [])
 
 
+def _emp_abrev(emp) -> str:
+    """'ENERMAIS ENERGIA LTDA' -> 'Energia'; 'SMG SOLUÇÕES LTDA' -> 'SMG Soluções' (cabe na coluna sem cortar)."""
+    n = FP.nome_empresa_curto(emp)
+    if not n:
+        return "–"
+    n = n[len("ENERMAIS "):] if n.upper().startswith("ENERMAIS ") else n
+    return " ".join(w if w.upper() == "SMG" else w.capitalize() for w in n.split())
+
+
 def b_pj_colab(B: Base) -> list:
     d, pes = _pj_filtrada(B)
     r = _sem_pj(B, d, pes)
     if r:
         return r
     lista = FP.agrupar_diretoria(pes)
-    rows = [("norm", [(p["nome"] + (" · novo" if p["novo"] else ""))[:34], (p["funcao"] or "")[:26], (FP.nome_empresa_curto(p["empresa"]) if p["empresa"] else "–")[:14], (p["centro"] or "")[:30],
+    rows = [("norm", [(p["nome"] + (" · novo" if p["novo"] else ""))[:34], (p["funcao"] or "")[:26], _emp_abrev(p["empresa"]), (p["centro"] or "")[:30],
                       _z0(p["honorarios"]), _z0(p["premiacao"]), _z0(p["ajuda_custo"] + p["alimentacao"]), _z0(p["multa"]), _z0(p["desconto"]), _n0(p["custo_total"]), _z0(p["pago"]), _z0(p["a_pagar"])])
             for p in lista]
     t = FP.somar(pes)
@@ -1134,7 +1160,7 @@ def b_pj_colab(B: Base) -> list:
                          _n0(t["pago"]), _n0(t["a_pagar"])]))
     return [tab(["Colaborador", "Função", "Empresa", "Centro de custo", "Honorários", "Prem.", "Flash", "Multa", "Desc.", "Custo total", "Pago", "A pagar"], rows,
                 [2.1, 1.5, 0.9, 1.9, 1.0, 0.8, 0.8, 0.7, 0.7, 1.0, 0.9, 0.9], ["l", "l", "l", "l"] + ["r"] * 8, fs=5.6, rh=11.2),
-            nota("Valores em R$ (sem centavos). “novo” = entrou na folha neste mês. A diretoria aparece numa linha só (“Demais credores - diretoria”), sempre por último. Flash = ajuda de custo + vale alimentação.")] \
+            nota("Valores em R$ (sem centavos). “novo” = entrou na folha neste mês. A diretoria aparece numa linha só (“Demais credores - diretoria”), sempre por último. Flash = ajuda de custo + vale alimentação. Empresa = nome depois de “ENERMAIS” (ex.: Energia = ENERMAIS ENERGIA).")] \
         + ([nota(_pj_filtros_txt(B))] if _pj_filtros_txt(B) else [])
 
 
@@ -1199,6 +1225,8 @@ def b_clt_top_obras(B: Base) -> list:
 
 
 def b_clt_selecao(B: Base) -> list:
+    if not B.filtra_obra:
+        return []                                                     # sem obras escolhidas repetiria os cartoes da folha consolidada
     r = _sem_clt(B)
     if r:
         return r
@@ -1271,18 +1299,18 @@ def _ind(B: Base) -> dict:
 def b_ind_prazos(B: Base) -> list:
     ind = _ind(B)
     pmr, pmp = ind["pmr"], ind["pmp"]
-    return [kpis([K("PMR simples", _dias(pmr["simples"]), f"{pmr['n']} títulos a receber"), K("PMR ponderado", _dias(pmr["ponderado"]), "pelo valor do título"),
-                  K("PMP simples", _dias(pmp["simples"]), f"{pmp['n']} títulos a pagar"), K("PMP ponderado", _dias(pmp["ponderado"]), "pelo valor do título")], 4),
+    return [kpis([K("PMR simples", _dias(pmr["simples"]), f"{_n0(pmr['n'])} títulos a receber"), K("PMR ponderado", _dias(pmr["ponderado"]), "pelo valor do título"),
+                  K("PMP simples", _dias(pmp["simples"]), f"{_n0(pmp['n'])} títulos a pagar"), K("PMP ponderado", _dias(pmp["ponderado"]), "pelo valor do título")], 4),
             kpis([K("Ciclo financeiro · simples (PMR − PMP)", _dias(ind["ciclo_simples"]), "negativo = recebe antes de pagar"),
                   K("Ciclo financeiro · ponderado (PMR − PMP)", _dias(ind["ciclo_ponderado"]), "negativo = recebe antes de pagar")], 2),
             nota(f"Período: {B.per_rot}. Prazo = dias entre a emissão e o vencimento dos títulos EMITIDOS no período, sem documentos de previsão nem títulos desfeitos. Só fornecedores e clientes de verdade: "
-                 f"ficaram de fora {pmr['n_fora']} títulos a receber e {pmp['n_fora']} a pagar (sem credor, banco/caixa, financiamentos e empresas do grupo ENERMAIS).")]
+                 f"ficaram de fora {_n0(pmr['n_fora'])} títulos a receber e {_n0(pmp['n_fora'])} a pagar (sem credor, banco/caixa, financiamentos e empresas do grupo ENERMAIS).")]
 
 
 def b_ind_giro(B: Base) -> list:
     ind = _ind(B)
     g = ind["gasto"]
-    return [kpis([K(f"Gasto do período · {B.per_rot}", _mi(g["total"]), f"{g['dias']} dias"), K("Gasto diário", _mi(g["diario"]), "gasto do período ÷ dias"),
+    return [kpis([K("Gasto do período", _mi(g["total"]), f"{_n0(g['dias'])} dias · {B.per_rot}"), K("Gasto diário", _mi(g["diario"]), "gasto do período ÷ dias"),
                   K("Necessidade · ponderado", _mi(ind["ncg_ponderado"]), (f"{_n2(g['diario'])} × {_dias(ind['ciclo_ponderado'])}") if ind["ciclo_ponderado"] is not None else ""),
                   K("Necessidade · simples", _mi(ind["ncg_simples"]), (f"{_n2(g['diario'])} × {_dias(ind['ciclo_simples'])}") if ind["ciclo_simples"] is not None else "")], 4),
             nota("Gasto = pagamentos feitos no período, sem previsão e sem transferências entre contas. Necessidade = gasto diário × ciclo financeiro; só aparece valor quando o ciclo é positivo (paga antes de receber).")]
@@ -1291,13 +1319,13 @@ def b_ind_giro(B: Base) -> list:
 def b_ind_inad(B: Base) -> list:
     venc_ate, pago_ate = I.data_posicao(B.mes, B.hoje, ate_hoje=True)
     ina = B.memo("inad", lambda: I.inadimplencia(B.conn, venc_ate, pago_ate, False, completo=False))
-    els = [kpis([K("Vencido a receber", _mi(ina["receber"]["total"]), f"{ina['receber']['n']} títulos"), K("Vencido a pagar", _mi(ina["pagar"]["total"]), f"{ina['pagar']['n']} títulos")], 2),
+    els = [kpis([K("Vencido a receber", _mi(ina["receber"]["total"]), f"{_n0(ina['receber']['n'])} títulos"), K("Vencido a pagar", _mi(ina["pagar"]["total"]), f"{_n0(ina['pagar']['n'])} títulos")], 2),
            nota(f"Posição: vencidos até {_data(venc_ate)} e não pagos até {_data(pago_ate)}. A receber sem clientes do grupo ENERMAIS. "
                 + ("Vencimento ORIGINAL (o primeiro vencimento registrado; prorrogação não esconde a dívida)." if ina["usa_vencimento_original"] else "Vencimento atual do título."))]
     for chave, rot, quem in (("receber", "a receber", "Cliente"), ("pagar", "a pagar", "Credor")):
-        els.append(tab(["Faixa de atraso", "Títulos", "Valor (R$)"], [("norm", [f["faixa"], str(f["n"]), _n0(f["valor"])]) for f in ina[chave]["faixas"]], [2.2, 0.8, 1.4], titulo=f"Por faixa de atraso · {rot}"))
+        els.append(tab(["Faixa de atraso", "Títulos", "Valor (R$)"], [("norm", [f["faixa"], _n0(f["n"]), _n0(f["valor"])]) for f in ina[chave]["faixas"]], [2.2, 0.8, 1.4], titulo=f"Por faixa de atraso · {rot}"))
         if ina[chave]["top"]:
-            els.append(tab([quem, "Títulos", "Vencido há mais tempo", "Valor (R$)"], [("norm", [x["nome"][:44], str(x["n"]), _data(x["mais_antigo"]), _n0(x["valor"])]) for x in ina[chave]["top"]],
+            els.append(tab([quem, "Títulos", "Vencido há mais tempo", "Valor (R$)"], [("norm", [x["nome"][:44], _n0(x["n"]), _data(x["mais_antigo"]), _n0(x["valor"])]) for x in ina[chave]["top"]],
                            [3.4, 0.7, 1.4, 1.3], ["l", "r", "r", "r"], titulo=f"Maiores · {rot}"))
     return els
 
@@ -1324,8 +1352,13 @@ def _fin_kpis(B: Base, grupo: str) -> list:
         return [nota(f"Nenhum {nome} em aberto na posição de {_data(B.hoje)}.")]
     return [sec(f"Posição de hoje ({_data(B.hoje)}): o que ainda falta pagar; não muda com o período do painel."),
             kpis([K("Saldo devedor", _mi(f["saldo_devedor"]), "demais planos 2.05 (investimentos)" if inv else "capital de giro + financiamentos"), K("Juros a pagar", _mi(f["juros_totais"]), "2.03.02"),
-                  K("Desembolso restante", _mi(f["desembolso_total"]), "principal + juros"), K("Contratos ativos", f"{f['contratos']}", f"{f['documentos']} documentos lançados"),
+                  K("Desembolso restante", _mi(f["desembolso_total"]), "principal + juros"), K("Contratos ativos", _n0(f['contratos']), f"{_n0(f['documentos'])} documentos lançados"),
                   K("Custo médio", _pc(f["custo_medio"]), f["custo_medio_origem"] or ""), K("Encerramento mais longo", f["encerramento_mais_longo"].strftime("%m/%Y") if f["encerramento_mais_longo"] else "–", "última parcela em aberto")], 3)]
+
+
+def _mes_curto(m) -> str:
+    m = str(m)
+    return f"{m[5:7]}/{m[2:4]}" if len(m) >= 7 and m[4] == "-" else m
 
 
 def _fin_curva(B: Base, grupo: str) -> list:
@@ -1334,8 +1367,16 @@ def _fin_curva(B: Base, grupo: str) -> list:
     if not cur:
         return [nota("Sem parcelas em aberto para a curva.")]
     tot = [x["principal"] + x["juros"] for x in cur]
-    return [barras([str(x["mes"])[-5:] if len(str(x["mes"])) > 7 else str(x["mes"]) for x in cur], tot, fmt="mi", titulo="Desembolso por mês de vencimento (principal + juros)", h=100),
-            tab(["Mês", "Principal (R$)", "Juros (R$)", "Total (R$)"], [("norm", [str(x["mes"]), _n0(x["principal"]), _n0(x["juros"]), _n0(x["principal"] + x["juros"])]) for x in cur], [1, 1.5, 1.3, 1.5], fs=6.4, rh=11.6)]
+    por_ano: dict = {}
+    for x in cur:
+        a = por_ano.setdefault(str(x["mes"])[:4], [0.0, 0.0])
+        a[0] += x["principal"]
+        a[1] += x["juros"]
+    rows = [("norm", [ano, _n0(v[0]), _n0(v[1]), _n0(v[0] + v[1])]) for ano, v in sorted(por_ano.items())]
+    rows.append(("tot", ["Total", _n0(sum(v[0] for v in por_ano.values())), _n0(sum(v[1] for v in por_ano.values())), _n0(sum(tot))]))
+    return [barras([_mes_curto(x["mes"]) for x in cur], tot, fmt="mil", unidade="R$ mil", titulo="Desembolso por mês de vencimento (principal + juros)", h=100),
+            tab(["Ano de vencimento", "Principal (R$)", "Juros (R$)", "Total (R$)"], rows, [1.2, 1.5, 1.3, 1.5], titulo="Resumo por ano"),
+            nota("Valores das parcelas ainda não pagas, por mês de vencimento. O detalhe mês a mês está na aba Financiamentos do painel.")]
 
 
 def _fin_categoria(B: Base, grupo: str) -> list:
@@ -1402,13 +1443,15 @@ def texto_filtros(modo: str, mes_ini: str, mes: str, escopo: dict | None, nomes_
     return out
 
 
-def montar(conn, mes_ini: str, mes: str, blocos, modo: str = PER.ANO, escopo: dict | None = None, ctx: dict | None = None, usuario: str = "", mostra_inv: bool = True, hoje=None) -> dict:
-    """Calcula so' os blocos marcados. Devolve {'meta', 'abas': [{'aba','rotulo','blocos':[{'key','titulo','els'}]}]} na ordem do painel; bloco que falha vira aviso."""
+def montar(conn, mes_ini: str, mes: str, blocos, modo: str = PER.ANO, escopo: dict | None = None, ctx: dict | None = None, usuario: str = "", mostra_inv: bool = True, hoje=None, observacoes: dict | None = None) -> dict:
+    """Calcula so' os blocos marcados. `observacoes` = {aba: texto livre} impresso numa caixa "Observação" no fim da aba (so' se a aba tem alguma informacao no relatorio; texto vazio = nada). Devolve {'meta', 'abas': [{'aba','rotulo','blocos':[{'key','titulo','els'}]}]} na ordem do painel; bloco que falha vira aviso."""
     escolhidos = [k for k in TODAS_CHAVES if k in set(blocos or ())]
     if not mostra_inv:
         escolhidos = [k for k in escolhidos if not k.startswith("inv_")]
     B = Base(conn, mes_ini, mes, modo, escopo, ctx, hoje)
+    B.blocos = list(escolhidos)
     abas = []
+    n_ok = 0
     for a, rot, itens in CATALOGO:
         out = []
         for k, _r, _p, _o, titulo in itens:
@@ -1422,13 +1465,17 @@ def montar(conn, mes_ini: str, mes: str, blocos, modo: str = PER.ANO, escopo: di
                 except Exception:                                       # noqa: BLE001
                     pass
                 els = [nota(f"Esta informação não pôde ser montada ({type(exc).__name__}). Os dados continuam na tela do painel.")]
+            if not els:                                                  # bloco que nao se aplica (ex.: detalhe de obras sem obra escolhida) some, sem aviso
+                continue
             if B.filtra_obra and not BLOCOS_INFO[k]["obra"]:
                 els = els + [nota("Esta informação é do grupo todo: não segue o filtro de obras.")]
             out.append({"key": k, "titulo": titulo, "els": els})
+            n_ok += 1
         if out:
-            abas.append({"aba": a, "rotulo": rot, "blocos": out})
+            obs = str((observacoes or {}).get(a) or "").replace("\r", "").strip()[:OBS_MAX]
+            abas.append({"aba": a, "rotulo": rot, "blocos": out, **({"obs": obs} if obs else {})})
     meta = {"mes": mes, "mes_ini": mes_ini, "modo": modo, "per_rot": PER.rotulo(mes_ini, mes), "gerado_em": agora_br().strftime("%d/%m/%Y %H:%M"), "usuario": usuario,
-            "filtros": texto_filtros(modo, mes_ini, mes, escopo, B.nomes_obras() if B.filtra_obra else None), "n_blocos": len(escolhidos)}
+            "filtros": texto_filtros(modo, mes_ini, mes, escopo, B.nomes_obras() if B.filtra_obra else None), "n_blocos": n_ok}
     return {"meta": meta, "abas": abas}
 
 

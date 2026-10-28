@@ -14,6 +14,7 @@ import relatorio_diretoria_dados as RDD
 
 _P = "rel_k_"                                           # chave das caixinhas de cada informacao
 _A = "rel_a_"                                           # chave da caixinha "marcar a aba toda"
+_O = "rel_o_"                                           # chave da caixa de observacao de cada aba
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -48,8 +49,8 @@ def _sincroniza_aba(aba: str) -> None:
     st.session_state[_A + aba] = all(st.session_state.get(_P + k, False) for k, *_ in RDD.ABAS[aba][1])
 
 
-def _assinatura(blocos: list, obras: list, empresas: list, situacoes: list, mes_ini: str, mes: str, modo: str) -> tuple:
-    return (tuple(blocos), tuple(obras), tuple(empresas), tuple(situacoes), mes_ini, mes, modo)
+def _assinatura(blocos: list, obras: list, empresas: list, situacoes: list, mes_ini: str, mes: str, modo: str, obs: dict | None = None) -> tuple:
+    return (tuple(blocos), tuple(obras), tuple(empresas), tuple(situacoes), mes_ini, mes, modo, tuple(sorted((obs or {}).items())))
 
 
 def _nome_arquivo(mes: str, obras: list) -> str:
@@ -59,8 +60,10 @@ def _nome_arquivo(mes: str, obras: list) -> str:
     return base + ".pdf"
 
 
-def secao_relatorio(conn, mes_ini: str, mes: str, modo_per: str, ctx: dict, mostra_inv: bool, usuario, carimbo: str) -> None:
-    """Quadro recolhido 'Gerar relatório em PDF' (fica acima das abas do painel)."""
+def secao_relatorio(conn, mes_ini: str, mes: str, modo_per: str, ctx: dict, mostra_inv: bool, usuario, carimbo: str, eh_editor: bool = False) -> None:
+    """Quadro recolhido 'Gerar relatório em PDF' (fica acima das abas do painel). So' para o EDITOR: o visualizador (diretoria) so' ve os paineis."""
+    if not eh_editor:
+        return
     S = st.session_state
     for k in RDD.TODAS_CHAVES:                                     # primeira vez: o padrao (completo, sem as listas longas)
         S.setdefault(_P + k, k in RDD.PADRAO)
@@ -91,14 +94,18 @@ def secao_relatorio(conn, mes_ini: str, mes: str, modo_per: str, ctx: dict, most
                 for k, rotulo, _padrao, segue_obra, _t in itens:
                     st.checkbox(rotulo, key=_P + k, on_change=_sincroniza_aba, args=(a,),
                                 help=("Segue o filtro de obras." if segue_obra else "Do grupo todo (não muda com o filtro de obras)."))
+                st.text_area(f"Observação no rodapé de {rot} (opcional)", key=_O + a, height=84, max_chars=RDD.OBS_MAX, placeholder="Vazio = nada é impresso.",
+                             help="Texto livre que entra numa caixa “Observação” no fim desta aba do PDF. Só aparece se a aba tiver alguma informação marcada. Fica só nesta sessão.")
         blocos = [k for a, _r, itens in abas for k, *_ in itens if S.get(_P + k)]
-        sig = _assinatura(blocos, obras, empresas, situacoes, mes_ini, mes, modo_per)
+        com_blocos = {a for a, _r, itens in abas if any(S.get(_P + k) for k, *_ in itens)}
+        obs = {a: str(S.get(_O + a) or "").strip() for a, *_ in abas if a in com_blocos and str(S.get(_O + a) or "").strip()}
+        sig = _assinatura(blocos, obras, empresas, situacoes, mes_ini, mes, modo_per, obs)
         c1, c2 = st.columns([1, 2], vertical_alignment="center")
         gerar = c1.button("Gerar relatório", key="rel_gerar", type="primary", disabled=not blocos)
         c2.caption(f"{len(blocos)} informação(ões) marcada(s) · período {mes_ini[5:]}/{mes_ini[:4]} a {mes[5:]}/{mes[:4]} · " + (f"{len(obras)} obra(s)" if obras else "todas as obras"))
         if gerar:
             with st.spinner("Montando o relatório…"):
-                dados = RDD.montar(conn, mes_ini, mes, blocos, modo_per, {"obras": obras, "empresas": empresas, "situacoes": situacoes}, ctx, str(usuario or ""), mostra_inv)
+                dados = RDD.montar(conn, mes_ini, mes, blocos, modo_per, {"obras": obras, "empresas": empresas, "situacoes": situacoes}, ctx, str(usuario or ""), mostra_inv, observacoes=obs)
                 S["rel_pdf"] = {"bytes": RD.gerar_pdf(dados), "sig": sig, "nome": _nome_arquivo(mes, obras), "n": dados["meta"]["n_blocos"]}
         pdf = S.get("rel_pdf")
         if pdf and pdf["sig"] == sig:

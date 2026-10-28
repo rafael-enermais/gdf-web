@@ -98,7 +98,7 @@ def test_montar_todas_as_informacoes_nenhuma_quebra_e_ordem_do_painel(conn):
     d = RDD.montar(conn, "2026-01", "2026-09", RDD.TODAS_CHAVES, PER.ANO, None, None, "teste@x")
     assert [a["aba"] for a in d["abas"]] == ["res", "ob", "adm", "desp", "pes", "pj", "clt", "ind", "fin", "inv"]
     assert not any("não pôde ser montada" in t for t in _notas(d)), [t for t in _notas(d) if "não pôde" in t]
-    assert d["meta"]["n_blocos"] == len(RDD.TODAS_CHAVES) and d["meta"]["per_rot"] == PER.rotulo("2026-01", "2026-09")
+    assert d["meta"]["n_blocos"] == len(RDD.TODAS_CHAVES) - 2 and d["meta"]["per_rot"] == PER.rotulo("2026-01", "2026-09")
     assert any("todas (geral)" in f for f in d["meta"]["filtros"])
     tab_obras = _tabelas(_bloco(d, "ob_tabela"))[0]
     assert [r[1][0] for r in tab_obras["rows"]][:2] == ["103", "DEM"] and tab_obras["rows"][-1][0] == "tot"        # obra 103 + demais obras + total
@@ -127,7 +127,7 @@ def test_filtro_de_obra_restringe_as_informacoes_com_filtro_e_avisa_nas_do_grupo
     assert not any("do grupo todo" in e.get("texto", "") for e in _bloco(d, "ob_tabela")["els"])
     assert any("103" in f for f in d["meta"]["filtros"])
     geral = RDD.montar(conn, "2026-01", "2026-09", ["ob_detalhe"], PER.ANO, None, None, "")
-    assert "obras específicas" in _bloco(geral, "ob_detalhe")["els"][0]["texto"]
+    assert geral["abas"] == [] and geral["meta"]["n_blocos"] == 0                                                   # sem obra escolhida o detalhe some (nao imprime aviso)
     nenhuma = RDD.montar(conn, "2026-01", "2026-09", ["ob_tabela", "ob_prejuizo"], PER.ANO, {"obras": ["999"]}, None, "")
     assert any("Nenhuma das obras escolhidas" in t for t in _notas(nenhuma))
 
@@ -213,6 +213,79 @@ def test_botao_do_relatorio_no_painel_modelos_filtros_e_download(conn):
             at.checkbox(key="rel_k_" + k).uncheck()
         at.run()
         assert at.button(key="rel_gerar").disabled
-        v = _painel(conn, "diretor@empresa.com").run()                                                                                           # visualizador sem Investimentos: caixinhas de Investimentos nao aparecem
+        v = _painel(conn, "diretor@empresa.com").run()                                                                                           # visualizador: o gerador NAO existe (so' o painel)
         assert not v.exception, v.exception
-        assert not [c for c in v.checkbox if c.key and c.key.startswith("rel_k_inv_")] and [c for c in v.checkbox if c.key == "rel_k_pj_cards"]
+        assert not any(e.label.startswith("Gerar relatório em PDF") for e in v.expander)
+        assert not [c for c in v.checkbox if c.key and c.key.startswith(("rel_k_", "rel_a_"))] and not [t for t in v.text_area if t.key and t.key.startswith("rel_o_")]
+        assert "rel_gerar" not in [b.key for b in v.button]
+        assert [t.label for t in v.tabs][:2] == ["Resultado", "Obras"]                                                                         # as abas do painel continuam normais
+
+
+def test_observacao_por_aba_so_entra_no_pdf_se_escrita_e_com_aba_marcada(conn):
+    _cenario_rico(conn)
+    txt = "Rodapé do CLT: valores sujeitos a conferência.\nSegunda linha da observação."
+    d = RDD.montar(conn, "2026-01", "2026-09", ["clt_cards", "res_dre"], PER.ANO, None, None, "", observacoes={"clt": txt, "pj": "não deve entrar (aba sem informação)", "res": "   "})
+    assert {a["aba"]: a.get("obs") for a in d["abas"]} == {"res": None, "clt": txt}                                       # vazio ou aba nao marcada: nada
+    sem = RDD.montar(conn, "2026-01", "2026-09", ["clt_cards"], PER.ANO, None, None, "")
+    assert "obs" not in sem["abas"][0]
+    longa = RDD.montar(conn, "2026-01", "2026-09", ["clt_cards"], PER.ANO, None, None, "", observacoes={"clt": "x" * 5000})["abas"][0]["obs"]
+    assert len(longa) == RDD.OBS_MAX
+    if not shutil.which("pdftotext"):
+        pytest.skip("pdftotext indisponivel")
+    t_com, t_sem = _texto(RD.gerar_pdf(d)), _texto(RD.gerar_pdf(sem))
+    assert "OBSERVAÇÃO" in t_com and "Rodapé do CLT: valores sujeitos a conferência." in t_com and "Segunda linha da observação." in t_com
+    assert "não deve entrar" not in t_com and "OBSERVAÇÃO" not in t_sem                                               # sem texto, o relatorio continua igual
+
+
+def test_observacao_muito_longa_quebra_de_pagina_sem_perder_texto(conn):
+    _cenario_rico(conn)
+    if not shutil.which("pdftotext"):
+        pytest.skip("pdftotext indisponivel")
+    linhas = "\n".join(f"Linha {i:03d} da observação longa." for i in range(1, 56))
+    t = _texto(RD.gerar_pdf(RDD.montar(conn, "2026-01", "2026-09", ["res_dre"], PER.ANO, None, None, "", observacoes={"res": linhas})))
+    assert "Linha 001 da observação longa." in t and "Linha 055 da observação longa." in t
+
+
+def test_observacao_na_tela_muda_a_assinatura_e_vai_para_o_pdf(conn):
+    _cenario_rico(conn)
+    with patch("conexao.get_conn", return_value=conn):
+        at = _painel(conn).run()
+        at.radio(key="rel_modelo").set_value("Só CLT").run()
+        at.button(key="rel_gerar").click().run()
+        assert any("Relatório pronto" in s.value for s in at.success)
+        at.text_area(key="rel_o_clt").set_value("Observação da Suellen para o CLT").run()
+        assert not any("Relatório pronto" in s.value for s in at.success) and any("mudou desde o último relatório" in i.value for i in at.info)
+        at.text_area(key="rel_o_pj").set_value("aba PJ sem informação marcada").run()                                 # aba sem nada marcado: nao conta
+        at.button(key="rel_gerar").click().run()
+        assert not at.exception, at.exception
+        assert any("Relatório pronto" in s.value for s in at.success)
+        if shutil.which("pdftotext"):
+            t = _texto(at.session_state["rel_pdf"]["bytes"])
+            assert "Observação da Suellen para o CLT" in t and "aba PJ sem informação marcada" not in t
+
+
+def test_relatorio_sem_nan_sem_hifen_de_sinal_e_previsto_so_quando_cobre_o_periodo(conn):
+    _cenario_rico(conn)
+    d = RDD.montar(conn, "2026-01", "2026-09", RDD.TODAS_CHAVES, PER.ANO, None, None, "")
+    cru = str([(b["key"], b["els"]) for a in d["abas"] for b in a["blocos"]])
+    import re
+    assert not re.search(r"\bnan%?\b", cru, flags=re.I), "nan no relatorio"
+    assert "'-R$" not in cru and "'+-" not in cru                                                                       # sinal sempre "−" (nunca hifen ASCII)
+    R = RDD._regs_obras(RDD.Base(conn, "2026-01", "2026-09", PER.ANO, None, None))
+    if R["proj"] and R["n_proj"] < R["n_ob"]:                                                                         # projecao so' em parte dos meses: sem previsto/desvio enganosos
+        assert not R["prev_ok"] and all(r["BDI previsto"] is None for r in R["regs"])
+        assert any("Previsto e desvio de BDI não aparecem" in t for t in _notas(d))
+    assert _notas(d).count([t for t in _notas(d) if t.startswith("Soma de ")][0]) == 1                                  # a nota do periodo de Obras aparece uma vez so'
+
+
+def test_colunas_numericas_nunca_sao_cortadas_e_titulo_nao_fica_solto():
+    from reportlab.pdfbase import pdfmetrics
+    R_ = RD._Doc
+    head = ["Nome", "Valor", "Total"]
+    rows = [("norm", ["Fulano de Tal", "2.370.612", "9.999.999"]), ("tot", ["Total · 3 linhas", "12.345.678", "−9.412.001"])]
+    larg, fs = R_._larguras(head, rows, [6, 0.5, 0.5], ["l", "r", "r"], 6.9)
+    assert abs(sum(larg) - RD.CW) < 0.5
+    for j in (1, 2):
+        for tipo, cel in rows:
+            assert pdfmetrics.stringWidth(cel[j], "PB" if tipo == "tot" else "P", fs + (0.2 if tipo == "tot" else 0)) + 10 <= larg[j] + 0.01, (j, cel[j])
+    assert R_._h_min({"t": "barras", "h": 100}) >= 146 and R_._h_min({"t": "kpis", "itens": []}) >= 66

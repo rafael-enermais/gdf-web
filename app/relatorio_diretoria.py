@@ -45,11 +45,11 @@ def _fit_size(s: str, font: str, size: float, maxw: float, minimo: float = 7.5) 
     return size
 
 
-def _kpi_ajustado(c, x, y, w, h, it):
+def _kpi_ajustado(c, x, y, w, h, it, maxl=2):
     """Quadro de KPI com o valor reduzido para caber na largura (R.kpi usa tamanho fixo)."""
     val = str(it["val"])
     vs = _fit_size(val, "PB", 15, w - 24)
-    kpi(c, x, y, w, h, _clip(str(it["rot"]).upper(), "PB", 6.2, w - 22), val, str(it["sub"]), dark=bool(it.get("dark")), vsize=vs)
+    kpi(c, x, y, w, h, _clip(str(it["rot"]).upper(), "PB", 6.2, w - 22), val, str(it["sub"]), dark=bool(it.get("dark")), vsize=vs, maxl=maxl)
 
 
 _FMT_BARRAS = {
@@ -57,6 +57,7 @@ _FMT_BARRAS = {
     "mi2": lambda v: mmn(v, 2),
     "int": lambda v: fnum(v, 0),
     "p1": lambda v: fnum(v, 1),
+    "mil": lambda v: fnum(v / 1000.0, 0),
 }
 
 
@@ -95,14 +96,26 @@ class _Doc:
         self.garante(hh + 8)
         self.y = R.caixa_nota(self.c, self.y, " ".join(linhas), h=hh)
 
+    @staticmethod
+    def _kpi_altura(itens: list, w: float) -> tuple:
+        """Altura do quadro e maximo de linhas do texto de apoio: 1 linha = 58, 2 = 66, 3 = 75 (antes cortava o apoio com reticencias)."""
+        n = 1
+        for it in itens:
+            sub = str(it.get("sub") or "")
+            if sub:
+                n = max(n, min(3, len(simpleSplit(sub, "P", 6.2, w - 26))))
+        return {1: 58.0, 2: 66.5, 3: 75.0}[n], n
+
     def kpis_(self, itens: list, por_linha: int):
         por_linha = max(1, por_linha)
-        gap, kh = 10.0, 58.0
+        gap = 10.0
         w = (CW - (por_linha - 1) * gap) / por_linha
         for i in range(0, len(itens), por_linha):
+            grupo = itens[i:i + por_linha]
+            kh, ml = self._kpi_altura(grupo, w)
             self.garante(kh + 8)
-            for j, it in enumerate(itens[i:i + por_linha]):
-                _kpi_ajustado(self.c, MX + j * (w + gap), self.y, w, kh, it)
+            for j, it in enumerate(grupo):
+                _kpi_ajustado(self.c, MX + j * (w + gap), self.y, w, kh, it, ml)
             self.y -= kh + 8
         self.y -= 2
 
@@ -116,11 +129,16 @@ class _Doc:
             txt(self.c, MX, self.y - 8, _clip(e["titulo"], "PB", 8.5, CW - 110), "PB", 8.5, NAVY)
         unidade(self.c, W - MX, self.y - 8 + 2, e.get("unidade") or "R$ MM")
         n = len(vals)
-        passo = 1 if n <= 24 else math.ceil(n / 20)
-        labs = [lb if i % passo == 0 else "" for i, lb in enumerate(labels)]
+        slot = (CW - 12) / n
         fmt = _FMT_BARRAS.get(e.get("fmt") or "mi", _FMT_BARRAS["mi"])
+        size = 6.2 if n <= 14 else 5.6
+        larg_lab = max((pdfmetrics.stringWidth(str(lb), "P", 6) for lb in labels), default=0) + 4          # rotulos do eixo nao se sobrepoem
+        larg_val = max((pdfmetrics.stringWidth(fmt(v), "PB", size) for v in vals if v is not None), default=0) + 3
+        passo_lab = max(1, math.ceil(larg_lab / slot))
+        passo = max(1, math.ceil(larg_val / slot))
+        labs = [lb if i % passo_lab == 0 else "" for i, lb in enumerate(labels)]
         base = self.y - 22 - h
-        R.barras(self.c, MX + 6, base, CW - 12, h, labs, vals, fmt=fmt, size=6.2 if n <= 14 else 5.6, lbl_every=passo)
+        R.barras(self.c, MX + 6, base, CW - 12, h, labs, vals, fmt=fmt, size=size, lbl_every=passo)
         self.y = base - 24
 
     @staticmethod
@@ -129,12 +147,43 @@ class _Doc:
             return 0.0
         return len(simpleSplit(e["texto"], "P", 7.6, CW - 22)[:40]) * (7.6 + 3.4) + 14 + 8
 
+    @staticmethod
+    def _larguras(head: list, rows: list, pesos: list, alin: list, fs: float) -> tuple:
+        """Larguras das colunas: as de numero nunca ficam menores que o maior valor (nada de "585.9…"); o que sobra de aperto sai das colunas de texto
+        (que cortam com reticencias). Se ainda assim nao couber, reduz a fonte. Devolve (larguras, fonte)."""
+        tp = float(sum(pesos)) or 1.0
+        base = [CW * p / tp for p in pesos]
+        n = len(base)
+        while True:
+            mins = []
+            for j in range(n):
+                if alin[j] == "r":
+                    m = max((pdfmetrics.stringWidth(w_, "PB", 6.6) for w_ in str(head[j]).split()), default=0) + 9
+                    for tipo, cel in rows:
+                        v = cel[j] if j < len(cel) else ""
+                        v = v[0] if isinstance(v, tuple) else str(v)
+                        m = max(m, pdfmetrics.stringWidth(v, "PB" if tipo in ("sub", "tot", "sec") else "P", fs + (0.2 if tipo == "tot" else 0)) + 11)
+                    mins.append(m)
+                else:
+                    mins.append(min(base[j], 36.0))
+            larg = [max(b, m) for b, m in zip(base, mins)]
+            exc = sum(larg) - CW
+            if exc <= 0.01:
+                return larg, fs
+            folga = [max(0.0, l - m) for l, m in zip(larg, mins)]
+            if sum(folga) >= exc:
+                larg = [l - exc * f / sum(folga) for l, f in zip(larg, folga)]
+                return larg, fs
+            if fs <= 5.2:
+                tot = sum(mins)
+                return [m * CW / tot for m in mins], fs
+            fs -= 0.3
+
     def tab_(self, e: dict, reserva: float = 0.0):
         c = self.c
         head, rows, pesos, alin = e["head"], e["rows"], e["pesos"], e["alin"]
         fs, rh = float(e.get("fs", 6.9)), float(e.get("rh", 12.6))
-        tp = float(sum(pesos)) or 1.0
-        larg = [CW * p / tp for p in pesos]
+        larg, fs = self._larguras(head, rows, pesos, alin, fs)
         cols = list(zip(larg, alin))
         head_h = 24.0
         # prepara celulas (corta o que nao cabe; negativo em laranja escuro)
@@ -152,6 +201,9 @@ class _Doc:
                     cor = _NEG_TOT if tipo == "tot" else NEG_TXT
                 nova.append((s, cor) if cor is not None else s)
             prontas.append((tipo, nova))
+        total_h = head_h + sum(rh + (4 if t == "sec" else 0) for t, _ in prontas) + (20 if e.get("titulo") else 0)
+        if total_h <= 210 and self.y - total_h - reserva < BOT and self.y < TOPY - 40:
+            self.pagina(self.sec, continuacao=True)                  # tabela pequena nao e' partida ao meio: vai inteira para a pagina seguinte
         if e.get("titulo"):
             self.garante(head_h + 2 * rh + 20)
             txt(c, MX, self.y - 8, _clip(e["titulo"], "PB", 8.5, CW), "PB", 8.5, NAVY)
@@ -180,6 +232,34 @@ class _Doc:
                 self.pagina(self.sec, continuacao=True)
         self.y -= 10
 
+    def obs_(self, texto: str):
+        """Caixa "Observação" escrita pela pessoa, no fim da aba. Respeita as quebras de linha e passa para a pagina seguinte se for longa."""
+        fs, lh = 7.8, 7.8 + 3.6
+        linhas: list = []
+        for par in str(texto).split("\n"):
+            linhas += simpleSplit(par.strip(), "P", fs, CW - 26) if par.strip() else [""]
+        while linhas and not linhas[-1]:
+            linhas.pop()
+        if not linhas:
+            return
+        primeira = True
+        while linhas:
+            topo = 29.0 if primeira else 16.0                       # da borda de cima ate a 1a linha de texto
+            self.garante(topo + (min(len(linhas), 4) - 1) * lh + 8)
+            n = max(1, min(len(linhas), int((self.y - BOT - topo - 8) / lh) + 1))
+            parte, linhas = linhas[:n], linhas[n:]
+            hh = topo + (len(parte) - 1) * lh + 8
+            rect(self.c, MX, self.y - hh, CW, hh, fill=HexColor("#FFF6EA"), stroke=ORANGE, r=5, lw=0.7)
+            rect(self.c, MX, self.y - hh, 3, hh, fill=ORANGE)
+            if primeira:
+                txt(self.c, MX + 12, self.y - 14, "OBSERVAÇÃO", "PB", 6.6, ORANGE)
+            yy = self.y - topo
+            for ln in parte:
+                txt(self.c, MX + 12, yy, ln, "P", fs, NAVY)
+                yy -= lh
+            self.y -= hh + 8
+            primeira = False
+
     def elemento(self, e: dict, prox: dict | None = None):
         t = e.get("t")
         if t == "kpis":
@@ -193,13 +273,30 @@ class _Doc:
         elif t == "sec":
             self.sec_(e["texto"])
 
+    @staticmethod
+    def _h_min(e: dict | None) -> float:
+        """Altura minima que o 1o elemento do bloco precisa para nao ficar separado do titulo."""
+        if not e:
+            return 0.0
+        t = e.get("t")
+        if t == "kpis":
+            return 66.0
+        if t == "barras":
+            return 22 + float(e.get("h", 100)) + 24
+        if t == "tab":
+            return 24 + 3 * float(e.get("rh", 12.6)) + (20 if e.get("titulo") else 4)
+        if t == "nota":
+            return _Doc._h_nota(e)
+        return 46.0
+
     def bloco(self, b: dict):
-        self.garante(92)
+        els = b["els"]
+        h1 = self._h_min(els[0] if els else None) + (self._h_min(els[1]) if len(els) > 1 and els[0].get("t") == "sec" else 0.0)
+        self.garante(max(92.0, 30 + h1))
         self.mapa[b["key"]] = self.n
         txt(self.c, MX, self.y - 10, _clip(b["titulo"], "PB", 11.5, CW), "PB", 11.5, NAVY)
         hline(self.c, MX, W - MX, self.y - 16, ORANGE, 0.9)
         self.y -= 28
-        els = b["els"]
         for i, e in enumerate(els):
             try:
                 self.elemento(e, els[i + 1] if i + 1 < len(els) else None)
@@ -291,6 +388,8 @@ def _desenhar(dados: dict, c, N: int, mapa_ant: dict | None) -> tuple:
         d.mapa[("aba", a["aba"])] = d.n
         for b in a["blocos"]:
             d.bloco(b)
+        if a.get("obs"):
+            d.obs_(a["obs"])
     return d.n, d.mapa
 
 
