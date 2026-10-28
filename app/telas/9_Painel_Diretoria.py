@@ -21,6 +21,7 @@ import grupo_enermais as GE
 import historico as HIST
 import painel_db as P
 import periodo as PER
+import relatorio_diretoria_ui as RDU
 import relatorio_painel_pdf as RPP
 from auth import usuario_atual
 from conexao import get_conn, sidebar_rodape
@@ -383,6 +384,10 @@ try:                                                         # editor ve tudo; v
 except Exception:
     _eh_editor, _mostra_inv = False, False
 _rotulos = ["Resultado", "Obras", "Administração", "Despesas", "Pessoas", "Folha PJ", "Folha CLT", "Indicadores financeiros", "Financiamentos"] + (["Investimentos"] if _mostra_inv else [])
+try:                                                         # v0.54.0: gerador de relatorio em PDF (escolhe abas/informacoes, obras, PJ); falha nele nunca derruba o painel
+    RDU.secao_relatorio(conn, mes_ini, mes, modo_per, ctx, _mostra_inv, usuario, CARIMBO)
+except Exception as _e_rel:
+    st.caption(f"O gerador de relatório não pôde ser aberto agora ({type(_e_rel).__name__}). O painel abaixo continua normal.")
 _abas = st.tabs(_rotulos, key="dir_abas", on_change="rerun")
 aba_res, aba_ob, aba_adm, aba_desp, aba_pes, aba_pj, aba_clt, aba_ind, aba_fin = _abas[:9]
 aba_inv = _abas[9] if _mostra_inv else None
