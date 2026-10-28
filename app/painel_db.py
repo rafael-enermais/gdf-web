@@ -1136,7 +1136,7 @@ def _extras_baixa(conn, filtro: str, mes_ini: str, mes_fim: str, por_mes: bool =
                             GROUP BY 1, 2""", (f"{mes_ini}-01", f"{mes_fim}-01"))
             saida = []
             for o, m, j, d, i in cur.fetchall():
-                ex = {CONTA_JUROS: -round(float(j or 0), 2), CONTA_DESCONTO: round(float(d or 0), 2)}      # imposto retido (baixa.imposto) FICOU DE FORA na v0.48.1: somado, derrubou o custo Jan-Set para R$ 59,29 mi (alvo Sienge 60,32); investigar qual imposto conta
+                ex = {CONTA_JUROS: -round(float(j or 0), 2), CONTA_DESCONTO: round(float(d or 0), 2), CONTA_IMPOSTO: round(float(i or 0), 2)}      # v0.48.2: imposto retido da baixa VOLTOU (a v0.48.1 tirou, mas afastava do Sienge: Sienge Jan-Set = R$ 58,93 mi, app com imposto = 59,29 mi)
                 saida.append((o, m, {k: v for k, v in ex.items() if v}))
             return saida
     except Exception:

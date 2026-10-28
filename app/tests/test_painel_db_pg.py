@@ -565,6 +565,20 @@ def test_resultado_tira_titulos_a_pagar_desfeitos_e_multas_aej(conn):
     assert P.resultado_por_obra_api(conn, "2026-09", sem_desfeitos=True)["121"]["04.02"] == -650.0
 
 
+def test_extras_da_baixa_juros_multa_desconto_e_imposto_retido_entram_no_custo(conn):
+    """v0.48.2: Custo Total = nota - imposto retido + juros/multa pagos - descontos (padrao Sienge); o imposto retido da baixa VOLTOU (v0.48.1 tinha tirado)."""
+    from dados_sienge import _c, _pg
+    base = {"billId": 70, "installmentId": 1, "companyId": 5, "companyName": "CONSTRUTORA", "originId": "CP", "documentIdentificationId": "NFS ",
+            "forecastDocument": "N", "creditorId": 77, "creditorName": "FORNECEDOR TESTE", "issueDate": "2026-09-10", "dueDate": "2026-09-30",
+            "originalAmount": 1000.0, "payments": [_pg(1, "2026-09-30", 1000.0)], "paymentsCategories": [_c("2010104", "Material de Consumo | Obra", 100, 1049)]}
+    _ingerir(conn, regs=[base], lado="P", tipo="I")
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO pnl_centro_grupo (centro_custo_id, centro_nome, grupo, codigo_obra) VALUES (1049,'A','OBRA','121')")
+        cur.execute("UPDATE pnl_baixa SET juros = 10, multa = 5, desconto = 20, imposto = 8 WHERE lado='P'")
+    ex = P._extras_baixa(conn, "", "2026-09", "2026-09")
+    assert ex == [("121", "", {"2.03.01.09": -15.0, "2.03.01.11": 20.0, "2.09.01.00": 8.0})]
+
+
 def test_obras_do_dre_calcula_bdi_margem_dem_e_top(conn):
     import hashlib
     assert P.obras_do_dre(conn, "2026-09") is None                                   # sem PDF importado
