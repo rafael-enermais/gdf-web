@@ -1750,6 +1750,17 @@ def folha_colaboradores(conn, mes: str) -> list:
         return []
 
 
+def minutos_he(descricao, referencia) -> int:
+    """Minutos de um evento de hora extra. O 'HHH:MM' pode vir na referencia ('010:00 hs') ou no fim da descricao ('Horas Extras 50% Diurnas 001:32', referencia so' 'hs'),
+    conforme o PDF: procura na referencia e, se nao achar, na descricao. Sem horario: 0."""
+    import re
+    for txt in (referencia, descricao):
+        m = re.search(r"(\d+):(\d\d)", txt or "")
+        if m:
+            return int(m.group(1)) * 60 + int(m.group(2))
+    return 0
+
+
 EV_PENSAO_JUDICIAL, EV_TAXA_ASSISTENCIAL = 1830, 1031          # eventos de desconto do recibo mostrados nos cards da folha
 
 
@@ -1757,11 +1768,9 @@ def folha_pessoas_mes(conn, mes: str) -> list:
     """Um registro por colaborador CLT do mes (recibos das importacoes ativas), para a lista 'CLT do mes' e os cards da aba Pessoas (v0.49.0):
     [{'nome','cargo','empresa','cod_empresa','cadastro','obra','obra_nome','depto','canteiro','salario','he','dsr','he_min','proventos','descontos',
       'liquido','pensao','taxa_assist'}]. obra = codigo do de-para departamento -> obra ('sem de-para' sem ele; '99' = administracao central); canteiro = texto do
-    subnivel do recibo. he = R$ dos eventos de hora extra; he_min = minutos de HE (a referencia do evento vem como 'HHH:MM hs'); dsr = DSR s/ HE.
+    subnivel do recibo. he = R$ dos eventos de hora extra; he_min = minutos de HE (o 'HHH:MM' vem na referencia ou no fim da descricao do evento); dsr = DSR s/ HE.
     So' leitura; nao mexe na regra da HE (a base continua sendo a de `folha_do_mes`). Lista vazia se o mes nao tem folha."""
-    import re
     from importador_folha import EVENTOS_HE
-    re_horas = re.compile(r"^\s*(\d+):(\d\d)")
     try:
         with conn.cursor() as cur:
             cur.execute("""SELECT r.importacao_id, r.empresa, r.cadastro, r.nome, r.cargo, r.departamento, r.subnivel_texto, COALESCE(d.codigo_obra,'sem de-para'), d.obra_nome,
@@ -1771,7 +1780,7 @@ def folha_pessoas_mes(conn, mes: str) -> list:
                            WHERE i.tipo='FOLHA' AND i.mes=%s::date AND i.ativo
                            ORDER BY r.nome, r.cadastro""", (f"{mes}-01",))
             recibos = cur.fetchall()
-            cur.execute("""SELECT e.importacao_id, e.empresa, e.cadastro, e.ev, e.referencia, COALESCE(e.desconto,0)
+            cur.execute("""SELECT e.importacao_id, e.empresa, e.cadastro, e.ev, e.descricao, e.referencia, COALESCE(e.desconto,0)
                            FROM pnl_folha_evento e JOIN pnl_importacao i ON i.id = e.importacao_id
                            WHERE i.tipo='FOLHA' AND i.mes=%s::date AND i.ativo AND e.ev = ANY(%s)""",
                         (f"{mes}-01", sorted(set(EVENTOS_HE) | {EV_PENSAO_JUDICIAL, EV_TAXA_ASSISTENCIAL})))
@@ -1783,12 +1792,10 @@ def folha_pessoas_mes(conn, mes: str) -> list:
             pass
         return []
     minutos, pensao, taxa = {}, {}, {}
-    for imp, emp, cad, ev, ref, desc in eventos:
+    for imp, emp, cad, ev, dsc, ref, desc in eventos:
         k = (imp, emp, cad)
         if ev in EVENTOS_HE:
-            m = re_horas.match(ref or "")
-            if m:
-                minutos[k] = minutos.get(k, 0) + int(m.group(1)) * 60 + int(m.group(2))
+            minutos[k] = minutos.get(k, 0) + minutos_he(dsc, ref)
         elif ev == EV_PENSAO_JUDICIAL:
             pensao[k] = pensao.get(k, 0.0) + float(desc)
         elif ev == EV_TAXA_ASSISTENCIAL:

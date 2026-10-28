@@ -670,6 +670,13 @@ def test_folha_pessoas_mes_traz_liquido_he_em_horas_canteiro_e_taxa(conn):
     assert P.folha_pessoas_mes(conn, "2025-01") == []
 
 
+def test_minutos_he_le_horario_da_referencia_ou_do_fim_da_descricao():
+    """v0.49.1: no PDF real o horario pode estar no fim da descricao (referencia so' 'hs'); nos sinteticos esta na referencia."""
+    assert P.minutos_he("Horas Extras 50% Diurnas", "010:00 hs") == 600
+    assert P.minutos_he("Horas Extras 50% Diurnas 001:32", "hs") == 92
+    assert P.minutos_he("Horas Extra 110% Diurna 120:05", "") == 7205 and P.minutos_he("DSR", "30 Dias") == 0 and P.minutos_he(None, None) == 0
+
+
 def test_folha_colaboradores_lista_nome_cargo_e_obra(conn):
     from folha_sintetica import pdf_folha_sintetico
     import importador_folha as IF
