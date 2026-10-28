@@ -564,12 +564,15 @@ if aba_res.open or _TODAS:
                 ml = [hist["desvio_meses"][i]["rotulo"] for i in _idx_h]
                 vals_h = [hist["desvio_linhas"][sel_h][i] for i in _idx_h]
                 estouro = sel_h in ("Custos", "Despesas ADM")        # nessas linhas, positivo = gastou mais que o previsto (ruim)
-                dfd = pd.DataFrame({"Mês": ml, "Desvio (R$ mi)": [x / 1e6 for x in vals_h]})
+                _mil = sel_h == "Despesas ADM"        # pedido da Suellen: desvios da Administração em R$ mil (as demais linhas seguem em milhões)
+                _dv, _un, _fm = (1e3, "R$ mil", ",.0f") if _mil else (1e6, "R$ milhões", ",.2f")
+                _col = "Desvio (R$ mil)" if _mil else "Desvio (R$ mi)"
+                dfd = pd.DataFrame({"Mês": ml, _col: [x / _dv for x in vals_h]})
                 dfd["cor"] = ["bom" if ((x >= 0) != estouro) else "ruim" for x in vals_h]
                 estilo.altair(alt.Chart(dfd).mark_bar().encode(
-                    x=alt.X("Mês:N", sort=ml, axis=alt.Axis(labelAngle=0, title=None)), y=alt.Y("Desvio (R$ mi):Q", title="R$ milhões"),
+                    x=alt.X("Mês:N", sort=ml, axis=alt.Axis(labelAngle=0, title=None)), y=alt.Y(f"{_col}:Q", title=_un),
                     color=alt.Color("cor:N", scale=alt.Scale(domain=["bom", "ruim"], range=[BOM, RUIM]), legend=None),
-                    tooltip=["Mês", alt.Tooltip("Desvio (R$ mi):Q", format=",.2f")]).properties(height=240), width="stretch")
+                    tooltip=["Mês", alt.Tooltip(f"{_col}:Q", format=_fm)]).properties(height=240), width="stretch")
                 _cap(f"Gráfico fixo nos últimos 12 meses ({PER.rotulo(MES_INI_G, mes)}; histórico do painel da contabilidade). Para Custos e Despesas ADM, valor positivo indica estouro. Janeiro = desvio acumulado menos a soma de fevereiro em diante.")
             else:
                 _info("O desvio mensal aparece quando o histórico do painel da contabilidade é importado.")
