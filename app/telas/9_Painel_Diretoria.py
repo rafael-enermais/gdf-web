@@ -382,10 +382,10 @@ try:                                                         # editor ve tudo; v
     _eh_editor, _mostra_inv = _acessos(conn, usuario)
 except Exception:
     _eh_editor, _mostra_inv = False, False
-_rotulos = ["Resultado", "Obras", "Administração", "Despesas", "Pessoas", "Folha PJ", "Indicadores financeiros", "Financiamentos"] + (["Investimentos"] if _mostra_inv else [])
+_rotulos = ["Resultado", "Obras", "Administração", "Despesas", "Pessoas", "Folha PJ", "Folha CLT", "Indicadores financeiros", "Financiamentos"] + (["Investimentos"] if _mostra_inv else [])
 _abas = st.tabs(_rotulos, key="dir_abas", on_change="rerun")
-aba_res, aba_ob, aba_adm, aba_desp, aba_pes, aba_pj, aba_ind, aba_fin = _abas[:8]
-aba_inv = _abas[8] if _mostra_inv else None
+aba_res, aba_ob, aba_adm, aba_desp, aba_pes, aba_pj, aba_clt, aba_ind, aba_fin = _abas[:9]
+aba_inv = _abas[9] if _mostra_inv else None
 
 
 # ------------------------------------------------------------------ dados compartilhados entre abas (PJ e colaboradores)
@@ -1015,61 +1015,19 @@ if aba_pes.open or _TODAS:
             _info("Faltam os recibos da folha e as contas pagas deste mês.")
         else:
             rec_ref = rec
-            k = st.columns(5)
+            k = st.columns(4)
             if n_mes:
                 k[0].metric(f"Colaboradores {_rot(mes)}", f"{int(n_mes):,}".replace(",", "."), (f"{clt} CLT + {pj['total']} PJ" if clt is not None else None), delta_color="off", border=True)
                 k[1].metric("Receita por colaborador", _mi(rec_ref / n_mes), border=True)
                 k[2].metric("Custo por colaborador", _mi(cus / n_mes), border=True)
                 k[3].metric("BDI por colaborador", _mi(bdi / n_mes), border=True)
-            if pes:
-                t = pes["folha"]["total"]
-                k[4].metric(f"Horas extras + DSR {_rot(mes)}", _mi(t["hora_extra"] + t["dsr_he"]), (F.pct_br(t["he_pct"]) + " da remuneração") if t["he_pct"] is not None else None, delta_color="off", border=True)
-            c1, c2 = st.columns(2)
-            with c1:
-                _md("**Colaboradores ativos**")
-                _hc = [(m, hc_por_mes.get(m, n_mes if m == mes else None)) for m in MESES_G]       # grafico: 12 meses
-                _hc = [(m, x) for m, x in _hc if x is not None]
-                if _hc:
-                    rots_hc = [m[5:] + "/" + m[2:4] for m, _ in _hc]
-                    estilo.altair(_barras_mes(rots_hc, [x for _, x in _hc], titulo_y="colaboradores", destaque=len(_hc) - 1, divisor=1, altura=220), width="stretch")
-                _cap(f"Colaboradores = CLT pelos recibos da folha + PJ pelos credores de “Salários PJ” pagos no mês" + (f" ({pj['obra']} em obras e {pj['adm']} na administração)." if pj["total"] else "."))
-            with c2:
-                _md("**Horas extras × receita**")
-                sf = HIST.serie_he_combinada(hist, pes["serie"] if pes else [])
-                ms_g = MESES_G                                                                   # grafico: sempre 12 meses ate o mes de referencia
-                ev_g = DD.evolucao_he_receita(sf, ctx["serie"], ms_g)
-                if sum(1 for x in ev_g if x["he_pct"] is not None) >= 2:
-                    rots_g = [_rot(x["mes"]) for x in ev_g]
-                    base_g = alt.Chart(pd.DataFrame({"Mês": rots_g})).encode(x=alt.X("Mês:N", sort=rots_g, axis=alt.Axis(labelAngle=-45, title=None)))
-                    dfp1 = pd.DataFrame([{"Mês": _rot(x["mes"]), "%": round(x["he_pct"] * 100, 1)} for x in ev_g if x["he_pct"] is not None])
-                    l_he = alt.Chart(dfp1).mark_line(point=True, color=ORANGE).encode(x=alt.X("Mês:N", sort=rots_g, axis=alt.Axis(labelAngle=-45, title=None)), y=alt.Y("%:Q", title="% HE ÷ remuneração", axis=alt.Axis(titleColor=ORANGE)),
-                                                                                      tooltip=["Mês", alt.Tooltip("%:Q", title="HE ÷ remuneração (%)")])
-                    var_rows = []
-                    for x in ev_g:
-                        if x["var_he"] is not None:
-                            var_rows.append({"Mês": _rot(x["mes"]), "Série": "Custo de HE (var. %)", "Variação %": round(x["var_he"] * 100, 1)})
-                        if x["var_receita"] is not None:
-                            var_rows.append({"Mês": _rot(x["mes"]), "Série": "Receita (var. %)", "Variação %": round(x["var_receita"] * 100, 1)})
-                    layers = [l_he]
-                    if var_rows:
-                        l_var = alt.Chart(pd.DataFrame(var_rows)).mark_line(point=True, strokeDash=[5, 3]).encode(
-                            x=alt.X("Mês:N", sort=rots_g), y=alt.Y("Variação %:Q", title="Var. % s/ mês anterior", axis=alt.Axis(titleColor=NAVY)),
-                            color=alt.Color("Série:N", scale=alt.Scale(domain=["Custo de HE (var. %)", "Receita (var. %)"], range=["#C97A00", NAVY]),
-                                            legend=alt.Legend(orient="bottom", title=None)), tooltip=["Mês", "Série", alt.Tooltip("Variação %:Q", format=",.1f")])
-                        layers.append(l_var)
-                    estilo.altair(alt.layer(*layers).resolve_scale(y="independent").properties(height=280), width="stretch")
-                    cp = DD.comparar_periodos(sf, ctx["serie"], mes_ini, mes)
-                    _fv = lambda x: "n/d" if x is None else F.pct_br(x, 1)                      # noqa: E731
-                    _cap(f"Período {PER_ROT} × período anterior ({PER.rotulo(cp['meses_anterior'][0], cp['meses_anterior'][-1])}): custo de HE {_fv(cp['var_he'])}"
-                         + (f" ({_mi(cp['he_anterior'])} → {_mi(cp['he_atual'])})" if cp["var_he"] is not None else "") + f"; receita {_fv(cp['var_receita'])}"
-                         + (f" ({_mi(cp['receita_anterior'])} → {_mi(cp['receita_atual'])})" if cp["var_receita"] is not None else "") + ". n/d = falta algum mês de dado num dos períodos.")
-                    _cap("Linha cheia (laranja, eixo esquerdo) = horas extras + DSR ÷ remuneração. Linhas tracejadas (eixo direito) = quanto o custo de HE e a receita variaram sobre o mês anterior — "
-                         "para ver se a HE cresce mais que o faturamento. Receita = DRE confirmado/oficial (meses em andamento ficam de fora).")
-                    if {x["origem"] for x in sf} == {"historico", "app"}:
-                        _cap("Atenção à comparação: os meses do histórico (painel da contabilidade) usam como base proventos menos HE, sem descontar INSS/IRRF etc.; "
-                             "os meses com folha no app usam a remuneração líquida (menos todos os descontos), como a contabilidade pediu em 20/10/2026. Por isso pode haver um degrau entre as duas fontes.")
-                elif pes:
-                    _cap("A série mensal de HE aparece com 2 ou mais meses de folha (ou com o histórico do painel).")
+            _md("**Colaboradores ativos**")
+            _hc = [(m, hc_por_mes.get(m, n_mes if m == mes else None)) for m in MESES_G]       # grafico: 12 meses
+            _hc = [(m, x) for m, x in _hc if x is not None]
+            if _hc:
+                rots_hc = [m[5:] + "/" + m[2:4] for m, _ in _hc]
+                estilo.altair(_barras_mes(rots_hc, [x for _, x in _hc], titulo_y="colaboradores", destaque=len(_hc) - 1, divisor=1, altura=220), width="stretch")
+            _cap(f"Colaboradores = CLT pelos recibos da folha + PJ pelos credores de “Salários PJ” pagos no mês" + (f" ({pj['obra']} em obras e {pj['adm']} na administração)." if pj["total"] else "."))
             # custos prioritarios com pessoas, por colaborador
             if len(dfp):
                 pdf_ = _pessoas_df(conn, mes_ini, mes, CARIMBO)
@@ -1114,93 +1072,6 @@ if aba_pes.open or _TODAS:
                             _cap("Os centros de custo foram ligados à obra pelo de-para (ex.: “EE - ANASTACIO - LOTE 11” e “CON - ANASTACIO - LOTE 11” somam na obra ANASTÁCIO - LOTE 11), "
                                  "na mesma linguagem da aba Obras. Administração e centros sem de-para aparecem à parte."
                                  + ("" if ob_["n"] <= len(ob_["linhas"]) else f" Top {len(ob_['linhas'])} de {ob_['n']}."))
-            # ---- v0.49.0: colaboradores por obra e canteiro (CLT + PJ), filtro obra -> canteiro e cards da folha consolidada
-            _clt_todos = _folha_pessoas(conn, mes, CARIMBO)
-            _pj_todos = pj["colaboradores"]
-            _obras_sel, _cant_sel = [], []
-            if _clt_todos or _pj_todos:
-                _md("**Colaboradores por obra e canteiro (CLT e PJ)**")
-                _opc = DD.opcoes_obras(_clt_todos, _pj_todos, _nomes_obras(conn, CARIMBO))
-                _rot_op = dict(_opc)
-                _k_obras = _chave("dir_pes_obras", mes, tuple(c for c, _ in _opc))
-                if _clt_todos:
-                    _cf = DD.cards_folha(_clt_todos)
-                    _t = _cf["total"]
-                    _md(f"**Folha consolidada · {_rot(mes)}**")
-                    c_ = st.columns(6)
-                    c_[0].metric("Colaboradores CLT", f"{_t['n']:,}".replace(",", "."), border=True)
-                    c_[1].metric("Líquido da folha", _mi(_t["liquido"]), border=True)
-                    c_[2].metric("HE + DSR", _mi(_t["he_dsr"]), (F.pct_br(_t["he_pct"]) + " da remuneração") if _t["he_pct"] is not None else None, delta_color="off", border=True)
-                    c_[3].metric("Horas extras", DD.fmt_horas(_t["he_min"]) + (" h" if _t["he_min"] else ""), f"{_t['n_he']} colaboradores com HE", delta_color="off", border=True)
-                    c_[4].metric("Pensão judicial", _m(_t["pensao"]), border=True)                       # valores pequenos: R$ exato (em mil ficava "R$ 1 mil")
-                    c_[5].metric("Taxa assistencial", _m(_t["taxa_assist"]), border=True)
-                    st.dataframe(pd.DataFrame([{"Empresa": e["empresa"], "Colab.": e["n"], "Líquido": _m(e["liquido"]), "HE + DSR": _m(e["he_dsr"]), "Horas extras": DD.fmt_horas(e["he_min"]),
-                                                "Com HE": e["n_he"], "HE ÷ remuneração": F.pct_br(e["he_pct"]) if e["he_pct"] is not None else "–", "Pensão judicial": _m(e["pensao"]),
-                                                "Taxa assistencial": _m(e["taxa_assist"])} for e in _cf["por_empresa"]]), hide_index=True, width="stretch")
-                    if _cf["top_obras"]:
-                        _md("**Obras com mais horas extras** (clique no botão para filtrar a lista abaixo)")
-                        tc = st.columns(len(_cf["top_obras"]))
-                        for col_, o_ in zip(tc, _cf["top_obras"]):
-                            col_.metric(f"{o_['obra']} · {_nomes_obras(conn, CARIMBO).get(o_['obra']) or o_['nome'] or 'sem nome'}"[:40], _mi(o_["he_dsr"]),
-                                        f"{DD.fmt_horas(o_['he_min'])} h · {o_['n_he']} de {o_['n']} com HE", delta_color="off", border=True)
-                            col_.button("Filtrar esta obra", key=f"dir_pes_top_{o_['obra']}", on_click=_filtra_obra, args=(_k_obras, o_["obra"]), width="stretch")
-                f1, f2 = st.columns(2)
-                _obras_sel = f1.multiselect("Obra", [c for c, _ in _opc], format_func=lambda c: _rot_op.get(c, c), key=_k_obras, placeholder="Todas as obras")
-                _cant_sel = f2.multiselect("Canteiro (CLT)", DD.opcoes_canteiros(_clt_todos, _obras_sel), key=_chave("dir_pes_cant", mes, tuple(_obras_sel)),
-                                           placeholder="Todos os canteiros da obra" if _obras_sel else "Todos os canteiros")
-                _cap("Marcar uma obra soma todos os canteiros dela; marcar um canteiro mostra só ele (o PJ não tem canteiro: some da lista quando um canteiro está marcado).")
-                _clt_f = DD.filtrar_clt(_clt_todos, _obras_sel, _cant_sel)
-                _pj_f = DD.filtrar_pj(_pj_todos, _obras_sel, _cant_sel)
-                _tf = DD.somar_clt(_clt_f)
-                kf = st.columns(5)
-                kf[0].metric("Colaboradores na seleção", len(_clt_f) + len(_pj_f), f"{len(_clt_f)} CLT + {len(_pj_f)} PJ", delta_color="off", border=True)
-                kf[1].metric("Líquido CLT", _mi(_tf["liquido"]), border=True)
-                kf[2].metric("HE + DSR", _mi(_tf["he_dsr"]), border=True)
-                kf[3].metric("Horas extras", DD.fmt_horas(_tf["he_min"]) + (" h" if _tf["he_min"] else ""), border=True)
-                kf[4].metric("HE ÷ remuneração", F.pct_br(_tf["he_pct"]) if _tf["he_pct"] is not None else "–", border=True)
-                if _clt_f:
-                    with st.expander(f"CLT do mês: {len(_clt_f)} colaboradores (fonte: recibos da folha)"):
-                        _bus = st.text_input("Pesquisar colaborador (nome ou cargo)", key="dir_pes_clt_busca")
-                        _vis = DD.filtrar_clt(_clt_f, busca=_bus)
-                        _dfc = pd.DataFrame([{"Colaborador": x["nome"], "Cargo": x["cargo"], "Empresa": x["empresa"], "Obra": x["obra"], "Canteiro": x["canteiro"], "Salário líquido": _m(x["liquido"]),
-                                              "HE (horas)": DD.fmt_horas(x["he_min"]), "HE (R$)": _m(x["he"]) if x["he"] > 0.005 else "–", "DSR s/ HE (R$)": _m(x["dsr"]) if x["dsr"] > 0.005 else "–"} for x in _vis])
-                        if len(_dfc):
-                            _evc = st.dataframe(_dfc, hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row",
-                                                key=_chave("dir_pes_clt", mes, tuple(_obras_sel), tuple(_cant_sel), _bus))
-                            _rows = [r for r in _evc.selection.rows if r < len(_vis)] if _evc is not None else []
-                            _ts = DD.somar_clt([_vis[r] for r in _rows] if _rows else _vis)
-                            _cap(("Marcados" if _rows else "Total da lista") + f": {_ts['n']} colaboradores · líquido {_m(_ts['liquido'])} · HE {_m(_ts['he'])} em {DD.fmt_horas(_ts['he_min'])} h · DSR s/ HE {_m(_ts['dsr'])}. "
-                                 "Marque a caixinha de um ou mais colaboradores para somar só eles.")
-                        else:
-                            _cap("Nenhum colaborador com essa busca.")
-                        _cap("Fonte: recibos da folha importados (sem digitar nada). HE em horas = referência dos eventos de hora extra; HE (R$) = eventos de HE; a razão HE ÷ remuneração segue a regra da contabilidade (proventos − HE − DSR − descontos).")
-            else:
-                _pj_f = _pj_todos
-            # folha CLT por empresa / obra (recibos) e PJ do mes
-            if pes:
-                fo = pes["folha"]
-                with st.expander("Folha CLT do mês: por empresa e por obra"):
-                    st.dataframe(pd.DataFrame([{"Empresa": e["empresa"], "Colab.": e["colab"], "Remuneração": _m(e["base_he"]), "HE + DSR": _m(e["hora_extra"] + e["dsr_he"]),
-                                                "HE ÷ remuneração": F.pct_br(e["he_pct"]) if e["he_pct"] is not None else "–", "Custo (proventos + FGTS)": _m(e["custo"])} for e in fo["por_empresa"]]),
-                                 hide_index=True, width="stretch")
-                    po = sorted(fo["por_obra"].values(), key=lambda x: -x["colab"])
-                    st.dataframe(pd.DataFrame([{"Obra": x["codigo"], "Nome": x["nome"], "Colab.": x["colab"], "Remuneração": _m(x["base_he"]), "HE + DSR": _m(x["hora_extra"] + x["dsr_he"]),
-                                                "HE ÷ remuneração": F.pct_br(x["he_pct"]) if x["he_pct"] is not None else "–"} for x in po]), hide_index=True, width="stretch")
-            if _pj_f:
-                with st.expander(f"PJ do mês: {pj['total'] if len(_pj_f) == pj['total'] else str(len(_pj_f)) + ' de ' + str(pj['total'])} colaboradores (fonte: contas pagas “Salários PJ”)"):
-                    _fant = _fantasias(conn, CARIMBO)
-                    _pj_exib = DD.agrupar_pj_demais(_pj_f, _demais_pj(conn, CARIMBO))                  # cadastro: Importacoes V2 > credores > Demais colaboradores-PJ
-                    _lin_pj = [({"Colaborador PJ": c["credor"], "Razão social": f"{c['n']} colaboradores", "Alocado em": c["destino"], "Pago no mês": _m(c["valor"])} if c.get("agrupado")
-                                else {"Colaborador PJ": DD.nome_fantasia(c["credor"], _fant), "Razão social": c["credor"], "Alocado em": c["destino"], "Pago no mês": _m(c["valor"])}) for c in _pj_exib]
-                    st.dataframe(pd.DataFrame(_lin_pj), hide_index=True, width="stretch")
-                    _n_ag = next((c["n"] for c in _pj_exib if c.get("agrupado")), 0)
-                    if _n_ag:
-                        _cap(f"“Demais colaboradores-PJ”: {_n_ag} colaboradores cadastrados para aparecer somados numa linha só (o total de {pj['total']} colaboradores acima continua contando todos).")
-                    if not _fant:
-                        _cap("Nome fantasia: ainda não carregado. Executar o SQL-30 e clicar em “Atualizar cadastros” no Painel EnerMais (aba de sincronização) para mostrar o nome fantasia no lugar da razão social.")
-                    _cap("Regra (contabilidade, 20/10/2026): a fonte do PJ são as contas pagas, sem regras próprias. Cada credor com valor positivo conta 1 colaborador, alocado na obra (ou na administração) "
-                               "onde recebeu mais no mês.")
-
 
 # ------------------------------------------------------------------ 6) FOLHA PJ (ao lado de Pessoas; Sienge + Flash + mapa de colaboradores)
 if aba_pj.open or _TODAS:
@@ -1208,6 +1079,118 @@ if aba_pj.open or _TODAS:
         if mes_ini != mes:
             _cap(f"A Folha PJ mostra sempre o mês de referência ({_rot(mes)}), não soma o período.")
         FPU.aba_folha_pj(conn, mes, CARIMBO, _rot(mes))
+
+
+# ------------------------------------------------------------------ 6b) FOLHA CLT (ao lado de Folha PJ; recibos da folha importados)
+if aba_clt.open or _TODAS:
+    with aba_clt:
+        if not pes:
+            _info("Faltam os recibos da folha deste mês: envie o PDF em Importações V2.")
+        _clt_todos = _folha_pessoas(conn, mes, CARIMBO)
+        _obras_sel, _cant_sel = [], []
+        if _clt_todos:
+            _md("**Colaboradores CLT por obra e canteiro**")
+            _opc = DD.opcoes_obras(_clt_todos, [], _nomes_obras(conn, CARIMBO))
+            _rot_op = dict(_opc)
+            _k_obras = _chave("dir_clt_obras", mes, tuple(c for c, _ in _opc))
+            if _clt_todos:
+                _cf = DD.cards_folha(_clt_todos)
+                _t = _cf["total"]
+                _md(f"**Folha consolidada · {_rot(mes)}**")
+                c_ = st.columns(6)
+                c_[0].metric("Colaboradores CLT", f"{_t['n']:,}".replace(",", "."), border=True)
+                c_[1].metric("Líquido da folha", _mi(_t["liquido"]), border=True)
+                c_[2].metric("HE + DSR", _mi(_t["he_dsr"]), (F.pct_br(_t["he_pct"]) + " da remuneração") if _t["he_pct"] is not None else None, delta_color="off", border=True)
+                c_[3].metric("Horas extras", DD.fmt_horas(_t["he_min"]) + (" h" if _t["he_min"] else ""), f"{_t['n_he']} colaboradores com HE", delta_color="off", border=True)
+                c_[4].metric("Pensão judicial", _m(_t["pensao"]), border=True)                       # valores pequenos: R$ exato (em mil ficava "R$ 1 mil")
+                c_[5].metric("Taxa assistencial", _m(_t["taxa_assist"]), border=True)
+                st.dataframe(pd.DataFrame([{"Empresa": e["empresa"], "Colab.": e["n"], "Líquido": _m(e["liquido"]), "HE + DSR": _m(e["he_dsr"]), "Horas extras": DD.fmt_horas(e["he_min"]),
+                                            "Com HE": e["n_he"], "HE ÷ remuneração": F.pct_br(e["he_pct"]) if e["he_pct"] is not None else "–", "Pensão judicial": _m(e["pensao"]),
+                                            "Taxa assistencial": _m(e["taxa_assist"])} for e in _cf["por_empresa"]]), hide_index=True, width="stretch")
+                if _cf["top_obras"]:
+                    _md("**Obras com mais horas extras** (clique no botão para filtrar a lista abaixo)")
+                    tc = st.columns(len(_cf["top_obras"]))
+                    for col_, o_ in zip(tc, _cf["top_obras"]):
+                        col_.metric(f"{o_['obra']} · {_nomes_obras(conn, CARIMBO).get(o_['obra']) or o_['nome'] or 'sem nome'}"[:40], _mi(o_["he_dsr"]),
+                                    f"{DD.fmt_horas(o_['he_min'])} h · {o_['n_he']} de {o_['n']} com HE", delta_color="off", border=True)
+                        col_.button("Filtrar esta obra", key=f"dir_clt_top_{o_['obra']}", on_click=_filtra_obra, args=(_k_obras, o_["obra"]), width="stretch")
+            f1, f2 = st.columns(2)
+            _obras_sel = f1.multiselect("Obra", [c for c, _ in _opc], format_func=lambda c: _rot_op.get(c, c), key=_k_obras, placeholder="Todas as obras")
+            _cant_sel = f2.multiselect("Canteiro", DD.opcoes_canteiros(_clt_todos, _obras_sel), key=_chave("dir_clt_cant", mes, tuple(_obras_sel)),
+                                       placeholder="Todos os canteiros da obra" if _obras_sel else "Todos os canteiros")
+            _cap("Marcar uma obra soma todos os canteiros dela; marcar um canteiro mostra só ele. O PJ está na aba Folha PJ.")
+            _clt_f = DD.filtrar_clt(_clt_todos, _obras_sel, _cant_sel)
+            _tf = DD.somar_clt(_clt_f)
+            kf = st.columns(5)
+            kf[0].metric("Colaboradores CLT na seleção", len(_clt_f), border=True)
+            kf[1].metric("Líquido CLT", _mi(_tf["liquido"]), border=True)
+            kf[2].metric("HE + DSR", _mi(_tf["he_dsr"]), border=True)
+            kf[3].metric("Horas extras", DD.fmt_horas(_tf["he_min"]) + (" h" if _tf["he_min"] else ""), border=True)
+            kf[4].metric("HE ÷ remuneração", F.pct_br(_tf["he_pct"]) if _tf["he_pct"] is not None else "–", border=True)
+            if _clt_f:
+                with st.expander(f"CLT do mês: {len(_clt_f)} colaboradores (fonte: recibos da folha)"):
+                    _bus = st.text_input("Pesquisar colaborador (nome ou cargo)", key="dir_clt_clt_busca")
+                    _vis = DD.filtrar_clt(_clt_f, busca=_bus)
+                    _dfc = pd.DataFrame([{"Colaborador": x["nome"], "Cargo": x["cargo"], "Empresa": x["empresa"], "Obra": x["obra"], "Canteiro": x["canteiro"], "Salário líquido": _m(x["liquido"]),
+                                          "HE (horas)": DD.fmt_horas(x["he_min"]), "HE (R$)": _m(x["he"]) if x["he"] > 0.005 else "–", "DSR s/ HE (R$)": _m(x["dsr"]) if x["dsr"] > 0.005 else "–"} for x in _vis])
+                    if len(_dfc):
+                        _evc = st.dataframe(_dfc, hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row",
+                                            key=_chave("dir_clt_clt", mes, tuple(_obras_sel), tuple(_cant_sel), _bus))
+                        _rows = [r for r in _evc.selection.rows if r < len(_vis)] if _evc is not None else []
+                        _ts = DD.somar_clt([_vis[r] for r in _rows] if _rows else _vis)
+                        _cap(("Marcados" if _rows else "Total da lista") + f": {_ts['n']} colaboradores · líquido {_m(_ts['liquido'])} · HE {_m(_ts['he'])} em {DD.fmt_horas(_ts['he_min'])} h · DSR s/ HE {_m(_ts['dsr'])}. "
+                             "Marque a caixinha de um ou mais colaboradores para somar só eles.")
+                    else:
+                        _cap("Nenhum colaborador com essa busca.")
+                    _cap("Fonte: recibos da folha importados (sem digitar nada). HE em horas = referência dos eventos de hora extra; HE (R$) = eventos de HE; a razão HE ÷ remuneração segue a regra da contabilidade (proventos − HE − DSR − descontos).")
+
+        # horas extras x receita
+        _md("**Horas extras × receita**")
+        sf = HIST.serie_he_combinada(hist, pes["serie"] if pes else [])
+        ms_g = MESES_G                                                                   # grafico: sempre 12 meses ate o mes de referencia
+        ev_g = DD.evolucao_he_receita(sf, ctx["serie"], ms_g)
+        if sum(1 for x in ev_g if x["he_pct"] is not None) >= 2:
+            rots_g = [_rot(x["mes"]) for x in ev_g]
+            base_g = alt.Chart(pd.DataFrame({"Mês": rots_g})).encode(x=alt.X("Mês:N", sort=rots_g, axis=alt.Axis(labelAngle=-45, title=None)))
+            dfp1 = pd.DataFrame([{"Mês": _rot(x["mes"]), "%": round(x["he_pct"] * 100, 1)} for x in ev_g if x["he_pct"] is not None])
+            l_he = alt.Chart(dfp1).mark_line(point=True, color=ORANGE).encode(x=alt.X("Mês:N", sort=rots_g, axis=alt.Axis(labelAngle=-45, title=None)), y=alt.Y("%:Q", title="% HE ÷ remuneração", axis=alt.Axis(titleColor=ORANGE)),
+                                                                              tooltip=["Mês", alt.Tooltip("%:Q", title="HE ÷ remuneração (%)")])
+            var_rows = []
+            for x in ev_g:
+                if x["var_he"] is not None:
+                    var_rows.append({"Mês": _rot(x["mes"]), "Série": "Custo de HE (var. %)", "Variação %": round(x["var_he"] * 100, 1)})
+                if x["var_receita"] is not None:
+                    var_rows.append({"Mês": _rot(x["mes"]), "Série": "Receita (var. %)", "Variação %": round(x["var_receita"] * 100, 1)})
+            layers = [l_he]
+            if var_rows:
+                l_var = alt.Chart(pd.DataFrame(var_rows)).mark_line(point=True, strokeDash=[5, 3]).encode(
+                    x=alt.X("Mês:N", sort=rots_g), y=alt.Y("Variação %:Q", title="Var. % s/ mês anterior", axis=alt.Axis(titleColor=NAVY)),
+                    color=alt.Color("Série:N", scale=alt.Scale(domain=["Custo de HE (var. %)", "Receita (var. %)"], range=["#C97A00", NAVY]),
+                                    legend=alt.Legend(orient="bottom", title=None)), tooltip=["Mês", "Série", alt.Tooltip("Variação %:Q", format=",.1f")])
+                layers.append(l_var)
+            estilo.altair(alt.layer(*layers).resolve_scale(y="independent").properties(height=280), width="stretch")
+            cp = DD.comparar_periodos(sf, ctx["serie"], mes_ini, mes)
+            _fv = lambda x: "n/d" if x is None else F.pct_br(x, 1)                      # noqa: E731
+            _cap(f"Período {PER_ROT} × período anterior ({PER.rotulo(cp['meses_anterior'][0], cp['meses_anterior'][-1])}): custo de HE {_fv(cp['var_he'])}"
+                 + (f" ({_mi(cp['he_anterior'])} → {_mi(cp['he_atual'])})" if cp["var_he"] is not None else "") + f"; receita {_fv(cp['var_receita'])}"
+                 + (f" ({_mi(cp['receita_anterior'])} → {_mi(cp['receita_atual'])})" if cp["var_receita"] is not None else "") + ". n/d = falta algum mês de dado num dos períodos.")
+            _cap("Linha cheia (laranja, eixo esquerdo) = horas extras + DSR ÷ remuneração. Linhas tracejadas (eixo direito) = quanto o custo de HE e a receita variaram sobre o mês anterior — "
+                 "para ver se a HE cresce mais que o faturamento. Receita = DRE confirmado/oficial (meses em andamento ficam de fora).")
+            if {x["origem"] for x in sf} == {"historico", "app"}:
+                _cap("Atenção à comparação: os meses do histórico (painel da contabilidade) usam como base proventos menos HE, sem descontar INSS/IRRF etc.; "
+                     "os meses com folha no app usam a remuneração líquida (menos todos os descontos), como a contabilidade pediu em 20/10/2026. Por isso pode haver um degrau entre as duas fontes.")
+        elif pes:
+            _cap("A série mensal de HE aparece com 2 ou mais meses de folha (ou com o histórico do painel).")
+        if pes:
+            fo = pes["folha"]
+            with st.expander("Folha CLT do mês: por empresa e por obra"):
+                st.dataframe(pd.DataFrame([{"Empresa": e["empresa"], "Colab.": e["colab"], "Remuneração": _m(e["base_he"]), "HE + DSR": _m(e["hora_extra"] + e["dsr_he"]),
+                                            "HE ÷ remuneração": F.pct_br(e["he_pct"]) if e["he_pct"] is not None else "–", "Custo (proventos + FGTS)": _m(e["custo"])} for e in fo["por_empresa"]]),
+                             hide_index=True, width="stretch")
+                po = sorted(fo["por_obra"].values(), key=lambda x: -x["colab"])
+                st.dataframe(pd.DataFrame([{"Obra": x["codigo"], "Nome": x["nome"], "Colab.": x["colab"], "Remuneração": _m(x["base_he"]), "HE + DSR": _m(x["hora_extra"] + x["dsr_he"]),
+                                            "HE ÷ remuneração": F.pct_br(x["he_pct"]) if x["he_pct"] is not None else "–"} for x in po]), hide_index=True, width="stretch")
+
 
 
 # ------------------------------------------------------------------ 7) INDICADORES FINANCEIROS  e  8) FINANCIAMENTOS (so' Sienge)

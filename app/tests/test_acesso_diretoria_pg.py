@@ -72,7 +72,7 @@ def test_painel_da_diretoria_com_dados_e_abas(conn):
     with patch("conexao.get_conn", return_value=conn):
         at = _app_como(conn, "diretor@empresa.com").run()
         assert not at.exception, at.exception
-        assert [t.label for t in at.tabs] == ["Resultado", "Obras", "Administração", "Despesas", "Pessoas", "Folha PJ", "Indicadores financeiros", "Financiamentos"]        # Investimentos: so' o editor (ou se liberado)
+        assert [t.label for t in at.tabs] == ["Resultado", "Obras", "Administração", "Despesas", "Pessoas", "Folha PJ", "Folha CLT", "Indicadores financeiros", "Financiamentos"]        # Investimentos: so' o editor (ou se liberado)
         assert any("Receita (base-line)" == m.label for m in at.metric)
         at.session_state["dir_todas_abas"] = True                                       # renderiza todas as abas (so' a aberta roda por padrao)
         at.run()
@@ -150,8 +150,7 @@ def test_painel_da_diretoria_cinco_abas_com_tudo(conn):
         assert _i_cat and _i_cred and _i_cat[0] < _i_cred[0], (_i_cat, _i_cred)
         nomes_pj = [list(d.value["Nome"]) for d in at.dataframe if "Nome" in d.value.columns and "Função" in d.value.columns]          # lista de colaboradores da aba Obras
         assert nomes_pj and any("Colab Fantasia" in n for n in nomes_pj[0]) and not any(n == "COLABORADOR TESTE" for n in nomes_pj[0]), nomes_pj
-        pj_exp = [d.value for d in at.dataframe if "Colaborador PJ" in d.value.columns]                                                 # expander "PJ do mes" da aba Pessoas
-        assert pj_exp and "Colab Fantasia" in set(pj_exp[0]["Colaborador PJ"]) and "COLABORADOR TESTE" in set(pj_exp[0]["Razão social"])
+        assert not any("Colaborador PJ" in d.value.columns for d in at.dataframe)                                                       # v0.53.0: "PJ do mes" saiu de Pessoas (a aba Folha PJ o substitui)
         rotulos = [m.label for m in at.metric]
         for esperado in ("Receita (base-line)", "Custos", "BDI", "Administração", "Resultado",        # Resultado
                          "Receita realizada", "Obras com prejuízo",                                           # Obras
@@ -161,15 +160,15 @@ def test_painel_da_diretoria_cinco_abas_com_tudo(conn):
             assert esperado in rotulos, (esperado, rotulos)
         colab = next(m for m in at.metric if m.label == "Colaboradores 09/2026")
         assert colab.value == "4" and "3 CLT + 1 PJ" in colab.delta                                            # 3 CLT (folha) + 1 PJ (contas pagas)
-        assert any("PJ do mês" in e.label for e in at.expander)
+        assert not any("PJ do mês" in e.label for e in at.expander)
         # v0.49.0: cards da folha + filtro obra -> canteiro (CLT e PJ) + lista "CLT do mes"
         assert any(e.label.startswith("CLT do mês: 3 colaboradores") for e in at.expander)
         assert next(m for m in at.metric if m.label == "Colaboradores CLT").value == "3" and any(m.label == "Líquido da folha" for m in at.metric)
-        next(b for b in at.button if b.key == "dir_pes_top_103").click().run()                                    # card clicavel: filtra pela obra com mais HE
+        next(b for b in at.button if b.key == "dir_clt_top_103").click().run()                                    # card clicavel: filtra pela obra com mais HE
         assert not at.exception, at.exception
-        assert next(w for w in at.multiselect if w.label == "Obra").value == ["103"]
+        assert next(w for w in at.multiselect if w.key.startswith("dir_clt_obras")).value == ["103"]
         assert any(e.label.startswith("CLT do mês: 2 colaboradores") for e in at.expander)
-        f_obra = next(w for w in at.multiselect if w.label == "Obra")
+        f_obra = next(w for w in at.multiselect if w.key.startswith("dir_clt_obras"))
         assert "103" in [o.split(" · ")[0] for o in f_obra.options] and "104" in [o.split(" · ")[0] for o in f_obra.options]
         f_obra.set_value(["104"]).run()
         assert not at.exception, at.exception
@@ -178,10 +177,10 @@ def test_painel_da_diretoria_cinco_abas_com_tudo(conn):
         assert list(f_cant.options) == ["OBRA TESTE DOIS"]                                                          # canteiros so' da obra marcada
         f_cant.set_value(["OBRA TESTE DOIS"]).run()
         assert not at.exception, at.exception
-        assert next(m for m in at.metric if m.label == "Colaboradores na seleção").value == "1"                    # canteiro marcado: so' ele (PJ some: nao tem canteiro)
+        assert next(m for m in at.metric if m.label == "Colaboradores CLT na seleção").value == "1"                    # canteiro marcado: so' ele
         assert not any(e.label.startswith("PJ do mês") for e in at.expander)
         next(w for w in at.multiselect if w.label.startswith("Canteiro")).set_value([]).run()
-        next(w for w in at.multiselect if w.label == "Obra").set_value([]).run()
+        next(w for w in at.multiselect if w.key.startswith("dir_clt_obras")).set_value([]).run()
         assert not at.exception, at.exception
         for modo in ("Mês", "Últimos 3 meses", "Últimos 6 meses", "Últimos 12 meses", "Personalizado", "Ano até o mês"):      # filtro de periodo flexivel: nenhuma aba quebra
             at.selectbox(key="dir_per_modo").select(modo).run()

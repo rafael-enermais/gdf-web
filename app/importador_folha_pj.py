@@ -82,6 +82,50 @@ def _data(v):
     return v if isinstance(v, dt.date) else None
 
 
+_PALAVRAS_EMPRESA = (("smg", 2), ("renov", 4), ("construtora", 5), ("engenharia", 3), ("solu", 6), ("energia", 1))        # palavra no nome do arquivo -> codigo da empresa (FP.EMPRESAS)
+
+
+def empresa_do_nome(nome_arquivo: str) -> str | None:
+    """'FLASH  RENOVAVEIS.xlsx' -> 'ENERMAIS RENOVAVEIS LTDA'. None se o nome do arquivo nao diz a empresa (ai o usuario escolhe)."""
+    n = FP.sem_acento(nome_arquivo)
+    for palavra, cod in _PALAVRAS_EMPRESA:
+        if palavra in n:
+            return FP.EMPRESAS[cod]
+    return None
+
+
+def detectar(conteudo: bytes, nome_arquivo: str = "") -> dict:
+    """Descobre sozinho o que e' o arquivo, so' olhando o cabecalho: 'flash' (coluna NOME COMPLETO + premiacao/refeicao), 'mapa' (colunas NOME e COD. CREDOR),
+    'novos' (o mesmo, mas e' o arquivo 'Novos colaboradores PJ') ou 'desconhecido'. Para o Flash acha a empresa pelo nome do arquivo.
+    Devolve {'tipo','empresa','abas','aba'} (aba = aba do mes mais recente, so' no mapa)."""
+    wb = _abrir(conteudo)
+    nomes_abas = [ws.title for ws in wb.worksheets]
+    def topo(ws):
+        return [r for _, r in zip(range(40), ws.iter_rows(values_only=True))]
+    primeira = topo(wb.worksheets[0])
+    ih, h = _achar_cabecalho(primeira, ("nome completo",))
+    if ih >= 0 and any(re.search(r"premia|refei|aliment", n) for n in h):
+        return {"tipo": "flash", "empresa": empresa_do_nome(nome_arquivo), "abas": nomes_abas, "aba": nomes_abas[0]}
+    for ws in wb.worksheets:
+        lin = topo(ws)
+        i2, h2 = _achar_cabecalho(lin, ("nome",))
+        if i2 >= 0 and _col(h2, "cod credor", "cod. credor") is not None:
+            novos = "novos" in FP.sem_acento(nome_arquivo) or "novos colaboradores" in FP.sem_acento(ws.title)
+            return {"tipo": "novos" if novos else "mapa", "empresa": None, "abas": nomes_abas, "aba": ws.title if novos else aba_padrao(nomes_abas)}
+    return {"tipo": "desconhecido", "empresa": None, "abas": nomes_abas, "aba": nomes_abas[0]}
+
+
+def resumo_salvo(conn) -> dict:
+    """O que ja' esta gravado (para a tela mostrar 'salvo' de verdade): mapa (quantos e quando) e Flash por mes/empresa (so' as cargas ativas)."""
+    with conn.cursor() as cur:
+        cur.execute("SELECT count(*), max(alterado_em) FROM pj_colaborador WHERE ativo")
+        n, quando = cur.fetchone()
+        cur.execute("""SELECT to_char(mes,'YYYY-MM'), empresa, count(*), COALESCE(sum(premiacao),0), COALESCE(sum(alimentacao),0), max(importado_por), max(importado_em)
+                       FROM pj_flash WHERE ativo GROUP BY mes, empresa ORDER BY mes DESC, empresa""")
+        fl = [{"mes": m, "empresa": e, "pessoas": p, "premiacao": float(a), "alimentacao": float(b), "quem": q, "quando": w} for m, e, p, a, b, q, w in cur.fetchall()]
+    return {"colaboradores": int(n or 0), "quando": quando, "flash": fl}
+
+
 def ler_mapa_colaboradores(conteudo: bytes, segredo: str, aba: str | None = None) -> dict:
     """Le a planilha da folha (aba do mes) ou o arquivo 'Novos colaboradores PJ'. Devolve {'aba','linhas':[{credor_id,nome,funcao,centro,empresa,cpf_hash,admissao}],'avisos':[...]}.
     So' entram linhas de vinculo PJ (ou sem coluna de vinculo) com codigo de credor do Sienge."""

@@ -187,3 +187,28 @@ def test_ingestao_grava_desconto_do_titulo(base):
         assert float(cur.fetchone()[0]) == 50.0
         cur.execute("SELECT desconto_titulo FROM pnl_titulo WHERE lado='P' AND bill_id=1")
         assert cur.fetchone()[0] in (None, 0)
+
+
+def test_detecta_o_tipo_do_arquivo_e_a_empresa_pelo_nome(base):
+    """Envio unico: o app descobre se e' Flash, mapa ou 'Novos colaboradores' e a empresa do Flash (dados ficticios)."""
+    fl = IP.detectar(_flash_xlsx([["Joao Teste", "529.982.247-25", 100, 50, 0]]), "FLASH  RENOVAVEIS.xlsx")
+    assert fl["tipo"] == "flash" and fl["empresa"] == "ENERMAIS RENOVAVEIS LTDA"
+    assert IP.detectar(_flash_xlsx([]), "Flash Out - Energia.xlsx")["empresa"] == "ENERMAIS ENERGIA LTDA"
+    assert IP.detectar(_flash_xlsx([]), "FLASH SMG SOLUCOES.xlsx")["empresa"] == "SMG SOLUÇÕES LTDA"
+    assert IP.detectar(_flash_xlsx([]), "FLASH SOLUCOES.xlsx")["empresa"] == "ENERMAIS SOLUCOES LTDA"
+    assert IP.detectar(_flash_xlsx([]), "arquivo qualquer.xlsx")["empresa"] is None            # nome nao diz a empresa: a tela pede para escolher
+    mp = IP.detectar(_mapa_xlsx(), "Mapa PJ.xlsx")
+    assert mp["tipo"] == "mapa" and mp["aba"] == "10-2026" and mp["abas"] == ["09-2026", "10-2026"]
+    nv = IP.detectar(_mapa_xlsx(), "Novos colaboradores PJ - 102026.xlsx")
+    assert nv["tipo"] == "novos"
+    assert IP.detectar(_xlsx({"X": [["a", "b"], [1, 2]]}), "outra.xlsx")["tipo"] == "desconhecido"
+
+
+def test_resumo_salvo_mostra_o_que_foi_gravado(base):
+    assert IP.resumo_salvo(base) == {"colaboradores": 0, "quando": None, "flash": []}
+    m = IP.ler_mapa_colaboradores(_mapa_xlsx(), SEGREDO)
+    IP.gravar_colaboradores(base, m["linhas"], MES, "teste@x")
+    IP.gravar_flash(base, MES, "ENERMAIS ENERGIA LTDA", [{"credor_id": 501, "premiacao": 100.0, "alimentacao": 50.0}], "teste@x")
+    r = IP.resumo_salvo(base)
+    assert r["colaboradores"] == 2 and r["quando"] is not None
+    assert [(x["mes"], x["empresa"], x["pessoas"], x["premiacao"], x["alimentacao"]) for x in r["flash"]] == [(MES, "ENERMAIS ENERGIA LTDA", 1, 100.0, 50.0)]
