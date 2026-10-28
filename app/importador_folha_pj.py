@@ -210,6 +210,56 @@ def ler_flash(conteudo: bytes, segredo: str) -> dict:
     return {"linhas": out, "total_premiacao": round(sum(x["premiacao"] for x in out), 2), "total_alimentacao": round(sum(x["alimentacao"] for x in out), 2), "avisos": avisos}
 
 
+_STOP = {"de", "da", "do", "das", "dos", "e", "di", "du"}
+
+
+def _tokens(chave: str) -> list:
+    return [t for t in chave.split() if t not in _STOP]
+
+
+def _tok_igual(a: str, b: str) -> bool:
+    """Palavra igual com tolerancia a erro de digitacao (ALISON x ALISSON); inicial ('T') casa com quem comeca pela letra."""
+    if a == b:
+        return True
+    if len(a) == 1 or len(b) == 1:
+        return a[0] == b[0]
+    n = min(len(a), len(b))
+    return n >= 4 and _distancia(a, b) <= (1 if n < 8 else 2)
+
+
+def _distancia(a: str, b: str) -> int:
+    """Distancia de edicao (inserir, tirar, trocar letra ou trocar duas vizinhas)."""
+    d = [[0] * (len(b) + 1) for _ in range(len(a) + 1)]
+    for i in range(len(a) + 1):
+        d[i][0] = i
+    for j in range(len(b) + 1):
+        d[0][j] = j
+    for i in range(1, len(a) + 1):
+        for j in range(1, len(b) + 1):
+            d[i][j] = min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] != b[j - 1]))
+            if i > 1 and j > 1 and a[i - 1] == b[j - 2] and a[i - 2] == b[j - 1]:
+                d[i][j] = min(d[i][j], d[i - 2][j - 2] + 1)
+    return d[len(a)][len(b)]
+
+
+def nome_aproximado(a: str, b: str) -> bool:
+    """O mesmo nome escrito de outro jeito: o mais curto (2 palavras ou mais) cabe, na mesma ordem, no mais longo, com o 1o nome igual
+    ('Tiago Gimenez' = 'TIAGO PEREIRA GIMENEZ'; 'Othon T. Mesquita' = 'OTHON TROVISCO MESQUITA'; 'ALISON' = 'ALISSON').
+    Nao junta quem so' repete sobrenome ('Jackson Joao da Silva' x 'Jackson Faria da Silva' nao casa)."""
+    ta, tb = _tokens(a), _tokens(b)
+    curto, longo = (ta, tb) if len(ta) <= len(tb) else (tb, ta)
+    if len(curto) < 2 or not _tok_igual(curto[0], longo[0]) or len(curto[0]) == 1:
+        return False
+    pos = 0
+    for t in curto:
+        while pos < len(longo) and not _tok_igual(t, longo[pos]):
+            pos += 1
+        if pos == len(longo):
+            return False
+        pos += 1
+    return True
+
+
 def cruzar_flash(flash: list, colaboradores: dict, fantasias: dict | None = None) -> dict:
     """Casa cada pessoa do Flash com um colaborador PJ: primeiro pelo hash do CPF, depois pelo nome (cadastro do mapa e nome fantasia do Sienge).
     colaboradores = {credor_id: {'cpf_hash','chave'}}; fantasias = {credor_id: nome fantasia}. Nome repetido em mais de um credor nao casa (ambiguo).
@@ -233,12 +283,16 @@ def cruzar_flash(flash: list, colaboradores: dict, fantasias: dict | None = None
             cands, via = por_cpf[f["cpf_hash"]], "CPF"
         elif f["nome_chave"] in por_nome:
             cands, via = sorted(por_nome[f["nome_chave"]]), "nome"
+        if not cands and (f["premiacao"] or f["alimentacao"]):             # nome escrito diferente: so' se houver UM credor que case
+            ap = sorted({cid for nome, ids in por_nome.items() if nome_aproximado(f["nome_chave"], nome) for cid in ids})
+            if ap:
+                cands, via = ap, "nome aproximado"
         if not cands:
             sem += 1
         elif len(cands) > 1:
             amb += 1
         elif f["premiacao"] or f["alimentacao"]:
-            casadas.append({"credor_id": cands[0], "premiacao": f["premiacao"], "alimentacao": f["alimentacao"], "via": via})
+            casadas.append({"credor_id": cands[0], "premiacao": f["premiacao"], "alimentacao": f["alimentacao"], "via": via, "nome_flash": f["nome"]})
     return {"casadas": casadas, "sem_pj": sem, "ambiguas": amb}
 
 
@@ -261,8 +315,8 @@ def gravar_colaboradores(conn, linhas: list, mes: str, usuario: str | None, novo
 
 def colaboradores_cadastrados(conn) -> dict:
     with conn.cursor() as cur:
-        cur.execute("SELECT credor_id, cpf_hash, nome_chave FROM pj_colaborador WHERE ativo")
-        return {int(i): {"cpf_hash": h, "chave": k} for i, h, k in cur.fetchall()}
+        cur.execute("SELECT credor_id, cpf_hash, nome_chave, nome_exibicao FROM pj_colaborador WHERE ativo")
+        return {int(i): {"cpf_hash": h, "chave": k, "nome": n} for i, h, k, n in cur.fetchall()}
 
 
 def fantasias_dos(conn, ids: list) -> dict:

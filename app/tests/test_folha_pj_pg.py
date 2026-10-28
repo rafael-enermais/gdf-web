@@ -212,3 +212,18 @@ def test_resumo_salvo_mostra_o_que_foi_gravado(base):
     r = IP.resumo_salvo(base)
     assert r["colaboradores"] == 2 and r["quando"] is not None
     assert [(x["mes"], x["empresa"], x["pessoas"], x["premiacao"], x["alimentacao"]) for x in r["flash"]] == [(MES, "ENERMAIS ENERGIA LTDA", 1, 100.0, 50.0)]
+
+
+def test_nome_escrito_diferente_casa_so_se_for_seguro():
+    """Flash com nome abreviado/erro de digitacao casa com UM colaborador; sobrenome repetido nao junta pessoas diferentes (nomes ficticios)."""
+    c = FP.chave_nome
+    sim = [("Pedro Alvarenga", "PEDRO LUIZ ALVARENGA"), ("Ana Beatriz F. Souza", "ANA BEATRIZ FONSECA DA SOUZA"), ("MARCELO ALISON LIMA", "MARCELO ALISSON LIMA"),
+           ("Joaquim Yuri Pinto", "JOAQUIM YURY PINTO"), ("Carla Midori Tanaka Kabawata", "Carla Midori Tanaka Kawabata"), ("Helena Prado", "HELENA PRADO DO NASCIMENTO")]
+    nao = [("Jorge Joao da Silva", "Jorge Faria da Silva"), ("Edson Borges Rocha", "Edson Gregoris Rocha"), ("Mauro Martins dos Santos", "LUCAS MARTINS DOS SANTOS"), ("Joao", "Joao Silva")]
+    assert all(IP.nome_aproximado(c(a), c(b)) for a, b in sim)
+    assert not any(IP.nome_aproximado(c(a), c(b)) for a, b in nao)
+    cad = {1: {"cpf_hash": None, "chave": c("PEDRO LUIZ ALVARENGA")}, 2: {"cpf_hash": None, "chave": c("Jorge Faria da Silva")}}
+    flash = [{"nome": "Pedro Alvarenga", "nome_chave": c("Pedro Alvarenga"), "cpf_hash": None, "premiacao": 100.0, "alimentacao": 0.0},
+             {"nome": "Jorge Joao da Silva", "nome_chave": c("Jorge Joao da Silva"), "cpf_hash": None, "premiacao": 0.0, "alimentacao": 650.0}]
+    r = IP.cruzar_flash(flash, cad)
+    assert [(x["credor_id"], x["via"]) for x in r["casadas"]] == [(1, "nome aproximado")] and r["sem_pj"] == 1

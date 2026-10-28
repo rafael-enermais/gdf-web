@@ -307,7 +307,7 @@ def _arquivos_do_mes(conn, ok: bool, seg: str, usuario) -> None:
             for x in lidos:                              # o mapa deste envio vale para o cruzamento da previa
                 if x["tipo"] in ("mapa", "novos"):
                     for l in x["lido"]["linhas"]:
-                        cad[l["credor_id"]] = {"cpf_hash": l["cpf_hash"], "chave": FP.chave_nome(l["nome"])}
+                        cad[l["credor_id"]] = {"cpf_hash": l["cpf_hash"], "chave": FP.chave_nome(l["nome"]), "nome": l["nome"]}
             fant = IP.fantasias_dos(conn, list(cad))
             linhas_prev, falta_emp = [], False
             for x in lidos:
@@ -316,12 +316,18 @@ def _arquivos_do_mes(conn, ok: bool, seg: str, usuario) -> None:
                     x["cruz"] = cruz
                     falta_emp = falta_emp or not x["empresa"]
                     linhas_prev.append({"Arquivo": x["nome"], "O que é": "Flash", "Empresa / aba": x["empresa"] or "⚠ escolher a empresa", "Pessoas no arquivo": len(x["lido"]["linhas"]),
-                                        "Casaram com PJ": len(cruz["casadas"]), "Sem PJ (CLT/outra empresa)": cruz["sem_pj"],
+                                        "Casaram com PJ": len(cruz["casadas"]), "Pelo nome aproximado": sum(1 for c in cruz["casadas"] if c["via"] == "nome aproximado"), "Sem PJ (CLT/outra empresa)": cruz["sem_pj"],
                                         "Ajuda de custo (casadas)": _m(sum(c["premiacao"] for c in cruz["casadas"])), "Vale alimentação (casadas)": _m(sum(c["alimentacao"] for c in cruz["casadas"]))})
                 else:
                     linhas_prev.append({"Arquivo": x["nome"], "O que é": _TIPOS[x["tipo"]], "Empresa / aba": f"aba {x['aba']}", "Pessoas no arquivo": len(x["lido"]["linhas"]),
-                                        "Casaram com PJ": None, "Sem PJ (CLT/outra empresa)": None, "Ajuda de custo (casadas)": "–", "Vale alimentação (casadas)": "–"})
+                                        "Casaram com PJ": None, "Pelo nome aproximado": None, "Sem PJ (CLT/outra empresa)": None, "Ajuda de custo (casadas)": "–", "Vale alimentação (casadas)": "–"})
             st.dataframe(pd.DataFrame(linhas_prev), hide_index=True, width="stretch")
+            aprox = [{"Arquivo": x["nome"], "Nome no Flash": c["nome_flash"], "Casou com (mapa)": (cad.get(c["credor_id"]) or {}).get("nome") or c["credor_id"],
+                      "Ajuda de custo": _m(c["premiacao"]), "Vale alimentação": _m(c["alimentacao"])}
+                     for x in lidos if x["tipo"] == "flash" for c in x["cruz"]["casadas"] if c["via"] == "nome aproximado"]
+            if aprox:
+                st.markdown("**Conferir: nomes escritos de outro jeito que o app casou por aproximação** (se algum estiver errado, tire o arquivo e avise o Claude)")
+                st.dataframe(pd.DataFrame(aprox), hide_index=True, width="stretch")
             for x in lidos:
                 for av in x["lido"]["avisos"]:
                     st.caption(_t(f"{x['nome']}: {av}"))
