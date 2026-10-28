@@ -112,6 +112,18 @@ def ler_mapa_colaboradores(conteudo: bytes, segredo: str, aba: str | None = None
             continue
         out.append({"credor_id": cod, "nome": nome, "funcao": str(g("funcao") or "").strip() or None, "centro": str(g("centro") or "").strip() or None,
                     "empresa": str(g("empresa") or "").strip() or None, "cpf_hash": FP.hash_cpf(g("cpf"), segredo), "admissao": _data(g("adm"))})
+    unicos, repetidos = {}, 0
+    for x in out:                                                    # a mesma pessoa em duas linhas (dois centros): fica a 1a e completa o que faltar
+        o = unicos.get(x["credor_id"])
+        if o is None:
+            unicos[x["credor_id"]] = x
+        else:
+            repetidos += 1
+            for k2 in ("funcao", "centro", "empresa", "cpf_hash", "admissao"):
+                o[k2] = o[k2] or x[k2]
+    out = list(unicos.values())
+    if repetidos:
+        avisos.append(f"{repetidos} linhas repetiam um credor já lido (a mesma pessoa em mais de uma linha): foi mantida a primeira.")
     if nao_pj:
         avisos.append(f"{nao_pj} linhas que não são PJ (CLT, estagiário etc.) foram ignoradas.")
     if sem_cod:

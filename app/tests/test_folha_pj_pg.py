@@ -116,7 +116,8 @@ def _mapa_xlsx():
                               ["Joao Teste", "529.982.247-25", 501, "Engenheiro", "1005 - EE - ANASTACIO", "ENERMAIS ENERGIA LTDA", "PJ", None],
                               ["Maria Teste", "111.444.777-35", 502, "Técnica", "1005 - EE - ANASTACIO", "ENERMAIS ENERGIA LTDA", "PJ", None],
                               ["Clt Pessoa", "390.533.447-05", 700, "Analista", "1 - SEDE", "ENERMAIS ENERGIA LTDA", "CLT", None],
-                              ["Sem Codigo", "276.241.660-32", None, "Analista", "1 - SEDE", "ENERMAIS ENERGIA LTDA", "PJ", None]]})
+                              ["Sem Codigo", "276.241.660-32", None, "Analista", "1 - SEDE", "ENERMAIS ENERGIA LTDA", "PJ", None],
+                              ["Joao Teste", "529.982.247-25", 501, None, "1006 - EE - NOVA ERA", "ENERMAIS ENERGIA LTDA", "PJ", None]]})      # mesmo credor em outra linha
 
 
 def _flash_xlsx(linhas):
@@ -127,7 +128,7 @@ def test_mapa_le_aba_do_mes_e_nao_guarda_cpf(base):
     m = IP.ler_mapa_colaboradores(_mapa_xlsx(), SEGREDO)
     assert m["aba"] == "10-2026" and [l["credor_id"] for l in m["linhas"]] == [501, 502]
     assert all(l["cpf_hash"] and len(l["cpf_hash"]) == 64 and "52998224725" not in l["cpf_hash"] for l in m["linhas"])
-    assert any("não são PJ" in a for a in m["avisos"]) and any("sem código" in a for a in m["avisos"])
+    assert any("não são PJ" in a for a in m["avisos"]) and any("sem código" in a for a in m["avisos"]) and any("repetiam" in a for a in m["avisos"])
     cont = IP.gravar_colaboradores(base, m["linhas"], MES, "teste@x", novos=True)
     assert cont == {"novos": 2, "atualizados": 0}
     assert IP.gravar_colaboradores(base, m["linhas"], MES, "teste@x")["atualizados"] == 2
