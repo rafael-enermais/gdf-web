@@ -6,6 +6,7 @@ a leitura so' enxerga baixas/rateios da ULTIMA sincronizacao de cada titulo (vie
 """
 from __future__ import annotations
 
+import unicodedata
 import csv
 import hashlib
 import io
@@ -940,13 +941,18 @@ def meses_com_obras(conn) -> list:
     return sorted(set(meses_com_dre(conn)) | set(meses_com_emissao(conn)))
 
 
-SEMPRE_EM_DEMAIS = ("1026", "1050", "2014", "3009", "5013", "6003")       # contabilidade 13/10: sempre em "Demais obras"
+SEMPRE_EM_DEMAIS = ("1026", "1050", "2014", "3009", "5013", "6003")       # contabilidade 13/10: sempre em "Demais obras" (so' vale com AGRUPAR_DEMAIS_OBRAS ligado)
+AGRUPAR_DEMAIS_OBRAS = False        # 28/10/2026 (pedido da Suellen): sem a categorizacao "Demais obras"; todas as obras com codigo proprio ficam abertas, cada uma na sua linha
 
 
-def agrupar_demais_obras(ob: dict, com_projecao, n: int = 5) -> dict:
+def agrupar_demais_obras(ob: dict, com_projecao, n: int = 5, agrupar: bool | None = None) -> dict:
     """Regra do painel da contabilidade para a tabela de Obras: ficam em linha propria as 5 maiores em BDI positivo, as 5 maiores em BDI negativo e as obras com
     projecao de receita no mes; todas as outras (e as da lista SEMPRE_EM_DEMAIS) viram a linha 'Demais obras' (DEM). Os totais nao mudam.
-    Recebe o resultado de `obras_do_dre` e devolve uma COPIA com 'linhas' reagrupadas (e 'n' na linha DEM)."""
+    Recebe o resultado de `obras_do_dre` e devolve uma COPIA com 'linhas' reagrupadas (e 'n' na linha DEM).
+    Desde 28/10/2026 (`AGRUPAR_DEMAIS_OBRAS` desligado) NAO agrupa: devolve as linhas como vieram (obras com codigo proprio abertas; so' fica o 'DEM' que ja vinha de centros
+    sem codigo de obra no de-para), com 'DEM' por ultimo."""
+    if not (AGRUPAR_DEMAIS_OBRAS if agrupar is None else agrupar):
+        return {**ob, "linhas": sorted((dict(l) for l in ob["linhas"]), key=lambda l: (l["obra"] == "DEM", -l["receita"]))}
     proprias = [l for l in ob["linhas"] if l["obra"] != "DEM"]
     dem0 = next((l for l in ob["linhas"] if l["obra"] == "DEM"), None)
     lucro = sorted((l for l in proprias if l["bdi"] > 0.005), key=lambda l: -l["bdi"])[:n]
@@ -1517,6 +1523,15 @@ def _periodo(mes_ini: str, mes_fim: str) -> tuple:
     return f"{mes_ini}-01", f"{mes_fim}-01"
 
 
+UNIDADES_FORA_ADM = (("mega", "aragoi"),)        # 28/10/2026 (pedido da Suellen): a unidade Mega Aragoiania sai do cenario da Administracao (todas as palavras no nome da unidade)
+
+
+def unidade_fora_adm(nome) -> bool:
+    """True se a unidade (empresa do de-para) nao entra no cenario da Administracao (sem acento e sem diferenca de maiuscula)."""
+    s = unicodedata.normalize("NFKD", str(nome or "")).encode("ascii", "ignore").decode().lower()
+    return any(all(p in s for p in ps) for ps in UNIDADES_FORA_ADM)
+
+
 def adm_linhas(conn, mes_ini: str, mes_fim: str, prefixos: list, sem_previsao: bool = False) -> list:
     """Despesas PAGAS das unidades ADM (centros de custo com grupo 'ADM' no de-para) entre os meses 'AAAA-MM' (inclusive), por conta, credor e unidade:
     soma(liquido da baixa x % do rateio). Mesmas regras da aba Despesas (contas excluidas, previsao). Sem de-para no banco devolve [].
@@ -1537,7 +1552,7 @@ def adm_linhas(conn, mes_ini: str, mes_fim: str, prefixos: list, sem_previsao: b
     except Exception:
         return []
     return [{"plano_cod": c, "plano_nome": n, "credor": cr, "unidade": u, "valor": round(float(v or 0), 2)}
-            for c, n, cr, u, v in linhas if not _excluido(c, prefixos)]
+            for c, n, cr, u, v in linhas if not _excluido(c, prefixos) and not unidade_fora_adm(u)]
 
 
 def adm_evolucao(conn, mes_ini: str, mes_fim: str, prefixos: list, sem_previsao: bool = False) -> list:
@@ -1546,16 +1561,17 @@ def adm_evolucao(conn, mes_ini: str, mes_fim: str, prefixos: list, sem_previsao:
     filtro = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
     try:
         with conn.cursor() as cur:
-            cur.execute(f"""SELECT to_char(b.data_pagamento,'YYYY-MM'), r.plano_cod, sum(b.liquido * r.percentual / 100.0)
+            cur.execute(f"""SELECT to_char(b.data_pagamento,'YYYY-MM'), r.plano_cod, sum(b.liquido * r.percentual / 100.0), COALESCE(NULLIF(trim(g.empresa_nome),''),'(sem unidade)')
                             FROM pnl_v_baixa b
                             JOIN pnl_v_rateio r ON r.lado=b.lado AND r.bill_id=b.bill_id AND r.installment_id=b.installment_id
                             JOIN pnl_titulo t ON t.lado=b.lado AND t.bill_id=b.bill_id AND t.installment_id=b.installment_id
                             JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id AND g.grupo = 'ADM'
                             WHERE b.lado='P' AND b.data_pagamento >= %s::date AND b.data_pagamento < (%s::date + interval '1 month') {filtro}
-                            GROUP BY 1, 2""", (ini, fim))
+                            GROUP BY 1, 2, 4""", (ini, fim))
             linhas = cur.fetchall()
     except Exception:
         return []
+    linhas = [l[:3] for l in linhas if not unidade_fora_adm(l[3])]
     por = {}
     for m, c, v in linhas:
         if not _excluido(c, prefixos):

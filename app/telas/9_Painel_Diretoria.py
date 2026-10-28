@@ -235,6 +235,12 @@ def _estilo(df, numeros=(), percentuais=()):
     return df.style.format(fm, na_rep="–")
 
 
+def _realce_totalizadoras(linha):
+    """Mesma ideia da DRE: a linha totalizadora (grupo de 1o nivel, codigo '2.xx') em negrito e com fundo azul-acinzentado; as contas de baixo ficam normais."""
+    tot = str(linha.get("Código", "")).count(".") <= 1
+    return ["font-weight: 700; background-color: #E8EAF3; color: #1B2559" if tot else "" for _ in linha.index]
+
+
 def _m(v, vazio="–"):
     return F.moeda_br(v, vazio) if v is not None else vazio
 
@@ -821,18 +827,18 @@ if aba_adm.open or _TODAS:
                 k[4].metric("Meses acima do orçado", f"{acima_n} de {len(so)}" if so else "–", "realizado > orçado", delta_color="off", border=True)
                 so_g = ap.get("serie_orc_g") or []
                 if len(so_g) > 1:
-                    _md("**Despesas ADM — orçado × realizado por mês (12 meses)**")
+                    _md("**Despesas ADM — orçado × realizado por mês (12 meses, R$ mil)**")
                     linhas_g = []
                     for x in so_g:
-                        linhas_g.append({"Mês": _rot(x["mes"]), "Série": "Orçado", "v": x["orcado"] / 1e6})
-                        linhas_g.append({"Mês": _rot(x["mes"]), "Série": "Realizado acima do orçado" if x["realizado"] > x["orcado"] else "Realizado", "v": x["realizado"] / 1e6})
+                        linhas_g.append({"Mês": _rot(x["mes"]), "Série": "Orçado", "v": x["orcado"] / 1e3})
+                        linhas_g.append({"Mês": _rot(x["mes"]), "Série": "Realizado acima do orçado" if x["realizado"] > x["orcado"] else "Realizado", "v": x["realizado"] / 1e3})
                     dg = pd.DataFrame(linhas_g)
                     ordem_m = [_rot(x["mes"]) for x in so_g]
                     estilo.altair(alt.Chart(dg).mark_bar().encode(
                         x=alt.X("Mês:N", sort=ordem_m, axis=alt.Axis(labelAngle=0, title=None)), xOffset=alt.XOffset("Série:N"),
-                        y=alt.Y("v:Q", title="R$ milhões"),
+                        y=alt.Y("v:Q", title="R$ mil"),
                         color=alt.Color("Série:N", scale=alt.Scale(domain=["Orçado", "Realizado", "Realizado acima do orçado"], range=[CINZA, NAVY, RUIM]), legend=alt.Legend(orient="bottom", title=None)),
-                        tooltip=["Mês", "Série", alt.Tooltip("v:Q", title="R$ mi", format=",.2f")]).properties(height=260), width="stretch")
+                        tooltip=["Mês", "Série", alt.Tooltip("v:Q", title="R$ mil", format=",.0f")]).properties(height=260), width="stretch")
                 # por grupo de despesa (orcado x realizado, mes e periodo); clicar filtra os credores E as contas abaixo
                 _md("**Por grupo de despesa**")
                 gm = {g["codigo"]: g for g in (o["grupos"] if o else [])}
@@ -850,7 +856,7 @@ if aba_adm.open or _TODAS:
                 if len(grp):
                     cfg_g = {c: st.column_config.NumberColumn(c, format="localized") for c in grp.columns if c not in ("Código", "Grupo")}
                     _cap("Marque a caixinha de um ou mais grupos para filtrar as contas e os credores abaixo (várias marcadas somam; nenhuma = total). Desvio = realizado − orçado: positivo é estouro. O orçamento está consolidado das unidades.")
-                    ev_g = st.dataframe(grp, hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row", key="dir_adm_grp", column_config=cfg_g)
+                    ev_g = st.dataframe(grp.style.apply(_realce_totalizadoras, axis=1), hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row", key="dir_adm_grp", column_config=cfg_g)
                     grp_sel = _selecionadas(ev_g, grp)
                 filtros_g = list(grp_sel["Código"]) if grp_sel is not None and len(grp_sel) else []
                 base_c = ac or o
@@ -894,7 +900,7 @@ if aba_adm.open or _TODAS:
                     un = un.sort_values(["ano", "mes"], ascending=False).reset_index(drop=True)
                     tot_u = float(un["ano"].sum())
                     _cap(f"Pago nas unidades da administração (contas pagas, inclui pessoal). 1) Marque uma ou mais unidades (ou deixe sem marcação para ver todas). 2) Marque um ou mais credores para ver as contas deles. "
-                         f"Mês = {_rot(mes)}; período = {PER_ROT}.")
+                         f"Mês = {_rot(mes)}; período = {PER_ROT}. A unidade Mega Aragoiânia não entra no cenário da Administração.")
                     un_m = pd.DataFrame({"Unidade": un["unidade"], _rot(mes): un["mes"].map(lambda x: _m(x) if abs(x) > 0.005 else "–"), ACUM: un["ano"].map(_m),
                                          "% do período": un["ano"].map(lambda x: F.pct_br(x / tot_u) if tot_u else "–")})
                     ev_u = st.dataframe(un_m, hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row", key=_chave("dir_adm_un", filtros_cod, contas_sel))

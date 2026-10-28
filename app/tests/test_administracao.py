@@ -249,3 +249,18 @@ def test_credor_grupo_demais_pj_e_independente_do_outros_dir(conn):
     assert logs and "EXEMPLO" not in str(logs[0]["detalhe"]).upper() and "DEMAIS_PJ" in str(logs[-1]["detalhe"] if len(logs) == 1 else [l["detalhe"] for l in logs])
     assert P.credor_grupo_remover(conn, r["id"], "teste@x") and P.credor_grupo_ativos(conn, "DEMAIS_PJ") == []
     assert len(P.credor_grupo_ativos(conn)) == 1                                              # remover num grupo nao mexe no outro
+
+
+def test_unidade_mega_aragoiania_fica_fora_do_cenario_adm_sem_acento_nem_caixa():
+    assert P.unidade_fora_adm("MEGA ARAGOIÂNIA") and P.unidade_fora_adm("Mega Aragoiania Energia SPE Ltda") and P.unidade_fora_adm("mega  aragoiânia")
+    assert not P.unidade_fora_adm("EMPRESA A") and not P.unidade_fora_adm("MEGA SOLAR") and not P.unidade_fora_adm(None)
+
+
+@pytest.mark.pg
+def test_adm_linhas_e_evolucao_tiram_a_unidade_mega_aragoiania(conn):
+    _montar(conn)
+    with conn.cursor() as cur:
+        cur.execute("UPDATE pnl_centro_grupo SET empresa_nome='MEGA ARAGOIÂNIA ENERGIA' WHERE centro_custo_id=2")           # o centro 2 (ago/26, R$ 200) vira a unidade que sai
+    ac = P.adm_linhas(conn, "2026-08", "2026-09", PREF, sem_previsao=True)
+    assert round(sum(l["valor"] for l in ac), 2) == 1400.0 and {l["unidade"] for l in ac} == {"EMPRESA A"}
+    assert P.adm_evolucao(conn, "2026-08", "2026-09", PREF, True) == [{"mes": "2026-09", "valor": 1400.0}]

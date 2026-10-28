@@ -289,3 +289,32 @@ def test_colunas_numericas_nunca_sao_cortadas_e_titulo_nao_fica_solto():
         for tipo, cel in rows:
             assert pdfmetrics.stringWidth(cel[j], "PB" if tipo == "tot" else "P", fs + (0.2 if tipo == "tot" else 0)) + 10 <= larg[j] + 0.01, (j, cel[j])
     assert R_._h_min({"t": "barras", "h": 100}) >= 146 and R_._h_min({"t": "kpis", "itens": []}) >= 66
+
+
+def test_texto_longo_quebra_em_linhas_sem_cortar_e_pagina_pode_quebrar_por_informacao(conn):
+    import re
+    _cenario_rico(conn)
+    if not shutil.which("pdftotext"):
+        pytest.skip("pdftotext indisponivel")
+    d = RDD.montar(conn, "2026-01", "2026-09", ["ob_tabela"], PER.ANO, None, None, "")
+    nome = "PARQUE SOLAR ALFA COM NOME BEM LONGO DE TESTE DA TABELA"
+    tb = _tabelas(_bloco(d, "ob_tabela"))[0]
+    tb["rows"][0][1][1] = nome.strip()
+    t = _texto(RD.gerar_pdf(d))
+    assert all(p in t for p in ("PARQUE", "ALFA", "LONGO", "TESTE", "TABELA")) and "TABELA…" not in t                    # o texto foi para a linha de baixo, inteiro (nada de reticencias)
+    d1 = RDD.montar(conn, "2026-01", "2026-09", ["res_formula", "res_receita", "res_dre", "adm_kpis"], PER.ANO, None, None, "")
+    d2 = RDD.montar(conn, "2026-01", "2026-09", ["res_formula", "res_receita", "res_dre", "adm_kpis"], PER.ANO, None, None, "", quebra_pagina=True)
+    assert d1["meta"]["quebra_pagina"] is False and d2["meta"]["quebra_pagina"] is True
+    assert _texto(RD.gerar_pdf(d2)).count("\f") > _texto(RD.gerar_pdf(d1)).count("\f")                              # com quebra, cada informacao abre pagina nova
+
+
+def test_adm_grupos_com_totalizadoras_em_destaque_e_desvio_em_mil(conn):
+    _cenario_rico(conn)
+    d = RDD.montar(conn, "2026-01", "2026-09", ["adm_grupos", "adm_serie", "adm_unidades"], PER.ANO, None, None, "")
+    tb = _tabelas(_bloco(d, "adm_grupos"))[0]
+    tipos = [r[0] for r in tb["rows"]]
+    assert tipos[-1] == "tot" and tb["rows"][-1][1][1] == "Total das despesas ADM"
+    for tipo, cel in tb["rows"][:-1]:
+        assert tipo == ("sub" if cel[0].count(".") <= 1 else "norm"), cel[0]                                          # grupo de 1o nivel em destaque, como na DRE
+    ch = [e for e in _bloco(d, "adm_serie")["els"] if e.get("t") == "barras"]
+    assert ch and ch[0]["fmt"] == "mil" and ch[0]["unidade"] == "R$ mil" and "R$ mil" in ch[0]["titulo"]

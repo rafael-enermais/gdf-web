@@ -70,6 +70,7 @@ class _Doc:
         self.sec = ""
         self.mapa: dict = {}
         self.ant = mapa_ant or {}
+        self.quebra = False                                          # True = cada informacao comeca em pagina nova
 
     # ---- paginas
     def pagina(self, secao_nome: str, continuacao: bool = False):
@@ -190,18 +191,35 @@ class _Doc:
         prontas = []
         for tipo, cel in rows:
             font = "PB" if tipo in ("sub", "tot", "sec") else "P"
-            nova = []
-            for (w_, _al), v in zip(cols, cel):
+            nova, quebra = [], False
+            for (w_, al), v in zip(cols, cel):
                 if isinstance(v, tuple):
                     s, cor = v
                 else:
                     s, cor = str(v), None
-                s = _clip(s, font, fs, w_ - 10)
+                if tipo == "norm" and al == "l" and pdfmetrics.stringWidth(s, font, fs) > w_ - 10:
+                    # quebra de texto: o texto longo vai para a linha de baixo (ate 3 linhas; so' depois corta com reticencias)
+                    lns = simpleSplit(s, "P", fs, w_ - 12)
+                    if len(lns) > 3:
+                        ult = lns[2]
+                        while ult and pdfmetrics.stringWidth(ult + "…", "P", fs) > w_ - 12:
+                            ult = ult[:-1]
+                        lns = lns[:2] + [ult.rstrip() + "…"]
+                    s, quebra = " ".join(lns), True
+                else:
+                    s = _clip(s, font, fs, w_ - 10)
                 if cor is None and _negativo(s):
                     cor = _NEG_TOT if tipo == "tot" else NEG_TXT
                 nova.append((s, cor) if cor is not None else s)
-            prontas.append((tipo, nova))
-        total_h = head_h + sum(rh + (4 if t == "sec" else 0) for t, _ in prontas) + (20 if e.get("titulo") else 0)
+            if quebra:
+                tipo = "wrap"
+                nl = max(len(simpleSplit(c_[0] if isinstance(c_, tuple) else c_, "P", fs, w_ - 12)) if (al == "l" and (c_[0] if isinstance(c_, tuple) else c_)) else 1
+                         for (w_, al), c_ in zip(cols, nova))
+                hh_ = max(rh, nl * (fs + 1.6) + 6)
+            else:
+                hh_ = rh + (4 if tipo == "sec" else 0)
+            prontas.append((tipo, nova, hh_))
+        total_h = head_h + sum(p_[2] for p_ in prontas) + (20 if e.get("titulo") else 0)
         if total_h <= 210 and self.y - total_h - reserva < BOT and self.y < TOPY - 40:
             self.pagina(self.sec, continuacao=True)                  # tabela pequena nao e' partida ao meio: vai inteira para a pagina seguinte
         if e.get("titulo"):
@@ -214,7 +232,7 @@ class _Doc:
             disp = self.y - BOT - head_h
             k, soma = i, 0.0
             while k < len(prontas):
-                hh = rh + (4 if prontas[k][0] == "sec" else 0)
+                hh = prontas[k][2]
                 if soma + hh > disp:
                     break
                 soma += hh
@@ -226,7 +244,7 @@ class _Doc:
                 k -= 1                                               # a nota que vem logo depois da tabela nao fica sozinha numa pagina so'
             if len(prontas) - k == 1 and k - i > 3 and prontas[-1][0] == "tot":
                 k -= 1                                               # nao deixa so' a linha de total sozinha na pagina seguinte
-            self.y = tabela(c, MX, self.y, cols, head, prontas[i:k], rh=rh, fs=fs, head_h=head_h)
+            self.y = tabela(c, MX, self.y, cols, head, [(t_, c_) for t_, c_, _h in prontas[i:k]], rh=rh, fs=fs, head_h=head_h)
             i = k
             if i < len(prontas):
                 self.pagina(self.sec, continuacao=True)
@@ -291,6 +309,8 @@ class _Doc:
 
     def bloco(self, b: dict):
         els = b["els"]
+        if self.quebra and self.y < TOPY - 1:
+            self.pagina(self.sec, continuacao=True)                   # quebra de pagina escolhida: cada informacao no topo de uma pagina
         h1 = self._h_min(els[0] if els else None) + (self._h_min(els[1]) if len(els) > 1 and els[0].get("t") == "sec" else 0.0)
         self.garante(max(92.0, 30 + h1))
         self.mapa[b["key"]] = self.n
@@ -382,6 +402,7 @@ def _desenhar(dados: dict, c, N: int, mapa_ant: dict | None) -> tuple:
     _capa(c, meta)
     d = _Doc(c, N, ctx, mapa_ant)
     d.n = 1                                                          # a capa conta como pagina 1
+    d.quebra = bool(meta.get("quebra_pagina"))
     _sumario(d, dados)
     for a in dados["abas"]:
         d.pagina(a["rotulo"])

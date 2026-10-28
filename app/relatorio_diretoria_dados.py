@@ -636,7 +636,7 @@ def b_ob_kpis(B: Base) -> list:
              K("Obras com prejuízo", f"{n_neg} de {len(main)}", "BDI negativo no mês" if B.um_mes else "BDI negativo no período")]
     if len(main):
         mx, mn = main.loc[main["BDI real"].idxmax()], main.loc[main["BDI real"].idxmin()]
-        itens += [K("Maior BDI", str(mx["Nome"] or mx["Obra"])[:26], _mi(mx["BDI real"], True)), K("Menor BDI", str(mn["Nome"] or mn["Obra"])[:26], _mi(mn["BDI real"], True))]
+        itens += [K("Maior BDI", str(mx["Nome"] or mx["Obra"])[:160], _mi(mx["BDI real"], True)), K("Menor BDI", str(mn["Nome"] or mn["Obra"])[:160], _mi(mn["BDI real"], True))]
     els = _nota_periodo_obras(B, R, "ob_kpis")
     if B.filtra_obra:
         els.append(sec(f"Seleção: {len(B.obras)} obra(s) · {', '.join(B.obras[:6])}{'…' if len(B.obras) > 6 else ''}"))
@@ -651,7 +651,7 @@ def b_ob_tabela(B: Base) -> list:
     sel = _selecao(B, R)
     if not len(sel):
         return [nota("Nenhuma das obras escolhidas tem movimento no período.")]
-    rows = [("norm", [str(r["Obra"]), str(r["Nome"])[:34], _n0(r["Receita"]), _n0(r["Custos"]), _z0(r["BDI previsto"]), _n0(r["BDI real"]),
+    rows = [("norm", [str(r["Obra"]), str(r["Nome"])[:160], _n0(r["Receita"]), _n0(r["Custos"]), _z0(r["BDI previsto"]), _n0(r["BDI real"]),
                       _pc(r["Desvio BDI"]), _pc(r["Margem"]), str(int(r["Colab."])), _z0(r["Fat./colab."]),
                       _z0(r["Custo/colab."])]) for _, r in sel.iterrows()]
     tr, tc, tb = float(sel["Receita"].sum()), float(sel["Custos"].sum()), float(sel["BDI real"].sum())
@@ -726,7 +726,7 @@ def b_ob_credores(B: Base) -> list:
     cr = DD.credores_da_obra(dd_ob, alvo, B.mes)
     if not cr["linhas"]:
         return [nota("Sem contas pagas para esta seleção (ou falta o de-para de centros de custo → obra).")]
-    rows = [("norm", [x["chave"][:60], _n0(x["acumulado"]), _pc(x["acumulado"] / cr["total"]) if cr["total"] else "–", _z0(x["mes"])]) for x in cr["linhas"]]
+    rows = [("norm", [x["chave"][:160], _n0(x["acumulado"]), _pc(x["acumulado"] / cr["total"]) if cr["total"] else "–", _z0(x["mes"])]) for x in cr["linhas"]]
     return [tab(["Credor", f"Acumulado {B.acum}", "%", _rot(B.mes)], rows, [4.0, 1.7, 0.9, 1.5], ["l", "r", "r", "r"]),
             nota(("Todos os credores." if cr["n"] <= len(cr["linhas"]) else f"Top {len(cr['linhas'])} de {cr['n']} credores.")
                  + f" Contas pagas em {B.per_rot}, sem pessoal e encargos e sem os credores que são colaboradores PJ. Obra pelo centro de custo do lançamento.")]
@@ -740,7 +740,7 @@ def b_ob_prejuizo(B: Base) -> list:
     lista = [x for x in R["ob"]["top_prejuizo"] if not B.filtra_obra or x["obra"] in B.obras]
     if not lista:
         return [nota("Nenhuma obra com BDI negativo " + ("no mês." if B.um_mes else "no período.") if not B.filtra_obra else "Nenhuma das obras escolhidas está entre as de maior prejuízo.")]
-    return [tab(["Obra", "Nome", "BDI", "Margem"], [("norm", [x["obra"], RPP._nome_obra(x, R["nome_cheio"])[:40], _n0(x["bdi"]), _pc(x["margem"])]) for x in lista],
+    return [tab(["Obra", "Nome", "BDI", "Margem"], [("norm", [x["obra"], RPP._nome_obra(x, R["nome_cheio"])[:160], _n0(x["bdi"]), _pc(x["margem"])]) for x in lista],
                 [0.7, 4.0, 1.5, 1.0], ["l", "l", "r", "r"])]
 
 
@@ -759,7 +759,7 @@ def b_ob_colab(B: Base) -> list:
     if not lst:
         return [nota("Sem colaboradores para esta seleção (folha do mês ainda não importada ou obra sem pessoal).")]
     lst.sort(key=lambda r: (r["dest"] == "DEM", str(r["dest"]), r["Nome"]))
-    rows = [("norm", [r["Nome"][:34], r["Função"][:52], r["Tipo"], ("Demais obras" if r["dest"] == "DEM" else f"{r['dest']} · {nomes_ob.get(r['dest'], r['dest'])}")[:36]]) for r in lst]
+    rows = [("norm", [r["Nome"][:160], r["Função"][:160], r["Tipo"], ("Demais obras" if r["dest"] == "DEM" else f"{r['dest']} · {nomes_ob.get(r['dest'], r['dest'])}")[:160]]) for r in lst]
     n_clt = sum(1 for r in lst if r["Tipo"] == "CLT")
     n_pj = len({r["Nome"] for r in lst if r["Tipo"] == "PJ"})
     return [tab(["Nome", "Função", "Tipo", "Obra"], rows, [2.2, 2.9, 0.6, 2.5], ["l", "l", "l", "l"], fs=6.4, rh=11.6),
@@ -793,7 +793,7 @@ def b_adm_serie(B: Base) -> list:
         return [nota("O orçado × realizado mês a mês aparece depois de importar o Orçamento ADM (2 meses ou mais).")]
     sg = ap["serie_orc_g"]
     rows = [("norm", [_rot(x["mes"]), _n0(x["orcado"]), _n0(x["realizado"]), _n0(x["realizado"] - x["orcado"])]) for x in sg]
-    return [barras([_rot_curto(x["mes"]) for x in sg], [x["realizado"] - x["orcado"] for x in sg], fmt="mi2", titulo="Desvio mensal: realizado − orçado (R$ MM)", h=90),
+    return [barras([_rot_curto(x["mes"]) for x in sg], [x["realizado"] - x["orcado"] for x in sg], fmt="mil", unidade="R$ mil", titulo="Desvio mensal: realizado − orçado (R$ mil)", h=90),
             tab(["Mês", "Orçado (R$)", "Realizado (R$)", "Desvio (R$)"], rows, [1, 1.5, 1.5, 1.5])]
 
 
@@ -808,13 +808,19 @@ def b_adm_grupos(B: Base) -> list:
     for cod in sorted(set(gm) | set(ga)):
         g1, g2 = gm.get(cod), ga.get(cod)
         gu = g1 or (g2 if B.um_mes else None)
-        cells = [cod, ("  " * cod.count(".")) + str((g1 or g2)["conta"] or cod)[:34]]
+        cells = [cod, ("  " * cod.count(".")) + str((g1 or g2)["conta"] or cod)[:160]]
         cells += [_z0(gu["orcado"]) if gu else "–", _z0(gu["realizado"]) if gu else "–", _n0(gu["desvio"]) if gu else "–"]
         if not B.um_mes:
             cells += [_z0(g2["orcado"]) if g2 else "–", _z0(g2["realizado"]) if g2 else "–", _n0(g2["desvio"]) if g2 else "–"]
-        rows.append(("norm", cells))
+        rows.append(("sub" if cod.count(".") <= 1 else "norm", cells))               # mesma formatacao da DRE: totalizadoras (grupo de 1o nivel) em destaque
     if not rows:
         return [nota("Sem grupos de despesa com orçamento no período.")]
+    tm, ta = (o["total"] if o else None), (ac["total"] if ac else None)
+    tu = tm or (ta if B.um_mes else None)
+    tcel = ["2", "Total das despesas ADM", _z0(tu["orcado"]) if tu else "–", _z0(tu["realizado"]) if tu else "–", _n0(tu["desvio"]) if tu else "–"]
+    if not B.um_mes:
+        tcel += [_z0(ta["orcado"]) if ta else "–", _z0(ta["realizado"]) if ta else "–", _n0(ta["desvio"]) if ta else "–"]
+    rows.append(("tot", tcel))
     head = ["Código", "Grupo", f"Orçado {_rot(B.mes)}", f"Realizado {_rot(B.mes)}", f"Desvio {_rot(B.mes)}"] + ([f"Orçado {B.acum}", f"Realizado {B.acum}", f"Desvio {B.acum}"] if not B.um_mes else [])
     pesos = [0.9, 2.6, 1.1, 1.1, 1.0] + ([1.2, 1.2, 1.1] if not B.um_mes else [])
     return [tab(head, rows, pesos, ["l", "l"] + ["r"] * (len(head) - 2), fs=6.2, rh=12.4),
@@ -829,7 +835,7 @@ def b_adm_contas(B: Base) -> list:
     cs = base_c["acima"]
     if not cs:
         return [nota("Nenhuma conta passou do orçado no período.")]
-    return [tab(["Conta", "Orçado", "Realizado", "Desvio"], [("norm", [f"{x['codigo']} · {x['conta']}"[:58], _n0(x["orcado"]), _n0(x["realizado"]), _n0(x["desvio"])]) for x in cs],
+    return [tab(["Conta", "Orçado", "Realizado", "Desvio"], [("norm", [f"{x['codigo']} · {x['conta']}"[:160], _n0(x["orcado"]), _n0(x["realizado"]), _n0(x["desvio"])]) for x in cs],
                 [4.2, 1.4, 1.4, 1.4])]
 
 
@@ -852,10 +858,10 @@ def b_adm_unidades(B: Base) -> list:
     un_ano = df_a.groupby("unidade")["valor"].sum() if len(df_a) else pd.Series(dtype=float)
     nomes = sorted(set(un_mes.index) | set(un_ano.index), key=lambda u: (-float(un_ano.get(u, 0.0)), -float(un_mes.get(u, 0.0))))
     tot = float(un_ano.sum())
-    rows = [("norm", [u[:44], _z0(float(un_mes.get(u, 0.0))), _n0(float(un_ano.get(u, 0.0))), _pc(float(un_ano.get(u, 0.0)) / tot) if tot else "–"]) for u in nomes]
+    rows = [("norm", [u[:160], _z0(float(un_mes.get(u, 0.0))), _n0(float(un_ano.get(u, 0.0))), _pc(float(un_ano.get(u, 0.0)) / tot) if tot else "–"]) for u in nomes]
     rows.append(("tot", ["Total", _n0(float(un_mes.sum())), _n0(tot), "100,0%"]))
     return [tab(["Unidade", _rot(B.mes), B.acum, "% do período"], rows, [3.4, 1.4, 1.6, 1.1]),
-            nota(f"Pago nas unidades da administração (contas pagas, inclui pessoal). Mês = {_rot(B.mes)}; período = {B.per_rot}.")]
+            nota(f"Pago nas unidades da administração (contas pagas, inclui pessoal), sem a unidade Mega Aragoiânia. Mês = {_rot(B.mes)}; período = {B.per_rot}.")]
 
 
 def b_adm_credores(B: Base) -> list:
@@ -866,7 +872,7 @@ def b_adm_credores(B: Base) -> list:
     c_ano = df_a.groupby("credor_exib")["valor"].sum() if len(df_a) else pd.Series(dtype=float)
     nomes = sorted(set(c_mes.index) | set(c_ano.index), key=lambda c: (-float(c_ano.get(c, 0.0)), -float(c_mes.get(c, 0.0))))
     tot = float(df_a["valor"].sum())
-    rows = [("norm", [c[:56], _z0(float(c_mes.get(c, 0.0))), _n0(float(c_ano.get(c, 0.0))), _pc(float(c_ano.get(c, 0.0)) / tot) if tot else "–"]) for c in nomes[:30]]
+    rows = [("norm", [c[:160], _z0(float(c_mes.get(c, 0.0))), _n0(float(c_ano.get(c, 0.0))), _pc(float(c_ano.get(c, 0.0)) / tot) if tot else "–"]) for c in nomes[:30]]
     return [tab(["Credor", _rot(B.mes), B.acum, "% do total"], rows, [3.6, 1.3, 1.6, 1.0]),
             nota(f"{min(30, len(nomes))} de {len(nomes)} credores. “Outros credores/Dir” junta numa linha os credores do grupo definido pela contabilidade.")]
 
@@ -895,8 +901,8 @@ def b_desp_top12(B: Base) -> list:
     if not len(dd):
         return [nota("Falta sincronizar as contas pagas do período.")]
     tot = float(dd["valor"].sum())
-    ca = DD.total_por(dd)[:12]
-    return [tab(["Conta", f"Acumulado {B.acum}", "% do período"], [("norm", [x[0][:60], _n0(x[1]), _pc(x[1] / tot) if tot else "–"]) for x in ca], [4.4, 1.7, 1.1]),
+    ca = DD.total_por(dd)[:160]
+    return [tab(["Conta", f"Acumulado {B.acum}", "% do período"], [("norm", [x[0][:160], _n0(x[1]), _pc(x[1] / tot) if tot else "–"]) for x in ca], [4.4, 1.7, 1.1]),
             nota("Contas pagas, exceto as contas de pessoas e encargos (aba Pessoas), conforme as regras do Painel EnerMais.")]
 
 
@@ -906,7 +912,7 @@ def b_desp_top5(B: Base) -> list:
     if not len(dm):
         return [nota(f"Sem despesas pagas em {_rot(B.mes)}.")]
     tot = float(dm["valor"].sum())
-    return [tab(["Conta", _rot(B.mes), "% do mês"], [("norm", [x[0][:60], _n0(x[1]), _pc(x[1] / tot) if tot else "–"]) for x in DD.total_por(dm)[:5]], [4.4, 1.7, 1.1])]
+    return [tab(["Conta", _rot(B.mes), "% do mês"], [("norm", [x[0][:160], _n0(x[1]), _pc(x[1] / tot) if tot else "–"]) for x in DD.total_por(dm)[:5]], [4.4, 1.7, 1.1])]
 
 
 def b_desp_evolucao(B: Base) -> list:
@@ -922,7 +928,7 @@ def b_desp_credores(B: Base) -> list:
     cr = DD.agrupar(dd, "credor", B.mes) if len(dd) else {"linhas": [], "n": 0, "total": 0.0}
     if not cr["linhas"]:
         return [nota("Sem credores no período.")]
-    return [tab(["Credor", B.acum, "% do filtro", _rot(B.mes)], [("norm", [x["chave"][:56], _n0(x["acumulado"]), _pc(x["acumulado"] / cr["total"]) if cr["total"] else "–", _z0(x["mes"])]) for x in cr["linhas"]],
+    return [tab(["Credor", B.acum, "% do filtro", _rot(B.mes)], [("norm", [x["chave"][:160], _n0(x["acumulado"]), _pc(x["acumulado"] / cr["total"]) if cr["total"] else "–", _z0(x["mes"])]) for x in cr["linhas"]],
                 [3.8, 1.6, 1.0, 1.4]),
             nota(("Todos os credores." if cr["n"] <= len(cr["linhas"]) else f"Top {len(cr['linhas'])} de {cr['n']} credores."))]
 
@@ -932,7 +938,7 @@ def b_desp_obras(B: Base) -> list:
     ob = DD.agrupar(dd, "cc", B.mes) if len(dd) else {"linhas": [], "n": 0, "total": 0.0}
     if not ob["linhas"]:
         return [nota("Sem despesas por obra / centro de custo no período.")]
-    return [tab(["Obra / centro de custo", B.acum, "%", _rot(B.mes)], [("norm", [x["chave"][:56], _n0(x["acumulado"]), _pc(x["acumulado"] / ob["total"]) if ob["total"] else "–", _z0(x["mes"])]) for x in ob["linhas"]],
+    return [tab(["Obra / centro de custo", B.acum, "%", _rot(B.mes)], [("norm", [x["chave"][:160], _n0(x["acumulado"]), _pc(x["acumulado"] / ob["total"]) if ob["total"] else "–", _z0(x["mes"])]) for x in ob["linhas"]],
                 [3.8, 1.6, 0.9, 1.4]),
             nota("Obra pelo centro de custo do lançamento no pagamento." + ("" if ob["n"] <= len(ob["linhas"]) else f" Top {len(ob['linhas'])} de {ob['n']}."))]
 
@@ -1000,7 +1006,7 @@ def b_pes_custos(B: Base) -> list:
     head = ["Conta", _rot(B.mes), "% do mês", "R$/colab. mês", "Acum. até mês anterior", "R$/colab. acum."] + ([] if um else [f"Total {B.acum}", f"R$/colab. {B.acum}"]) + ["Variação"]
     rows = []
     for x in lista:
-        cells = [x["conta"][:40], _n0(x["mes"]), _pc(x["pct_mes"], 2), _z0(x["por_colab_mes"]) if x["por_colab_mes"] is not None else "–", _z0(x["acum_antes"]),
+        cells = [x["conta"][:160], _n0(x["mes"]), _pc(x["pct_mes"], 2), _z0(x["por_colab_mes"]) if x["por_colab_mes"] is not None else "–", _z0(x["acum_antes"]),
                  _z0(x["por_colab_acum"]) if x["por_colab_acum"] is not None else "–"]
         if not um:
             cells += [_z0(x["periodo"]), _z0(x["por_colab_periodo"]) if x["por_colab_periodo"] is not None else "–"]
@@ -1017,7 +1023,7 @@ def b_pes_credores(B: Base) -> list:
     cr = DD.agrupar(pdf_cr, "credor", B.mes) if len(pdf_cr) else {"linhas": [], "n": 0, "total": 0.0}
     if not cr["linhas"]:
         return [nota("Sem credores de pessoas no período.")]
-    return [tab(["Credor", B.acum, "%", _rot(B.mes)], [("norm", [x["chave"][:56], _n0(x["acumulado"]), _pc(x["acumulado"] / cr["total"]) if cr["total"] else "–", _z0(x["mes"])]) for x in cr["linhas"]],
+    return [tab(["Credor", B.acum, "%", _rot(B.mes)], [("norm", [x["chave"][:160], _n0(x["acumulado"]), _pc(x["acumulado"] / cr["total"]) if cr["total"] else "–", _z0(x["mes"])]) for x in cr["linhas"]],
                 [3.8, 1.6, 0.9, 1.4]),
             nota(("Todos os credores." if cr["n"] <= len(cr["linhas"]) else f"Top {len(cr['linhas'])} de {cr['n']} credores.") + " Sem os credores do grupo ENERMAIS (as seis empresas).")]
 
@@ -1027,7 +1033,7 @@ def b_pes_obras(B: Base) -> list:
     ob = DD.agrupar(DD.rotular_obras(pdf_cr, B.nomes_obras()), "obra_rot", B.mes, top=25) if len(pdf_cr) else {"linhas": [], "n": 0, "total": 0.0}
     if not ob["linhas"]:
         return [nota("Sem custos de pessoas por obra no período.")]
-    return [tab(["Obra", B.acum, "%", _rot(B.mes)], [("norm", [x["chave"][:56], _n0(x["acumulado"]), _pc(x["acumulado"] / ob["total"]) if ob["total"] else "–", _z0(x["mes"])]) for x in ob["linhas"]],
+    return [tab(["Obra", B.acum, "%", _rot(B.mes)], [("norm", [x["chave"][:160], _n0(x["acumulado"]), _pc(x["acumulado"] / ob["total"]) if ob["total"] else "–", _z0(x["mes"])]) for x in ob["linhas"]],
                 [3.8, 1.6, 0.9, 1.4]),
             nota("Centros de custo ligados à obra pelo de-para, na mesma linguagem da aba Obras. Administração e centros sem de-para aparecem à parte.")]
 
@@ -1113,7 +1119,7 @@ def b_pj_top_obras(B: Base) -> list:
     top = FP.top_obras(pes)
     if not top:
         return [nota("Sem obras para destacar (só sede, diretoria ou obras com vários centros).")]
-    return [kpis([K(o["obra"][:42], _mi(o["custo_total"]), f"{_n0(o['n'])} colaboradores") for o in top], 3), nota("Sem a diretoria e sem os grupos que não são obra (sede/administração e “vários centros”).")]
+    return [kpis([K(o["obra"][:160], _mi(o["custo_total"]), f"{_n0(o['n'])} colaboradores") for o in top], 3), nota("Sem a diretoria e sem os grupos que não são obra (sede/administração e “vários centros”).")]
 
 
 def b_pj_obras(B: Base) -> list:
@@ -1125,7 +1131,7 @@ def b_pj_obras(B: Base) -> list:
     rows = []
 
     def linha(nome, x, tipo):
-        return (tipo, [nome[:46], str(x["n"]), _z0(x["honorarios"]), _z0(x["premiacao"]), _z0(x["ajuda_custo"] + x["alimentacao"]), _z0(x["multa"]), _z0(x["desconto"]), _n0(x["custo_total"]), _z0(x["pago"]), _z0(x["a_pagar"])])
+        return (tipo, [nome[:160], str(x["n"]), _z0(x["honorarios"]), _z0(x["premiacao"]), _z0(x["ajuda_custo"] + x["alimentacao"]), _z0(x["multa"]), _z0(x["desconto"]), _n0(x["custo_total"]), _z0(x["pago"]), _z0(x["a_pagar"])])
     for o in obras:
         rows.append(linha(o["obra"], o, "sub"))
         for c in o["centros"]:
@@ -1152,7 +1158,7 @@ def b_pj_colab(B: Base) -> list:
     if r:
         return r
     lista = FP.agrupar_diretoria(pes)
-    rows = [("norm", [(p["nome"] + (" · novo" if p["novo"] else ""))[:34], (p["funcao"] or "")[:26], _emp_abrev(p["empresa"]), (p["centro"] or "")[:30],
+    rows = [("norm", [(p["nome"] + (" · novo" if p["novo"] else ""))[:160], (p["funcao"] or "")[:160], _emp_abrev(p["empresa"]), (p["centro"] or "")[:160],
                       _z0(p["honorarios"]), _z0(p["premiacao"]), _z0(p["ajuda_custo"] + p["alimentacao"]), _z0(p["multa"]), _z0(p["desconto"]), _n0(p["custo_total"]), _z0(p["pago"]), _z0(p["a_pagar"])])
             for p in lista]
     t = FP.somar(pes)
@@ -1172,7 +1178,7 @@ def b_pj_docs(B: Base) -> list:
     docs = FP.filtrar_documentos(d["documentos"], pes) if (B.filtra_obra or B.empresas or B.situacoes) else d["documentos"]
     if not docs:
         return [nota("Nenhum documento para a seleção.")]
-    rows = [("norm", [x["situacao"], _data(x["data"]), x["documento"][:18], x["nome"][:28], FP.nome_empresa_curto(x["empresa"])[:12], f"{x['plano']} {x['plano_nome']}"[:34], _n2(x["bruto"]), _z0(x["desconto"]),
+    rows = [("norm", [x["situacao"], _data(x["data"]), x["documento"][:160], x["nome"][:160], FP.nome_empresa_curto(x["empresa"])[:160], f"{x['plano']} {x['plano_nome']}"[:160], _n2(x["bruto"]), _z0(x["desconto"]),
                       _n2(x["valor_liquido"])]) for x in docs]
     return [tab(["Situação", "Data", "Documento", "Colaborador", "Empresa", "Conta", "Bruto", "Desc.", "Líquido"], rows, [0.8, 1.0, 1.2, 2.2, 1.0, 2.5, 1.2, 0.8, 1.2],
                 ["l", "l", "l", "l", "l", "l", "r", "r", "r"], fs=5.8, rh=11.2),
@@ -1203,7 +1209,7 @@ def b_clt_cards(B: Base) -> list:
     lista = _clt_filtrada(B)
     cf = DD.cards_folha(lista)
     t = cf["total"]
-    rows = [("norm", [e["empresa"][:30], str(e["n"]), _n0(e["liquido"]), _n0(e["he_dsr"]), _he(e["he_min"]), str(e["n_he"]), _pc(e["he_pct"]), _z0(e["pensao"]), _z0(e["taxa_assist"])]) for e in cf["por_empresa"]]
+    rows = [("norm", [e["empresa"][:160], str(e["n"]), _n0(e["liquido"]), _n0(e["he_dsr"]), _he(e["he_min"]), str(e["n_he"]), _pc(e["he_pct"]), _z0(e["pensao"]), _z0(e["taxa_assist"])]) for e in cf["por_empresa"]]
     rows.append(("tot", ["Total", str(t["n"]), _n0(t["liquido"]), _n0(t["he_dsr"]), _he(t["he_min"]), str(t["n_he"]), _pc(t["he_pct"]), _n0(t["pensao"]), _n0(t["taxa_assist"])]))
     els = [sec(f"Folha consolidada · {_rot(B.mes)}" + (f" · obras {', '.join(B.obras)}" if B.filtra_obra else "")),
            kpis([K("Colaboradores CLT", f"{t['n']:,}".replace(",", ".")), K("Líquido da folha", _mi(t["liquido"])), K("HE + DSR", _mi(t["he_dsr"]), (_pc(t["he_pct"]) + " da remuneração") if t["he_pct"] is not None else ""),
@@ -1221,7 +1227,7 @@ def b_clt_top_obras(B: Base) -> list:
     if not cf["top_obras"]:
         return [nota("Nenhuma obra com horas extras na seleção.")]
     nomes = B.nomes_obras()
-    return [kpis([K(f"{o['obra']} · {nomes.get(o['obra']) or o['nome'] or 'sem nome'}"[:42], _mi(o["he_dsr"]), f"{_he(o['he_min'])} h · {o['n_he']} de {o['n']} com HE") for o in cf["top_obras"]], 3)]
+    return [kpis([K(f"{o['obra']} · {nomes.get(o['obra']) or o['nome'] or 'sem nome'}"[:160], _mi(o["he_dsr"]), f"{_he(o['he_min'])} h · {o['n_he']} de {o['n']} com HE") for o in cf["top_obras"]], 3)]
 
 
 def b_clt_selecao(B: Base) -> list:
@@ -1269,9 +1275,9 @@ def b_clt_empresa_obra(B: Base) -> list:
     if B.filtra_obra:
         po = [x for x in po if x["codigo"] in B.obras]
     els = [tab(["Empresa", "Colab.", "Remuneração", "HE + DSR", "HE ÷ rem.", "Custo (proventos + FGTS)"],
-               [("norm", [e["empresa"][:30], str(e["colab"]), _n0(e["base_he"]), _n0(e["hora_extra"] + e["dsr_he"]), _pc(e["he_pct"]), _n0(e["custo"])]) for e in fo["por_empresa"]], [2.6, 0.8, 1.3, 1.2, 1.0, 1.7])]
+               [("norm", [e["empresa"][:160], str(e["colab"]), _n0(e["base_he"]), _n0(e["hora_extra"] + e["dsr_he"]), _pc(e["he_pct"]), _n0(e["custo"])]) for e in fo["por_empresa"]], [2.6, 0.8, 1.3, 1.2, 1.0, 1.7])]
     if po:
-        els.append(tab(["Obra", "Nome", "Colab.", "Remuneração", "HE + DSR", "HE ÷ rem."], [("norm", [x["codigo"], (x["nome"] or "")[:34], str(x["colab"]), _n0(x["base_he"]), _n0(x["hora_extra"] + x["dsr_he"]), _pc(x["he_pct"])]) for x in po],
+        els.append(tab(["Obra", "Nome", "Colab.", "Remuneração", "HE + DSR", "HE ÷ rem."], [("norm", [x["codigo"], (x["nome"] or "")[:160], str(x["colab"]), _n0(x["base_he"]), _n0(x["hora_extra"] + x["dsr_he"]), _pc(x["he_pct"])]) for x in po],
                        [0.7, 3.0, 0.7, 1.4, 1.2, 1.0], ["l", "l", "r", "r", "r", "r"]))
     els.append(nota("A tabela por empresa é a do mês todo (a folha por empresa não é dividida por obra)." if B.filtra_obra else "Custo = proventos + FGTS do mês (não inclui INSS patronal, férias/13º provisionados nem PJ)."))
     return els
@@ -1282,7 +1288,7 @@ def b_clt_lista(B: Base) -> list:
     if r:
         return r
     lista = _clt_filtrada(B)
-    rows = [("norm", [x["nome"][:30], (x["cargo"] or "")[:26], x["empresa"][:14], x["obra"], (x["canteiro"] or "")[:22], _n2(x["liquido"]), _he(x["he_min"]), _z0(x["he"]) if x["he"] > 0.005 else "–",
+    rows = [("norm", [x["nome"][:160], (x["cargo"] or "")[:160], x["empresa"][:160], x["obra"], (x["canteiro"] or "")[:160], _n2(x["liquido"]), _he(x["he_min"]), _z0(x["he"]) if x["he"] > 0.005 else "–",
                       _z0(x["dsr"]) if x["dsr"] > 0.005 else "–"]) for x in lista]
     t = DD.somar_clt(lista)
     rows.append(("tot", [f"Total · {t['n']}", "", "", "", "", _n2(t["liquido"]), _he(t["he_min"]), _n0(t["he"]), _n0(t["dsr"])]))
@@ -1325,7 +1331,7 @@ def b_ind_inad(B: Base) -> list:
     for chave, rot, quem in (("receber", "a receber", "Cliente"), ("pagar", "a pagar", "Credor")):
         els.append(tab(["Faixa de atraso", "Títulos", "Valor (R$)"], [("norm", [f["faixa"], _n0(f["n"]), _n0(f["valor"])]) for f in ina[chave]["faixas"]], [2.2, 0.8, 1.4], titulo=f"Por faixa de atraso · {rot}"))
         if ina[chave]["top"]:
-            els.append(tab([quem, "Títulos", "Vencido há mais tempo", "Valor (R$)"], [("norm", [x["nome"][:44], _n0(x["n"]), _data(x["mais_antigo"]), _n0(x["valor"])]) for x in ina[chave]["top"]],
+            els.append(tab([quem, "Títulos", "Vencido há mais tempo", "Valor (R$)"], [("norm", [x["nome"][:160], _n0(x["n"]), _data(x["mais_antigo"]), _n0(x["valor"])]) for x in ina[chave]["top"]],
                            [3.4, 0.7, 1.4, 1.3], ["l", "r", "r", "r"], titulo=f"Maiores · {rot}"))
     return els
 
@@ -1335,7 +1341,7 @@ def b_ind_receitas(B: Base) -> list:
     rec = B.memo("receitas_abertas", lambda: I.receitas_em_aberto(B.conn, pago_ate, False, completo=False))
     if not rec:
         return [nota("Nenhuma conta a receber em aberto na posição.")]
-    rows = [("norm", [str(x["cliente"])[:40], str(x["nota"])[:16], _data(x["vencimento"]), _n2(x["valor"]), str(x["atraso"])]) for x in rec]
+    rows = [("norm", [str(x["cliente"])[:160], str(x["nota"])[:160], _data(x["vencimento"]), _n2(x["valor"]), str(x["atraso"])]) for x in rec]
     rows.append(("tot", [f"Total · {len(rec)} contas", "", "", _n2(sum(float(x["valor"]) for x in rec)), ""]))
     return [tab(["Cliente", "Nota", "Vencimento", "Em aberto (R$)", "Dias de atraso"], rows, [3.2, 1.3, 1.2, 1.5, 1.0], ["l", "l", "r", "r", "r"], fs=6.4, rh=11.8)]
 
@@ -1389,7 +1395,7 @@ def _fin_categoria(B: Base, grupo: str) -> list:
         a["j"] += c["juros"]
     if not cat:
         return [nota("Sem contratos em aberto.")]
-    return [tab(["Categoria", "Contratos", "Principal (R$)", "Juros (R$)"], [("norm", [k[:46], str(v["n"]), _n0(v["p"]), _n0(v["j"])]) for k, v in sorted(cat.items(), key=lambda kv: -kv[1]["p"])], [3.4, 0.9, 1.5, 1.3])]
+    return [tab(["Categoria", "Contratos", "Principal (R$)", "Juros (R$)"], [("norm", [k[:160], str(v["n"]), _n0(v["p"]), _n0(v["j"])]) for k, v in sorted(cat.items(), key=lambda kv: -kv[1]["p"])], [3.4, 0.9, 1.5, 1.3])]
 
 
 def _fin_credores(B: Base, grupo: str) -> list:
@@ -1397,7 +1403,7 @@ def _fin_credores(B: Base, grupo: str) -> list:
     if not f["por_credor"]:
         return [nota("Sem credores com parcelas em aberto.")]
     return [tab(["Credor", "Contratos", "Principal", "Juros", "% carteira", "Taxa mensal", "Encerramento"],
-                [("norm", [x["credor"][:38], str(x["contratos"]), _n0(x["principal"]), _n0(x["juros"]), _pc(x["pct_carteira"]), _pc(x["taxa_mensal"], 2), x["encerramento"].strftime("%m/%Y") if x["encerramento"] else "–"])
+                [("norm", [x["credor"][:160], str(x["contratos"]), _n0(x["principal"]), _n0(x["juros"]), _pc(x["pct_carteira"]), _pc(x["taxa_mensal"], 2), x["encerramento"].strftime("%m/%Y") if x["encerramento"] else "–"])
                  for x in f["por_credor"]], [3.0, 0.8, 1.3, 1.1, 0.9, 0.9, 1.0], fs=6.4),
             nota("Taxa mensal = taxa cadastrada do contrato; sem cadastro, usa a aproximação implícita. Credor = média ponderada pelo saldo.")]
 
@@ -1406,7 +1412,7 @@ def _fin_contratos(B: Base, grupo: str) -> list:
     f = _fin(B, grupo)
     if not f["por_contrato"]:
         return [nota("Sem contratos em aberto.")]
-    rows = [("norm", [c["credor"][:26], c["categoria"][:22], (c["objeto"] or "")[:22], str(c["chave"])[:14], str(c["parcelas"]), _n0(c["principal"]), _n0(c["juros"]), _data(c["proximo"]),
+    rows = [("norm", [c["credor"][:160], c["categoria"][:160], (c["objeto"] or "")[:160], str(c["chave"])[:160], str(c["parcelas"]), _n0(c["principal"]), _n0(c["juros"]), _data(c["proximo"]),
                       c["encerramento"].strftime("%m/%Y") if c["encerramento"] else "–", _pc(c["taxa_mensal"], 2)]) for c in f["por_contrato"]]
     return [tab(["Credor", "Categoria", "Objeto", "Contrato", "Parc.", "Principal", "Juros", "Próx. venc.", "Encerr.", "Taxa mês"], rows, [1.9, 1.6, 1.6, 1.0, 0.5, 1.1, 0.9, 1.0, 0.8, 0.8],
                 ["l", "l", "l", "l", "r", "r", "r", "r", "r", "r"], fs=5.8, rh=11.4)]
@@ -1443,7 +1449,8 @@ def texto_filtros(modo: str, mes_ini: str, mes: str, escopo: dict | None, nomes_
     return out
 
 
-def montar(conn, mes_ini: str, mes: str, blocos, modo: str = PER.ANO, escopo: dict | None = None, ctx: dict | None = None, usuario: str = "", mostra_inv: bool = True, hoje=None, observacoes: dict | None = None) -> dict:
+def montar(conn, mes_ini: str, mes: str, blocos, modo: str = PER.ANO, escopo: dict | None = None, ctx: dict | None = None, usuario: str = "", mostra_inv: bool = True, hoje=None, observacoes: dict | None = None,
+           quebra_pagina: bool = False) -> dict:
     """Calcula so' os blocos marcados. `observacoes` = {aba: texto livre} impresso numa caixa "Observação" no fim da aba (so' se a aba tem alguma informacao no relatorio; texto vazio = nada). Devolve {'meta', 'abas': [{'aba','rotulo','blocos':[{'key','titulo','els'}]}]} na ordem do painel; bloco que falha vira aviso."""
     escolhidos = [k for k in TODAS_CHAVES if k in set(blocos or ())]
     if not mostra_inv:
@@ -1475,7 +1482,7 @@ def montar(conn, mes_ini: str, mes: str, blocos, modo: str = PER.ANO, escopo: di
             obs = str((observacoes or {}).get(a) or "").replace("\r", "").strip()[:OBS_MAX]
             abas.append({"aba": a, "rotulo": rot, "blocos": out, **({"obs": obs} if obs else {})})
     meta = {"mes": mes, "mes_ini": mes_ini, "modo": modo, "per_rot": PER.rotulo(mes_ini, mes), "gerado_em": agora_br().strftime("%d/%m/%Y %H:%M"), "usuario": usuario,
-            "filtros": texto_filtros(modo, mes_ini, mes, escopo, B.nomes_obras() if B.filtra_obra else None), "n_blocos": n_ok}
+            "filtros": texto_filtros(modo, mes_ini, mes, escopo, B.nomes_obras() if B.filtra_obra else None), "n_blocos": n_ok, "quebra_pagina": bool(quebra_pagina)}
     return {"meta": meta, "abas": abas}
 
 

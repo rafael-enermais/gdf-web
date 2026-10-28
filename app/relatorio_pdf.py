@@ -246,7 +246,7 @@ def tabela(c, x, y, cols, header, rows, rh=12.4, fs=7.2, head_h=24):
     for tipo, cells in rows:
         h_ = rh + (4 if tipo == "sec" else 0)
         wraps = None
-        if tipo == "ind":
+        if tipo in ("ind", "wrap"):
             wraps = []
             for j, ((w, al), cel) in enumerate(zip(cols, cells)):
                 s_ = cel[0] if isinstance(cel, tuple) else cel
@@ -264,7 +264,7 @@ def tabela(c, x, y, cols, header, rows, rh=12.4, fs=7.2, head_h=24):
             elif cc is not None: color = cc
             else: color = NAVY if tipo in ("sec", "sub") else (GREY if j == 0 else NAVY)
             if tipo == "ind" and j == 0: pass
-            xx = cx + (5 + (8 if tipo == "ind" and j == 0 else 0)) if al == "l" else cx + w - 5
+            xx = cx + (5 + (8 if tipo == "ind" and j == 0 else 0)) if al == "l" else cx + w - 5      # "wrap" = como "ind", sem o recuo da 1a coluna (quebra de texto do relatorio da Diretoria)
             yy = y - h_ + (3.4 if tipo != "sec" else 2.4)
             c.setFont(font, fs if tipo != "tot" else fs + 0.2); c.setFillColor(color)
             if wraps is not None and al == "l" and len(wraps[j]) > 1:

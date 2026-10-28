@@ -124,7 +124,10 @@ def test_agrupar_demais_obras_cinco_lucros_cinco_prejuizos_e_com_projecao():
     linhas += [_o("1026", 50.0, 10.0), _o("500", 0.0, 5.0)]                       # 1026 sempre em Demais; 500 sem projecao
     dem0 = {"obra": "DEM", "nome": "Demais obras (2)", "receita": 10.0, "custo": -4.0, "n": 2, "bdi": 6.0, "margem": 0.6}
     ob = {"linhas": linhas + [dem0], "total": {"receita": 1, "custo": 1, "bdi": 0, "margem": None}}
-    r = P.agrupar_demais_obras(ob, {"1", "500", "1026"})                           # 1 e 500 tem projecao (ficam); 1026 continua em Demais
+    aberto = P.agrupar_demais_obras(ob, {"1", "500", "1026"})                      # padrao desde 28/10/2026: SEM categorizacao, todas as obras abertas
+    assert not P.AGRUPAR_DEMAIS_OBRAS and len(aberto["linhas"]) == 17 and {l["obra"] for l in aberto["linhas"]} >= {"1", "2", "102", "1026", "DEM"} and aberto["linhas"][-1]["obra"] == "DEM"
+    assert aberto["linhas"] is not ob["linhas"] and len(ob["linhas"]) == 17
+    r = P.agrupar_demais_obras(ob, {"1", "500", "1026"}, agrupar=True)             # regra antiga (so' com agrupar=True): 1 e 500 tem projecao (ficam); 1026 continua em Demais
     cods = [l["obra"] for l in r["linhas"]]
     assert set(cods) == {"7", "6", "5", "4", "3", "107", "106", "105", "104", "103", "1", "500", "DEM"} and cods[-1] == "DEM"
     dem = r["linhas"][-1]

@@ -1122,7 +1122,7 @@ def test_somar_obras_de_varios_meses():
     assert s["total"]["receita"] == 2100.0 and s["total"]["custo"] == -1700.0 and s["total"]["bdi"] == 400.0           # soma de tudo, inclusive 'DEM'
     assert s["linhas"][-1]["obra"] == "DEM"                                                                          # demais obras sempre por ultimo
     assert P.somar_obras([]) is None and P.somar_obras([None]) is None
-    g = P.agrupar_demais_obras(s, {"104"})                                                   # a regra das 5 maiores vale sobre o periodo somado
+    g = P.agrupar_demais_obras(s, {"104"}, agrupar=True)                                                   # a regra das 5 maiores vale sobre o periodo somado
     assert {l["obra"] for l in g["linhas"]} >= {"103", "104", "DEM"} and g["total"] == s["total"]
 
 
