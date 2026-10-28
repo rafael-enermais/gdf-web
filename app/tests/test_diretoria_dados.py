@@ -235,3 +235,41 @@ def test_agrupar_e_serie_aceitam_varias_contas_e_credores():
     assert DD.agrupar(df, "cc", "2026-09", conta=["A", "B"], credor=["x"])["total"] == 15.0
     assert DD.agrupar(df, "cc", "2026-09", conta=[], credor=None)["total"] == 36.0                 # lista vazia = sem filtro
     assert DD.serie_mensal(df, ["2026-09"], conta=["A", "C"]) == [31.0] and DD.serie_mensal(df, ["2026-09"]) == [36.0]
+
+
+# ---------------------------------------------------------------- v0.49.0: Pessoas por obra e canteiro (dados FICTICIOS)
+def _p(nome, obra, cant, liq, he=0.0, dsr=0.0, mn=0, emp="CONSTRUTORA", cargo="AJUDANTE", prov=None, desc=0.0, taxa=0.0):
+    return {"nome": nome, "cargo": cargo, "empresa": emp, "obra": obra, "obra_nome": "OBRA " + obra, "canteiro": cant, "liquido": liq, "he": he, "dsr": dsr, "he_min": mn,
+            "proventos": prov if prov is not None else liq + desc, "descontos": desc, "pensao": 0.0, "taxa_assist": taxa}
+
+
+CLT = [_p("ANA", "103", "LOTE 11 - A", 3000, he=500, dsr=100, mn=600, desc=300), _p("BRUNO", "103", "LOTE 11 - B", 2000, he=100, mn=120, emp="ENERGIA"),
+       _p("CARLA", "104", "LOTE 12", 2500, cargo="ENCARREGADA"), _p("DIOGO", "99", "ADM CENTRAL", 4000)]
+PJS = [{"credor": "PJ UM", "destino": "103", "valor": 5000.0}, {"credor": "PJ ADM", "destino": "ADM", "valor": 7000.0}, {"credor": "PJ DOIS", "destino": "104", "valor": 100.0}]
+
+
+def test_filtro_obra_soma_e_canteiro_mostra_so_o_canteiro():
+    assert [x["nome"] for x in DD.filtrar_clt(CLT)] == ["ANA", "BRUNO", "CARLA", "DIOGO"]                      # sem filtro: todos
+    assert [x["nome"] for x in DD.filtrar_clt(CLT, obras=["103"])] == ["ANA", "BRUNO"]                         # obra: soma os canteiros dela
+    assert [x["nome"] for x in DD.filtrar_clt(CLT, obras=["103"], canteiros=["LOTE 11 - B"])] == ["BRUNO"]     # canteiro: so' ele
+    assert [x["nome"] for x in DD.filtrar_clt(CLT, obras=["104"], canteiros=["LOTE 11 - B"])] == []            # canteiro de outra obra nao entra
+    assert [x["nome"] for x in DD.filtrar_clt(CLT, busca="encarregada")] == ["CARLA"] and [x["nome"] for x in DD.filtrar_clt(CLT, busca="ana")] == ["ANA"]
+    assert DD.opcoes_canteiros(CLT, ["103"]) == ["LOTE 11 - A", "LOTE 11 - B"] and DD.opcoes_canteiros(CLT) == ["ADM CENTRAL", "LOTE 11 - A", "LOTE 11 - B", "LOTE 12"]
+
+
+def test_filtro_pj_por_obra_e_adm_e_sem_canteiro():
+    assert [c["credor"] for c in DD.filtrar_pj(PJS, ["103"])] == ["PJ UM"]
+    assert [c["credor"] for c in DD.filtrar_pj(PJS, ["99"])] == ["PJ ADM"]                                     # 'ADM' das contas pagas = 99 da folha
+    assert len(DD.filtrar_pj(PJS)) == 3 and DD.filtrar_pj(PJS, ["103"], canteiros=["LOTE 11 - A"]) == []        # PJ nao tem canteiro
+    op = DD.opcoes_obras(CLT, PJS, {"103": "ANASTÁCIO - LOTE 11"})
+    assert [c for c, _ in op] == ["103", "104", "99"] and dict(op)["103"] == "103 · ANASTÁCIO - LOTE 11" and dict(op)["99"].startswith("99 ·")
+
+
+def test_somar_clt_e_cards_com_regra_da_he_inalterada():
+    t = DD.somar_clt(CLT[:2])
+    assert (t["n"], t["liquido"], t["he"], t["dsr"], t["he_min"], t["n_he"], t["he_dsr"]) == (2, 5000.0, 600.0, 100.0, 720, 2, 700.0)
+    assert t["he_pct"] == round(700 / (3300 + 2000 - 600 - 100 - 300), 4)                                      # base = proventos - HE - DSR - descontos
+    assert DD.somar_clt([])["he_pct"] is None and DD.fmt_horas(720) == "012:00" and DD.fmt_horas(0) == "–" and DD.fmt_horas(605) == "010:05"
+    c = DD.cards_folha(CLT)
+    assert c["total"]["n"] == 4 and [e["empresa"] for e in c["por_empresa"]] == ["CONSTRUTORA", "ENERGIA"]
+    assert [o["obra"] for o in c["top_obras"]] == ["103"] and c["top_obras"][0]["he_dsr"] == 700.0 and c["top_obras"][0]["n_he"] == 2    # so' obras com HE

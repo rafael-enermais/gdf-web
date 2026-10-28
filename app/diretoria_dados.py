@@ -413,3 +413,101 @@ def comparar_periodos(serie_he: list, serie_receita: list, mes_ini: str, mes_fim
         out[nome + "_atual"], out[nome + "_anterior"] = a, b
         out["var_" + nome] = round(a / b - 1, 4) if a is not None and b else None
     return out
+
+
+# ---------------------------------------------------------------- Aba Pessoas (v0.49.0): colaboradores CLT + PJ por obra e canteiro, e cards da folha consolidada
+OBRA_ADM = "99"                                                        # administracao central no de-para da folha; o PJ 'ADM' das contas pagas e' a mesma coisa
+
+
+def obra_do_pj(destino: str) -> str:
+    """Destino do PJ (contas pagas) -> codigo da obra do filtro: 'ADM' vira '99' (administracao central), o resto fica como esta."""
+    return OBRA_ADM if destino == "ADM" else destino
+
+
+def fmt_horas(minutos) -> str:
+    """Minutos -> 'HHH:MM' (o mesmo formato do recibo); 0 -> '–'."""
+    m = int(minutos or 0)
+    return f"{m // 60:03d}:{m % 60:02d}" if m else "–"
+
+
+def filtrar_clt(pessoas: list, obras=None, canteiros=None, busca: str = "") -> list:
+    """Filtro em dois niveis: obras marcadas (soma todos os canteiros delas); canteiros marcados (so' eles, dentro das obras marcadas, se houver). Busca por nome ou cargo."""
+    obras, canteiros, t = set(obras or []), set(canteiros or []), _sem_acento(busca)
+    out = []
+    for p in pessoas:
+        if obras and p["obra"] not in obras:
+            continue
+        if canteiros and p["canteiro"] not in canteiros:
+            continue
+        if t and t not in _sem_acento(p["nome"]) and t not in _sem_acento(p["cargo"]):
+            continue
+        out.append(p)
+    return out
+
+
+def filtrar_pj(colaboradores: list, obras=None, canteiros=None) -> list:
+    """PJ do mes ('destino' = obra onde mais recebeu) so' das obras marcadas. PJ nao tem canteiro: com canteiro marcado a lista de PJ fica vazia (o filtro e' de canteiro de CLT)."""
+    if canteiros:
+        return []
+    obras = set(obras or [])
+    return [c for c in colaboradores if not obras or obra_do_pj(c["destino"]) in obras]
+
+
+def somar_clt(lista: list) -> dict:
+    """Totais de uma lista de CLT: colaboradores, liquido, HE (R$, horas), DSR s/ HE, quantos tem HE, pensao, taxa assistencial e HE+DSR / remuneracao
+    (remuneracao = proventos - HE - DSR - descontos, a regra validada pela contabilidade em 20/10; a conta nao muda)."""
+    t = {"n": len(lista), "liquido": 0.0, "he": 0.0, "dsr": 0.0, "he_min": 0, "n_he": 0, "pensao": 0.0, "taxa_assist": 0.0, "proventos": 0.0, "descontos": 0.0}
+    for p in lista:
+        t["liquido"] += p["liquido"]
+        t["he"] += p["he"]
+        t["dsr"] += p["dsr"]
+        t["he_min"] += p["he_min"]
+        t["n_he"] += 1 if (p["he"] > 0.005 or p["he_min"] > 0) else 0
+        t["pensao"] += p["pensao"]
+        t["taxa_assist"] += p["taxa_assist"]
+        t["proventos"] += p["proventos"]
+        t["descontos"] += p["descontos"]
+    base = t["proventos"] - t["he"] - t["dsr"] - t["descontos"]
+    t["he_dsr"] = t["he"] + t["dsr"]
+    t["he_pct"] = round(t["he_dsr"] / base, 4) if base > 0.005 else None
+    for k in ("liquido", "he", "dsr", "he_dsr", "pensao", "taxa_assist", "proventos", "descontos"):
+        t[k] = round(t[k], 2)
+    return t
+
+
+def cards_folha(pessoas: list, top: int = 3) -> dict:
+    """Cards da folha consolidada do mes: {'total': totais, 'por_empresa': [{'empresa', **totais}], 'top_obras': [{'obra','nome','he_dsr','he_min','n_he','n'}]}.
+    top_obras = as obras com mais HE + DSR (so' as que tem HE)."""
+    por_emp: dict = {}
+    por_obra: dict = {}
+    for p in pessoas:
+        por_emp.setdefault(p["empresa"], []).append(p)
+        por_obra.setdefault(p["obra"], []).append(p)
+    emp = [{"empresa": e, **somar_clt(l)} for e, l in sorted(por_emp.items())]
+    obras = []
+    for o, l in por_obra.items():
+        t = somar_clt(l)
+        if t["he_dsr"] > 0.005:
+            obras.append({"obra": o, "nome": next((p["obra_nome"] for p in l if p["obra_nome"]), ""), "he_dsr": t["he_dsr"], "he_min": t["he_min"], "n_he": t["n_he"], "n": t["n"]})
+    obras.sort(key=lambda x: (-x["he_dsr"], x["obra"]))
+    return {"total": somar_clt(pessoas), "por_empresa": emp, "top_obras": obras[:top]}
+
+
+def opcoes_obras(pessoas: list, pj_colaboradores: list, nomes: dict) -> list:
+    """Obras do filtro: as que tem CLT ou PJ. -> [(codigo, 'codigo · nome')], com a administracao central ('99') e 'sem de-para' por ultimo."""
+    cods = {p["obra"] for p in pessoas} | {obra_do_pj(c["destino"]) for c in pj_colaboradores}
+    nome_clt = {p["obra"]: p["obra_nome"] for p in pessoas if p["obra_nome"]}
+
+    def rot(c):
+        if c == OBRA_ADM:
+            return "99 · Administração central"
+        n = nomes.get(c) or nome_clt.get(c)
+        return f"{c} · {n}" if n else c
+    ordem = sorted(cods, key=lambda c: (c in (OBRA_ADM, "sem de-para"), c))
+    return [(c, rot(c)) for c in ordem]
+
+
+def opcoes_canteiros(pessoas: list, obras=None) -> list:
+    """Canteiros (texto do subnivel do recibo) das obras marcadas (todas, sem marcacao), em ordem alfabetica."""
+    obras = set(obras or [])
+    return sorted({p["canteiro"] for p in pessoas if not obras or p["obra"] in obras})

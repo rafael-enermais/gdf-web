@@ -646,6 +646,30 @@ def test_gravar_folha_ativa_repetido_e_totais(conn):
     assert n_ev >= 12 and float(soma_inf or 0) == 0.0
 
 
+def test_folha_pessoas_mes_traz_liquido_he_em_horas_canteiro_e_taxa(conn):
+    """v0.49.0: lista 'CLT do mes' e cards (dados ficticios do PDF sintetico)."""
+    from folha_sintetica import pdf_folha_sintetico
+    import importador_folha as IF
+    import diretoria_dados as DD
+    assert P.folha_pessoas_mes(conn, "2026-09") == []                                      # sem folha: lista vazia
+    _depara_folha(conn)
+    P.gravar_folha(conn, IF.ler_recibos_pdf(pdf_folha_sintetico()), "r.pdf", "e" * 64, "teste@x")
+    lst = P.folha_pessoas_mes(conn, "2026-09")
+    por = {x["nome"].split()[0]: x for x in lst}
+    assert len(lst) == 3 and set(por) == {"ANA", "BRUNO", "CARLA"}
+    a, b, c = por["ANA"], por["BRUNO"], por["CARLA"]
+    assert (a["obra"], a["canteiro"], a["liquido"], a["he"], a["dsr"], a["he_min"]) == ("103", "OBRA TESTE UM", 3300.0, 500.0, 100.0, 600)       # 10:00 de HE
+    assert (b["obra"], b["liquido"], b["he"], b["he_min"]) == ("104", 3710.0, 200.0, 240)                                                        # 04:00
+    assert (c["obra"], c["liquido"], c["he"], c["he_min"], c["taxa_assist"], c["pensao"]) == ("103", 3030.0, 300.0, 360, 20.0, 0.0)               # recibo em 2 folhas: um so'
+    t = DD.somar_clt(lst)
+    assert (t["n"], t["liquido"], t["he"], t["dsr"], t["he_min"], t["n_he"]) == (3, 10040.0, 1000.0, 100.0, 1200, 3)
+    assert t["he_pct"] == P.folha_do_mes(conn, "2026-09")["total"]["he_pct"] == 0.123      # mesma regra validada: (HE + DSR) / (proventos - HE - DSR - descontos)
+    cards = DD.cards_folha(lst)
+    assert cards["total"]["n"] == 3 and [e["empresa"] for e in cards["por_empresa"]] == ["CONSTRUTORA"] and cards["por_empresa"][0]["taxa_assist"] == 20.0
+    assert [o["obra"] for o in cards["top_obras"]] == ["103", "104"] and cards["top_obras"][0]["he_dsr"] == 900.0       # 103: 500 + 300 + DSR 100
+    assert P.folha_pessoas_mes(conn, "2025-01") == []
+
+
 def test_folha_colaboradores_lista_nome_cargo_e_obra(conn):
     from folha_sintetica import pdf_folha_sintetico
     import importador_folha as IF

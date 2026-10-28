@@ -162,6 +162,27 @@ def test_painel_da_diretoria_cinco_abas_com_tudo(conn):
         colab = next(m for m in at.metric if m.label == "Colaboradores 09/2026")
         assert colab.value == "4" and "3 CLT + 1 PJ" in colab.delta                                            # 3 CLT (folha) + 1 PJ (contas pagas)
         assert any("PJ do mês" in e.label for e in at.expander)
+        # v0.49.0: cards da folha + filtro obra -> canteiro (CLT e PJ) + lista "CLT do mes"
+        assert any(e.label.startswith("CLT do mês: 3 colaboradores") for e in at.expander)
+        assert next(m for m in at.metric if m.label == "Colaboradores CLT").value == "3" and any(m.label == "Líquido da folha" for m in at.metric)
+        next(b for b in at.button if b.key == "dir_pes_top_103").click().run()                                    # card clicavel: filtra pela obra com mais HE
+        assert not at.exception, at.exception
+        assert next(w for w in at.multiselect if w.label == "Obra").value == ["103"]
+        assert any(e.label.startswith("CLT do mês: 2 colaboradores") for e in at.expander)
+        f_obra = next(w for w in at.multiselect if w.label == "Obra")
+        assert "103" in [o.split(" · ")[0] for o in f_obra.options] and "104" in [o.split(" · ")[0] for o in f_obra.options]
+        f_obra.set_value(["104"]).run()
+        assert not at.exception, at.exception
+        assert any(e.label.startswith("CLT do mês: 1 colaboradores") for e in at.expander)                      # obra marcada soma os canteiros dela (aqui 1 so')
+        f_cant = next(w for w in at.multiselect if w.label.startswith("Canteiro"))
+        assert list(f_cant.options) == ["OBRA TESTE DOIS"]                                                          # canteiros so' da obra marcada
+        f_cant.set_value(["OBRA TESTE DOIS"]).run()
+        assert not at.exception, at.exception
+        assert next(m for m in at.metric if m.label == "Colaboradores na seleção").value == "1"                    # canteiro marcado: so' ele (PJ some: nao tem canteiro)
+        assert not any(e.label.startswith("PJ do mês") for e in at.expander)
+        next(w for w in at.multiselect if w.label.startswith("Canteiro")).set_value([]).run()
+        next(w for w in at.multiselect if w.label == "Obra").set_value([]).run()
+        assert not at.exception, at.exception
         for modo in ("Mês", "Últimos 3 meses", "Últimos 6 meses", "Últimos 12 meses", "Personalizado", "Ano até o mês"):      # filtro de periodo flexivel: nenhuma aba quebra
             at.selectbox(key="dir_per_modo").select(modo).run()
             assert not at.exception, (modo, at.exception)

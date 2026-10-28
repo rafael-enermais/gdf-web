@@ -1750,6 +1750,58 @@ def folha_colaboradores(conn, mes: str) -> list:
         return []
 
 
+EV_PENSAO_JUDICIAL, EV_TAXA_ASSISTENCIAL = 1830, 1031          # eventos de desconto do recibo mostrados nos cards da folha
+
+
+def folha_pessoas_mes(conn, mes: str) -> list:
+    """Um registro por colaborador CLT do mes (recibos das importacoes ativas), para a lista 'CLT do mes' e os cards da aba Pessoas (v0.49.0):
+    [{'nome','cargo','empresa','cod_empresa','cadastro','obra','obra_nome','depto','canteiro','salario','he','dsr','he_min','proventos','descontos',
+      'liquido','pensao','taxa_assist'}]. obra = codigo do de-para departamento -> obra ('sem de-para' sem ele; '99' = administracao central); canteiro = texto do
+    subnivel do recibo. he = R$ dos eventos de hora extra; he_min = minutos de HE (a referencia do evento vem como 'HHH:MM hs'); dsr = DSR s/ HE.
+    So' leitura; nao mexe na regra da HE (a base continua sendo a de `folha_do_mes`). Lista vazia se o mes nao tem folha."""
+    import re
+    from importador_folha import EVENTOS_HE
+    re_horas = re.compile(r"^\s*(\d+):(\d\d)")
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT r.importacao_id, r.empresa, r.cadastro, r.nome, r.cargo, r.departamento, r.subnivel_texto, COALESCE(d.codigo_obra,'sem de-para'), d.obra_nome,
+                                  COALESCE(r.salario,0), COALESCE(r.hora_extra,0), COALESCE(r.dsr_he,0), COALESCE(r.total_proventos,0), COALESCE(r.total_descontos,0), COALESCE(r.liquido,0)
+                           FROM pnl_folha_recibo r JOIN pnl_importacao i ON i.id = r.importacao_id
+                           LEFT JOIN pnl_folha_depto_obra d ON d.empresa = r.empresa AND d.departamento = r.departamento
+                           WHERE i.tipo='FOLHA' AND i.mes=%s::date AND i.ativo
+                           ORDER BY r.nome, r.cadastro""", (f"{mes}-01",))
+            recibos = cur.fetchall()
+            cur.execute("""SELECT e.importacao_id, e.empresa, e.cadastro, e.ev, e.referencia, COALESCE(e.desconto,0)
+                           FROM pnl_folha_evento e JOIN pnl_importacao i ON i.id = e.importacao_id
+                           WHERE i.tipo='FOLHA' AND i.mes=%s::date AND i.ativo AND e.ev = ANY(%s)""",
+                        (f"{mes}-01", sorted(set(EVENTOS_HE) | {EV_PENSAO_JUDICIAL, EV_TAXA_ASSISTENCIAL})))
+            eventos = cur.fetchall()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return []
+    minutos, pensao, taxa = {}, {}, {}
+    for imp, emp, cad, ev, ref, desc in eventos:
+        k = (imp, emp, cad)
+        if ev in EVENTOS_HE:
+            m = re_horas.match(ref or "")
+            if m:
+                minutos[k] = minutos.get(k, 0) + int(m.group(1)) * 60 + int(m.group(2))
+        elif ev == EV_PENSAO_JUDICIAL:
+            pensao[k] = pensao.get(k, 0.0) + float(desc)
+        elif ev == EV_TAXA_ASSISTENCIAL:
+            taxa[k] = taxa.get(k, 0.0) + float(desc)
+    out = []
+    for imp, emp, cad, nome, cargo, dep, sub, cod, onome, sal, he, dsr, prov, desc, liq in recibos:
+        k = (imp, emp, cad)
+        out.append({"nome": nome or "", "cargo": cargo or "", "empresa": EMPRESAS_FOLHA.get(emp, emp), "cod_empresa": emp, "cadastro": cad, "obra": cod, "obra_nome": onome or "",
+                    "depto": dep or "", "canteiro": (sub or dep or "sem canteiro").strip(), "salario": float(sal), "he": float(he), "dsr": float(dsr), "he_min": int(minutos.get(k, 0)),
+                    "proventos": float(prov), "descontos": float(desc), "liquido": float(liq), "pensao": round(pensao.get(k, 0.0), 2), "taxa_assist": round(taxa.get(k, 0.0), 2)})
+    return out
+
+
 def folha_serie(conn) -> list:
     """[{'mes','colab','salarios','he_pct','he_valor' (HE + DSR s/ HE em R$)}] dos meses com folha importada (para o grafico HE / salarios)."""
     out = []
