@@ -122,9 +122,16 @@ def _folha_colaboradores(_conn, mes: str, carimbo: str) -> list:
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _folha_pessoas(_conn, mes: str, carimbo: str) -> list:
-    """Colaboradores CLT do mes com liquido, HE (horas e R$), canteiro, pensao e taxa assistencial (v0.49.0)."""
-    return P.folha_pessoas_mes(_conn, mes)
+def _folha_pessoas(_conn, mes: str, carimbo: str, base: str = BD.REF) -> list:
+    """Colaboradores CLT do mes com liquido, HE (horas e R$), canteiro, pensao e taxa assistencial (v0.49.0). base = a base dos recibos enviados (Referencia ou Caixa)."""
+    return P.folha_pessoas_mes(_conn, mes, base)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def _folha_base(_conn, mes: str, carimbo: str, base: str) -> dict | None:
+    """Folha CLT do mes + serie de HE dos recibos enviados na base escolhida (mesmo formato de `pes`)."""
+    fo = P.folha_do_mes(_conn, mes, base)
+    return {"folha": fo, "serie": [x for x in P.folha_serie(_conn, base) if x["he_pct"] is not None]} if fo else None
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -161,7 +168,9 @@ def _obras_meses(_conn, meses_t: tuple, carimbo: str, base: str = BD.REF):
     Base CAIXA: obras pelas baixas de dinheiro real (1 consulta); a projecao e' de referencia, por isso vem vazia."""
     if base == BD.CAIXA:
         obs_c = P.obras_dos_meses(_conn, list(meses_t), BD.CAIXA)
-        return [(obs_c.get(m), None) for m in meses_t]
+        extra_c = _obras_aux(_conn, carimbo)[0]
+        projs_c = P.projecoes_dos_meses(_conn, [m for m in meses_t if obs_c.get(m)], BD.CAIXA)          # so' projecao enviada como Caixa
+        return [(obs_c.get(m), P.projecao_x_realizado(projs_c[m], obs_c[m], extra_c) if obs_c.get(m) and projs_c.get(m) else None) for m in meses_t]
     extra, com_obras = _obras_aux(_conn, carimbo)
     obs = P.obras_dos_meses(_conn, [m for m in meses_t if m in com_obras])
     projs = P.projecoes_dos_meses(_conn, [m for m in meses_t if obs.get(m)])
@@ -233,7 +242,10 @@ def _adm_periodo(_conn, mes_ini: str, mes: str, carimbo: str, base: str = BD.CAI
         sem_prev = P.exclui_previsao(regras)
         linhas_mes = P.adm_linhas(_conn, mes, mes, fora_adm, sem_previsao=sem_prev, base=base)
         linhas_per = P.adm_linhas(_conn, mes_ini, mes, fora_adm, sem_previsao=sem_prev, base=base) if mes_ini != mes else linhas_mes
-    orc = P.orcamento_ativo(_conn) if P.orcamento_instalado(_conn) else None
+    orc = None
+    if P.orcamento_instalado(_conn):                              # Caixa: o orcamento enviado como Caixa; sem ele, o de referencia (com aviso na tela)
+        orc = P.orcamento_ativo(_conn, base) or (P.orcamento_ativo(_conn, BD.REF) if base == BD.CAIXA else None)
+    orc_base = (orc or {}).get("base") or base
     orc_mes = orc_per = None
     serie, serie_g = [], []
     if orc:
@@ -247,7 +259,7 @@ def _adm_periodo(_conn, mes_ini: str, mes: str, carimbo: str, base: str = BD.CAI
         serie_g = [x for x in serie_todas if PER.somar_meses(mes, -11) <= x["mes"] <= mes]       # grafico: 12 meses ate o mes de referencia
     if not (linhas_per or orc_per or orc_mes):
         return None
-    return {"linhas_mes": linhas_mes, "linhas_per": linhas_per, "orc_mes": orc_mes, "orc_per": orc_per, "serie_orc": serie, "serie_orc_g": serie_g}
+    return {"linhas_mes": linhas_mes, "linhas_per": linhas_per, "orc_mes": orc_mes, "orc_per": orc_per, "serie_orc": serie, "serie_orc_g": serie_g, "orc_base": orc_base}
 
 
 def _fmt_num(v):
@@ -445,13 +457,13 @@ def _fixar_base(aba: str, base):
         st.session_state["dir_base_erro"] = f"Não consegui salvar a escolha: {exc}"
 
 
-def _base_aba(aba: str) -> str:
+def _base_aba(aba: str, nota: str = "") -> str:
     """Base de data da aba. EDITOR: seletor Referência x Caixa no topo da aba (e botão para FIXAR a base para a Diretoria). VISUALIZADOR: nenhum controle, so' a base fixada
     (ou o padrao da aba) com um rotulo dizendo qual e'. Devolve 'REF' ou 'CAIXA'."""
     fix = _fixadas(conn, CARIMBO).get(aba)
     if not _eh_editor:
         b = BD.resolver(aba, None, fix, False)
-        _cap(BD.legenda(b, fixada=bool(fix)))
+        _cap(BD.legenda(b, fixada=bool(fix)) + nota)
         return b
     chave = "dir_base_" + BD.chave_config(aba)[len(BD.PREFIXO_CHAVE):]
     padrao_ed = BD.resolver(aba, None, fix, True)
@@ -467,7 +479,7 @@ def _base_aba(aba: str) -> str:
                       help="O login de visualização vê só o painel, sem seletor, nesta base.")
     if st.session_state.get("dir_base_erro"):
         _warn(st.session_state.pop("dir_base_erro"))
-    _cap(BD.legenda(b) + f" A Diretoria vê hoje: **{BD.CURTO[fix] if fix else BD.CURTO[BD.padrao(aba)] + ' (padrão da aba)'}**.")
+    _cap(BD.legenda(b) + nota + f" A Diretoria vê hoje: **{BD.CURTO[fix] if fix else BD.CURTO[BD.padrao(aba)] + ' (padrão da aba)'}**.")
     return b
 
 
@@ -737,7 +749,7 @@ def _obras_do_periodo(base: str = BD.REF):
     soma = P.somar_obras([o for o, _ in oks])
     if not soma:
         return None, None, 0, falt
-    proj_s = P.somar_projecoes([px for _, px in oks]) if base != BD.CAIXA else None
+    proj_s = P.somar_projecoes([px for _, px in oks])
     com_proj = {x["codigo"] for x in (proj_s or {}).get("linhas", []) if x.get("codigo") and x.get("receita_proj")}
     soma.update(P.agrupar_demais_obras(soma, com_proj))
     soma["nome_cheio"] = _nomes_obras(conn, CARIMBO)
@@ -804,7 +816,7 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
                 k[5].metric("Menor BDI", str(mn["Nome"] or mn["Obra"])[:22], _mi(mn["BDI real"], True), border=True)
             busca = st.text_input("Pesquisar obra (código ou nome)", key="dir_ob_busca", placeholder="ex.: 104, lote 03, Eletrobras")
             vis = _busca(base, busca, ["Obra", "Nome"]).reset_index(drop=True)
-            _cap("Marque a caixinha de uma ou mais obras para ver o detalhe (várias marcadas somam); clique no cabeçalho para ordenar. " + ("Na base Caixa não há previsto (a projeção é de referência)." if _CX_O else "Previsto = projeção de receitas do mês."))
+            _cap("Marque a caixinha de uma ou mais obras para ver o detalhe (várias marcadas somam); clique no cabeçalho para ordenar. " + ("Na base Caixa o previsto só aparece se a projeção foi enviada como Caixa." if _CX_O else "Previsto = projeção de receitas do mês."))
             mostra = vis[["Obra", "Nome", "Receita", "Custos", "BDI previsto", "BDI real", "Desvio BDI", "Margem", "Colab.", "Fat./colab.", "Custo/colab."]]
             ev = st.dataframe(_estilo(mostra, numeros=("Receita", "Custos", "BDI previsto", "BDI real", "Colab.", "Fat./colab.", "Custo/colab."),
                                       percentuais=("Desvio BDI", "Margem")),
@@ -950,6 +962,8 @@ if aba_adm.open or _TODAS:
             _info("Falta sincronizar as contas pagas do período e/ou importar o Orçamento ADM.")
         else:
             o, ac, so = ap["orc_mes"], ap["orc_per"], ap["serie_orc"]
+            if base_a == BD.CAIXA and ap.get("orc_base") == BD.REF and (o or ac):
+                _cap("Orçado: nenhum Orçamento ADM foi enviado como Caixa; a comparação usa o orçamento de referência.")
             linhas_mes, linhas_per = ap["linhas_mes"], ap["linhas_per"]
             grp_sel = None
             contas_sel: list = []                                      # contas marcadas (a tabela de contas so' aparece com algum grupo marcado)
@@ -1229,15 +1243,22 @@ if aba_pj.open or _TODAS:
     with aba_pj:
         if mes_ini != mes:
             _cap(f"A Folha PJ mostra sempre o mês de referência ({_rot(mes)}), não soma o período.")
-        FPU.aba_folha_pj(conn, mes, CARIMBO, _rot(mes))
+        base_pj = _base_aba("Folha PJ", " Nesta aba o Caixa também lista, como “A pagar”, o que vence no mês e ainda não foi pago; o Flash vale nas duas bases.")
+        FPU.aba_folha_pj(conn, mes, CARIMBO, _rot(mes), base_pj)
 
 
 # ------------------------------------------------------------------ 6b) FOLHA CLT (ao lado de Folha PJ; recibos da folha importados)
 if aba_clt.open or _TODAS:
     with aba_clt:
-        if not pes:
-            _info("Faltam os recibos da folha deste mês: envie o PDF em Importações V2.")
-        _clt_todos = _folha_pessoas(conn, mes, CARIMBO)
+        base_c = _base_aba("Folha CLT", " Os recibos da folha entram na base em que foram enviados (Importações V2); histórico do painel da contabilidade e DRE são de referência.")
+        if base_c == BD.CAIXA:
+            pes_t, hist_t, serie_t = _folha_base(conn, mes, CARIMBO, BD.CAIXA), None, [x for x in _serie_caixa(conn, mes_atual=f"{agora_br().year}-{agora_br().month:02d}", carimbo=CARIMBO) if MES_INI_G <= x["mes"] <= mes]
+        else:
+            pes_t, hist_t, serie_t = pes, hist, ctx["serie"]
+        if not pes_t:
+            _info("Faltam os recibos da folha deste mês" + (" enviados como Caixa: envie o PDF em Importações V2 marcando “Caixa”, ou troque a base da aba para Referência." if base_c == BD.CAIXA
+                                                         else ": envie o PDF em Importações V2."))
+        _clt_todos = _folha_pessoas(conn, mes, CARIMBO, base_c)
         _obras_sel, _cant_sel = [], []
         if _clt_todos:
             _md("**Colaboradores CLT por obra e canteiro**")
@@ -1297,9 +1318,9 @@ if aba_clt.open or _TODAS:
 
         # horas extras x receita
         _md("**Horas extras × receita**")
-        sf = HIST.serie_he_combinada(hist, pes["serie"] if pes else [])
+        sf = HIST.serie_he_combinada(hist_t, pes_t["serie"] if pes_t else [])
         ms_g = MESES_G                                                                   # grafico: sempre 12 meses ate o mes de referencia
-        ev_g = DD.evolucao_he_receita(sf, ctx["serie"], ms_g)
+        ev_g = DD.evolucao_he_receita(sf, serie_t, ms_g)
         if sum(1 for x in ev_g if x["he_pct"] is not None) >= 2:
             rots_g = [_rot(x["mes"]) for x in ev_g]
             base_g = alt.Chart(pd.DataFrame({"Mês": rots_g})).encode(x=alt.X("Mês:N", sort=rots_g, axis=alt.Axis(labelAngle=-45, title=None)))
@@ -1320,7 +1341,7 @@ if aba_clt.open or _TODAS:
                                     legend=alt.Legend(orient="bottom", title=None)), tooltip=["Mês", "Série", alt.Tooltip("Variação %:Q", format=",.1f")])
                 layers.append(l_var)
             estilo.altair(alt.layer(*layers).resolve_scale(y="independent").properties(height=280), width="stretch")
-            cp = DD.comparar_periodos(sf, ctx["serie"], mes_ini, mes)
+            cp = DD.comparar_periodos(sf, serie_t, mes_ini, mes)
             _fv = lambda x: "n/d" if x is None else F.pct_br(x, 1)                      # noqa: E731
             _cap(f"Período {PER_ROT} × período anterior ({PER.rotulo(cp['meses_anterior'][0], cp['meses_anterior'][-1])}): custo de HE {_fv(cp['var_he'])}"
                  + (f" ({_mi(cp['he_anterior'])} → {_mi(cp['he_atual'])})" if cp["var_he"] is not None else "") + f"; receita {_fv(cp['var_receita'])}"
@@ -1330,10 +1351,10 @@ if aba_clt.open or _TODAS:
             if {x["origem"] for x in sf} == {"historico", "app"}:
                 _cap("Atenção à comparação: os meses do histórico (painel da contabilidade) usam como base proventos menos HE, sem descontar INSS/IRRF etc.; "
                      "os meses com folha no app usam a remuneração líquida (menos todos os descontos), como a contabilidade pediu em 20/10/2026. Por isso pode haver um degrau entre as duas fontes.")
-        elif pes:
+        elif pes_t:
             _cap("A série mensal de HE aparece com 2 ou mais meses de folha (ou com o histórico do painel).")
-        if pes:
-            fo = pes["folha"]
+        if pes_t:
+            fo = pes_t["folha"]
             with st.expander("Folha CLT do mês: por empresa e por obra"):
                 st.dataframe(pd.DataFrame([{"Empresa": e["empresa"], "Colab.": e["colab"], "Remuneração": _m(e["base_he"]), "HE + DSR": _m(e["hora_extra"] + e["dsr_he"]),
                                             "HE ÷ remuneração": F.pct_br(e["he_pct"]) if e["he_pct"] is not None else "–", "Custo (proventos + FGTS)": _m(e["custo"])} for e in fo["por_empresa"]]),

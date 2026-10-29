@@ -237,3 +237,21 @@ def test_resultado_e_obras_tem_seletor_e_abrem_em_caixa_sem_erro(conn):
         assert sum("Caixa" in x for x in _legendas(ed)) >= 2
         ed.radio(key="dir_base_resultado").set_value(BD.REF).run()                                    # e volta sem quebrar
         assert not ed.exception, ed.exception
+
+
+@pytest.mark.pg
+def test_folha_pj_e_folha_clt_tem_seletor_e_trocam_de_base_sem_erro(conn):
+    from unittest.mock import patch
+    from test_administracao import _montar
+    _montar(conn)
+    with patch("conexao.get_conn", return_value=conn):
+        ed = _tela(conn, "contabilidade@empresa.com")
+        ed.run()
+        assert not ed.exception, ed.exception
+        assert {"dir_base_folha_pj", "dir_base_folha_clt"} <= {r.key for r in ed.radio}
+        assert ed.radio(key="dir_base_folha_pj").value == BD.CAIXA and ed.radio(key="dir_base_folha_clt").value == BD.REF        # padroes de hoje
+        for chave, nova in (("dir_base_folha_pj", BD.REF), ("dir_base_folha_clt", BD.CAIXA)):
+            ed.radio(key=chave).set_value(nova).run()
+            assert not ed.exception, ed.exception
+        vi_leg = [c.value for c in ed.caption if c.value.startswith("Base:")]
+        assert sum("Caixa" in x for x in vi_leg) >= 1 and sum("Referência" in x for x in vi_leg) >= 1

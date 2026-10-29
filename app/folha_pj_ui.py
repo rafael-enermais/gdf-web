@@ -73,8 +73,8 @@ def _tem_chip(opcao, marcadas) -> bool:
 
 # ------------------------------------------------------------------ dados (cache de 30 min, renovado pelo carimbo do banco)
 @st.cache_data(ttl=1800, show_spinner="Lendo a folha PJ…")
-def _dados(_conn, mes: str, carimbo: str) -> dict:
-    return FP.dados_do_mes(_conn, mes)
+def _dados(_conn, mes: str, carimbo: str, base: str = "CAIXA") -> dict:
+    return FP.dados_do_mes(_conn, mes, base)
 
 
 def _ap(apr: list) -> str:
@@ -91,13 +91,13 @@ def _definir(chave, valor):
 
 
 # ------------------------------------------------------------------ aba
-def aba_folha_pj(conn, mes: str, carimbo: str, rotulo_mes: str) -> None:
-    d = _dados(conn, mes, carimbo)
+def aba_folha_pj(conn, mes: str, carimbo: str, rotulo_mes: str, base: str = "CAIXA") -> None:
+    d = _dados(conn, mes, carimbo, base)
     if not d["instalado"]:
         st.info("Falta executar o arquivo `sql/v2_folha_pj.sql` (SQL-40) no Supabase. Sem ele o painel já mostra os valores do Sienge, mas ainda não tem Flash, "
                 "mapa de colaboradores, diretoria nem o desconto dos títulos em aberto.")
     if not d["pessoas"]:
-        st.info(f"Não há contas PJ (Salários PJ, Premiações ou Multas Contratuais) pagas ou a pagar em {rotulo_mes}.")
+        st.info(f"Não há contas PJ (Salários PJ, Premiações ou Multas Contratuais) " + ("emitidas" if base == "REF" else "pagas ou a pagar") + f" em {rotulo_mes}.")
         return
     rst = int(st.session_state.get("fpj_rst", 0))
     k = lambda nome: f"fpj_{nome}_{rst}"                                                   # noqa: E731
@@ -207,8 +207,10 @@ def aba_folha_pj(conn, mes: str, carimbo: str, rotulo_mes: str) -> None:
         with st.expander(f"Lançamentos que não contam ({len(d['fora'])}): substituições e abatimentos de adiantamento"):
             st.dataframe(pd.DataFrame([{"Lançamento": f["lancamento"], "Documento": f["documento"], "Valor": _m(f["valor"]), "Motivo": f["motivo"]} for f in d["fora"]]), hide_index=True, width="stretch")
             _cap("Títulos substitutos não entram no custo: o Sienge registra a troca (adiantamento/proforma pela nota) como outra baixa e contaria duas vezes.")
-    _cap("Fonte: Sienge (contas Salários PJ, Premiações e Multas Contratuais PJ, de obra e administração), pago no mês e a pagar com vencimento até o fim do mês. "
-         "Flash e mapa de colaboradores vêm das planilhas enviadas em Importações V2. Pago e a pagar são líquidos de desconto.")
+    _cap("Fonte: Sienge (contas Salários PJ, Premiações e Multas Contratuais PJ, de obra e administração), "
+         + ("títulos emitidos no mês (pelo valor do documento): “Pago” é o que já foi pago deles e “A pagar” o que falta. "
+            if base == "REF" else "pago no mês e a pagar com vencimento até o fim do mês. ")
+         + "Flash e mapa de colaboradores vêm das planilhas enviadas em Importações V2 (o Flash é depositado no mesmo mês da referência e vale nas duas bases). Pago e a pagar são líquidos de desconto.")
 
 
 # ------------------------------------------------------------------ cargas (Importacoes V2, so' editor)

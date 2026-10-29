@@ -574,6 +574,12 @@ def _filtro_distrato(sem_distrato: bool) -> str:
                                             AND dx.tipo_oper_id=7 HAVING COALESCE(sum(dx.bruto),0) >= COALESCE(t.valor_original,0) - 0.01))"""
 
 
+def _bl(base) -> str:
+    """'REF' ou 'CAIXA' (valida; so' esses dois entram em SQL como texto fixo). Qualquer outra coisa vira 'REF'."""
+    import base_data as _BD
+    return _BD.valida(base) or "REF"
+
+
 def _filtro_desfeitos(sem_desfeitos: bool) -> str:
     """REGRA CONFIRMADA pela contabilidade em 19/10/2026 (ligada por padrao): o DRE gerencial do Sienge NAO conta (a) titulos a PAGAR cujas baixas dos tipos Cancelamento (3),
     Substituicao (5) ou Abatimento de adiantamento (8) somam o valor todo, nem (b) documentos do tipo AEJ (multas). Aplicar isso reduz a diferenca de
@@ -1137,7 +1143,7 @@ def termos_do_mes(conn, mes: str, base: str = "REF") -> dict | None:
 
 def _termos_do_mes_caixa(conn, mes: str) -> dict | None:
     """Os termos do Resultado em CAIXA: receita RECEBIDA, custos PAGOS nas obras (mesma tabela da aba Obras em caixa), BDI de caixa e administracao PAGA nas unidades ADM
-    (sem Mega/Sette, mesmas regras da aba Administracao). Orcado e projecao sao de referencia: ficam n/d (None). None se o mes nao tem recebimento nem pagamento de obra."""
+    (sem Mega/Sette, mesmas regras da aba Administracao). Orcado e projecao so' aparecem se foram enviados como base CAIXA (senao n/d = None). None se o mes nao tem recebimento nem pagamento de obra."""
     ob = obras_do_mes(conn, mes, "CAIXA")
     if not ob:
         return None
@@ -1147,7 +1153,16 @@ def _termos_do_mes_caixa(conn, mes: str) -> dict | None:
         regras = regras_ativas(conn, "DESPESAS")
         fora_adm = [p for p in prefixos_excluidos(regras) if p != "2.02.01"]
         adm_real = round(sum(l["valor"] for l in adm_linhas(conn, mes, mes, fora_adm, sem_previsao=exclui_previsao(regras), base="CAIXA")), 2)
-    return {"mes": mes, "rec": rec, "cus": cus, "bdi": round(rec - cus, 2), "fonte": "caixa", "adm_real": adm_real, "adm_orc": None, "rec_p": None, "bdi_p": None}
+    adm_orc = rec_p = bdi_p = None
+    orc = orcamento_ativo(conn, "CAIXA") if orcamento_instalado(conn) else None
+    if orc and mes in orc["meses"]:
+        adm_orc = orcamento_resumo(conn, orc["id"], mes)["total"]["orcado"]
+    proj = projecao_do_mes(conn, mes, "CAIXA")
+    if proj:
+        px = projecao_x_realizado(proj, ob, nomes_obras_extra(conn))
+        if abs(px["receita_proj_total"]) > 0.005:
+            rec_p, bdi_p = px["receita_proj_total"], px["total"]["bdi_proj"]
+    return {"mes": mes, "rec": rec, "cus": cus, "bdi": round(rec - cus, 2), "fonte": "caixa", "adm_real": adm_real, "adm_orc": adm_orc, "rec_p": rec_p, "bdi_p": bdi_p}
 
 
 def somar_termos(lista: list) -> dict | None:
@@ -1929,7 +1944,7 @@ def folha_instalada(conn) -> bool:
         return False
 
 
-def gravar_folha(conn, folha: dict, arquivo: str, sha256: str, usuario: str | None) -> dict:
+def gravar_folha(conn, folha: dict, arquivo: str, sha256: str, usuario: str | None, base: str = "REF") -> dict:
     """Grava os recibos lidos do PDF como importacao ativa do mes+empresa (a anterior do mesmo mes/escopo fica ativo=false). Mesmo arquivo (sha256)
     ja importado: nao grava de novo ({'repetido': True}). Tudo numa transacao so. O log guarda so' contagens (nada de nome nem salario)."""
     from importador_folha import resumo_por_recibo
@@ -1939,15 +1954,15 @@ def gravar_folha(conn, folha: dict, arquivo: str, sha256: str, usuario: str | No
     escopo = "+".join(EMPRESAS_FOLHA.get(e, f"EMP{e}") for e in folha["empresas"])
     with db.transacao(conn):
         with conn.cursor() as cur:
-            cur.execute("SELECT id, ativo, mes FROM pnl_importacao WHERE tipo='FOLHA' AND arquivo_sha256=%s", (sha256,))
+            cur.execute("SELECT id, ativo, mes FROM pnl_importacao WHERE tipo='FOLHA' AND arquivo_sha256=%s AND base=%s", (sha256, _bl(base)))
             ja = cur.fetchone()
             if ja:
                 return {"repetido": True, "id": ja[0], "ativo": ja[1], "mes": ja[2].strftime("%Y-%m"), "escopo": escopo}
-            cur.execute("UPDATE pnl_importacao SET ativo=false WHERE tipo='FOLHA' AND mes=%s AND escopo=%s AND ativo", (mes, escopo))
-            cur.execute("""INSERT INTO pnl_importacao (tipo, mes, escopo, arquivo_nome, arquivo_sha256, importado_por, n_linhas, detalhe)
-                           VALUES ('FOLHA', %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            cur.execute("UPDATE pnl_importacao SET ativo=false WHERE tipo='FOLHA' AND mes=%s AND escopo=%s AND ativo AND base=%s", (mes, escopo, _bl(base)))
+            cur.execute("""INSERT INTO pnl_importacao (tipo, mes, escopo, arquivo_nome, arquivo_sha256, importado_por, n_linhas, detalhe, base)
+                           VALUES ('FOLHA', %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
                         (mes, escopo, arquivo, sha256, usuario, len(folha["recibos"]),
-                         json.dumps({"recibos": len(folha["recibos"]), "paginas": folha["paginas"], "avisos": folha["avisos"]}, ensure_ascii=False)))
+                         json.dumps({"recibos": len(folha["recibos"]), "paginas": folha["paginas"], "avisos": folha["avisos"]}, ensure_ascii=False), _bl(base)))
             iid = cur.fetchone()[0]
             linhas_r, linhas_e = [], []
             for r in folha["recibos"]:
@@ -1967,38 +1982,40 @@ def gravar_folha(conn, folha: dict, arquivo: str, sha256: str, usuario: str | No
     return {"repetido": False, "id": iid, "mes": mes[:7], "escopo": escopo, "recibos": len(folha["recibos"])}
 
 
-def folha_meses(conn) -> list:
+def folha_meses(conn, base: str = "REF") -> list:
     """Meses ('AAAA-MM') com folha importada e ativa."""
+    bl = _bl(base)
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT DISTINCT to_char(mes,'YYYY-MM') FROM pnl_importacao WHERE tipo='FOLHA' AND ativo ORDER BY 1")
+            cur.execute(f"SELECT DISTINCT to_char(mes,'YYYY-MM') FROM pnl_importacao WHERE tipo='FOLHA' AND ativo AND base='{bl}' ORDER BY 1")
             return [r[0] for r in cur.fetchall()]
     except Exception:
         return []
 
 
-def folha_do_mes(conn, mes: str) -> dict | None:
+def folha_do_mes(conn, mes: str, base: str = "REF") -> dict | None:
     """Folha CLT do mes (todas as empresas importadas): total de colaboradores, salarios (evento 1), HE + DSR s/HE, % HE/salarios, custo (proventos + FGTS),
     por empresa, por obra (de-para departamento -> obra) e os departamentos sem de-para. None se o mes nao tem folha."""
+    bl = _bl(base)
     try:
         with conn.cursor() as cur:
-            cur.execute("""SELECT id, escopo, arquivo_nome, importado_por, importado_em FROM pnl_importacao
-                           WHERE tipo='FOLHA' AND mes=%s::date AND ativo ORDER BY escopo""", (f"{mes}-01",))
+            cur.execute(f"""SELECT id, escopo, arquivo_nome, importado_por, importado_em FROM pnl_importacao
+                           WHERE tipo='FOLHA' AND mes=%s::date AND ativo AND base='{bl}' ORDER BY escopo""", (f"{mes}-01",))
             imps = cur.fetchall()
             if not imps:
                 return None
-            cur.execute("""SELECT r.empresa, r.departamento, max(r.subnivel_texto), d.codigo_obra, max(d.obra_nome), count(*),
+            cur.execute(f"""SELECT r.empresa, r.departamento, max(r.subnivel_texto), d.codigo_obra, max(d.obra_nome), count(*),
                                   sum(COALESCE(r.salario,0)), sum(COALESCE(r.hora_extra,0)), sum(COALESCE(r.dsr_he,0)),
                                   sum(COALESCE(r.total_proventos,0)), sum(COALESCE(r.fgts_mes,0))
                            FROM pnl_folha_recibo r JOIN pnl_importacao i ON i.id = r.importacao_id
                            LEFT JOIN pnl_folha_depto_obra d ON d.empresa = r.empresa AND d.departamento = r.departamento
-                           WHERE i.tipo='FOLHA' AND i.mes=%s::date AND i.ativo
+                           WHERE i.tipo='FOLHA' AND i.mes=%s::date AND i.ativo AND i.base='{bl}'
                            GROUP BY r.empresa, r.departamento, d.codigo_obra""", (f"{mes}-01",))
             linhas = cur.fetchall()
             # TODOS os descontos do recibo por departamento (contabilidade 20/10: base da HE = remuneracao liquida)
-            cur.execute("""SELECT e.empresa, e.departamento, COALESCE(sum(e.desconto),0)
+            cur.execute(f"""SELECT e.empresa, e.departamento, COALESCE(sum(e.desconto),0)
                            FROM pnl_folha_evento e JOIN pnl_importacao i ON i.id = e.importacao_id
-                           WHERE i.tipo='FOLHA' AND i.mes=%s::date AND i.ativo
+                           WHERE i.tipo='FOLHA' AND i.mes=%s::date AND i.ativo AND i.base='{bl}'
                            GROUP BY e.empresa, e.departamento""", (f"{mes}-01",))
             descontos = {(a, b): float(v) for a, b, v in cur.fetchall()}
     except Exception:
@@ -2032,15 +2049,16 @@ def folha_do_mes(conn, mes: str) -> dict | None:
             "por_empresa": sorted(por_emp.values(), key=lambda d: d["empresa"]), "por_obra": por_obra, "sem_depara": sem}
 
 
-def folha_colaboradores(conn, mes: str) -> list:
+def folha_colaboradores(conn, mes: str, base: str = "REF") -> list:
     """Colaboradores CLT do mes (recibos da folha das importacoes ativas): [{'nome','cargo','empresa','obra'}], 'obra' = codigo do de-para departamento -> obra
     ('sem de-para' quando nao ha; '99' = administracao central). So' leitura; lista vazia se o mes nao tem folha."""
+    bl = _bl(base)
     try:
         with conn.cursor() as cur:
-            cur.execute("""SELECT r.nome, r.cargo, r.empresa, COALESCE(d.codigo_obra,'sem de-para')
+            cur.execute(f"""SELECT r.nome, r.cargo, r.empresa, COALESCE(d.codigo_obra,'sem de-para')
                            FROM pnl_folha_recibo r JOIN pnl_importacao i ON i.id = r.importacao_id
                            LEFT JOIN pnl_folha_depto_obra d ON d.empresa = r.empresa AND d.departamento = r.departamento
-                           WHERE i.tipo='FOLHA' AND i.mes=%s::date AND i.ativo
+                           WHERE i.tipo='FOLHA' AND i.mes=%s::date AND i.ativo AND i.base='{bl}'
                            ORDER BY r.nome""", (f"{mes}-01",))
             return [{"nome": n or "", "cargo": c or "", "empresa": EMPRESAS_FOLHA.get(e, e), "obra": o} for n, c, e, o in cur.fetchall()]
     except Exception:
@@ -2065,25 +2083,26 @@ def minutos_he(descricao, referencia) -> int:
 EV_PENSAO_JUDICIAL, EV_TAXA_ASSISTENCIAL = 1830, 1031          # eventos de desconto do recibo mostrados nos cards da folha
 
 
-def folha_pessoas_mes(conn, mes: str) -> list:
+def folha_pessoas_mes(conn, mes: str, base: str = "REF") -> list:
     """Um registro por colaborador CLT do mes (recibos das importacoes ativas), para a lista 'CLT do mes' e os cards da aba Pessoas (v0.49.0):
     [{'nome','cargo','empresa','cod_empresa','cadastro','obra','obra_nome','depto','canteiro','salario','he','dsr','he_min','proventos','descontos',
       'liquido','pensao','taxa_assist'}]. obra = codigo do de-para departamento -> obra ('sem de-para' sem ele; '99' = administracao central); canteiro = texto do
     subnivel do recibo. he = R$ dos eventos de hora extra; he_min = minutos de HE (o 'HHH:MM' vem na referencia ou no fim da descricao do evento); dsr = DSR s/ HE.
     So' leitura; nao mexe na regra da HE (a base continua sendo a de `folha_do_mes`). Lista vazia se o mes nao tem folha."""
     from importador_folha import EVENTOS_HE
+    bl = _bl(base)
     try:
         with conn.cursor() as cur:
-            cur.execute("""SELECT r.importacao_id, r.empresa, r.cadastro, r.nome, r.cargo, r.departamento, r.subnivel_texto, COALESCE(d.codigo_obra,'sem de-para'), d.obra_nome,
+            cur.execute(f"""SELECT r.importacao_id, r.empresa, r.cadastro, r.nome, r.cargo, r.departamento, r.subnivel_texto, COALESCE(d.codigo_obra,'sem de-para'), d.obra_nome,
                                   COALESCE(r.salario,0), COALESCE(r.hora_extra,0), COALESCE(r.dsr_he,0), COALESCE(r.total_proventos,0), COALESCE(r.total_descontos,0), COALESCE(r.liquido,0)
                            FROM pnl_folha_recibo r JOIN pnl_importacao i ON i.id = r.importacao_id
                            LEFT JOIN pnl_folha_depto_obra d ON d.empresa = r.empresa AND d.departamento = r.departamento
-                           WHERE i.tipo='FOLHA' AND i.mes=%s::date AND i.ativo
+                           WHERE i.tipo='FOLHA' AND i.mes=%s::date AND i.ativo AND i.base='{bl}'
                            ORDER BY r.nome, r.cadastro""", (f"{mes}-01",))
             recibos = cur.fetchall()
-            cur.execute("""SELECT e.importacao_id, e.empresa, e.cadastro, e.ev, e.descricao, e.referencia, COALESCE(e.desconto,0)
+            cur.execute(f"""SELECT e.importacao_id, e.empresa, e.cadastro, e.ev, e.descricao, e.referencia, COALESCE(e.desconto,0)
                            FROM pnl_folha_evento e JOIN pnl_importacao i ON i.id = e.importacao_id
-                           WHERE i.tipo='FOLHA' AND i.mes=%s::date AND i.ativo AND e.ev = ANY(%s)""",
+                           WHERE i.tipo='FOLHA' AND i.mes=%s::date AND i.ativo AND i.base='{bl}' AND e.ev = ANY(%s)""",
                         (f"{mes}-01", sorted(set(EVENTOS_HE) | {EV_PENSAO_JUDICIAL, EV_TAXA_ASSISTENCIAL})))
             eventos = cur.fetchall()
     except Exception:
@@ -2110,11 +2129,11 @@ def folha_pessoas_mes(conn, mes: str) -> list:
     return out
 
 
-def folha_serie(conn) -> list:
+def folha_serie(conn, base: str = "REF") -> list:
     """[{'mes','colab','salarios','he_pct','he_valor' (HE + DSR s/ HE em R$)}] dos meses com folha importada (para o grafico HE / salarios)."""
     out = []
-    for m in folha_meses(conn):
-        f = folha_do_mes(conn, m)
+    for m in folha_meses(conn, base):
+        f = folha_do_mes(conn, m, base)
         if f:
             out.append({"mes": m, "colab": f["total"]["colab"], "salarios": f["total"]["salarios"], "he_pct": f["total"]["he_pct"],
                         "he_valor": round(f["total"]["hora_extra"] + f["total"]["dsr_he"], 2)})
@@ -2137,19 +2156,19 @@ def colab_por_linha_obras(linhas: list, folha: dict | None) -> dict:
 
 
 # ---------------------------------------------------------------- Projecao de receitas das obras (planilha xlsx; tabela pnl_projecao_linha do SQL v2)
-def gravar_projecao(conn, proj: dict, arquivo: str, sha256: str, usuario: str | None) -> dict:
+def gravar_projecao(conn, proj: dict, arquivo: str, sha256: str, usuario: str | None, base: str = "REF") -> dict:
     """Grava a projecao lida do xlsx como importacao ativa do mes (a anterior do mesmo mes fica ativo=false). Mesmo arquivo: nao grava de novo."""
     mes = proj["mes"] + "-01"
     with db.transacao(conn):
         with conn.cursor() as cur:
-            cur.execute("SELECT id, ativo, mes FROM pnl_importacao WHERE tipo='PROJECAO' AND arquivo_sha256=%s", (sha256,))
+            cur.execute("SELECT id, ativo, mes FROM pnl_importacao WHERE tipo='PROJECAO' AND arquivo_sha256=%s AND base=%s", (sha256, _bl(base)))
             ja = cur.fetchone()
             if ja:
                 return {"repetido": True, "id": ja[0], "ativo": ja[1], "mes": ja[2].strftime("%Y-%m")}
-            cur.execute("UPDATE pnl_importacao SET ativo=false WHERE tipo='PROJECAO' AND mes=%s AND escopo='' AND ativo", (mes,))
-            cur.execute("""INSERT INTO pnl_importacao (tipo, mes, escopo, arquivo_nome, arquivo_sha256, importado_por, n_linhas, detalhe)
-                           VALUES ('PROJECAO', %s, '', %s, %s, %s, %s, %s) RETURNING id""",
-                        (mes, arquivo, sha256, usuario, len(proj["linhas"]), json.dumps({"linhas": len(proj["linhas"]), "avisos": proj["avisos"]}, ensure_ascii=False)))
+            cur.execute("UPDATE pnl_importacao SET ativo=false WHERE tipo='PROJECAO' AND mes=%s AND escopo='' AND ativo AND base=%s", (mes, _bl(base)))
+            cur.execute("""INSERT INTO pnl_importacao (tipo, mes, escopo, arquivo_nome, arquivo_sha256, importado_por, n_linhas, detalhe, base)
+                           VALUES ('PROJECAO', %s, '', %s, %s, %s, %s, %s, %s) RETURNING id""",
+                        (mes, arquivo, sha256, usuario, len(proj["linhas"]), json.dumps({"linhas": len(proj["linhas"]), "avisos": proj["avisos"]}, ensure_ascii=False), _bl(base)))
             iid = cur.fetchone()[0]
             execute_values(cur, """INSERT INTO pnl_projecao_linha (importacao_id, linha, contrato, cliente, obra, categoria, natureza, empresa, valor_mes, custos, bdi) VALUES %s""",
                            [(iid, l["linha"], l["contrato"], l["cliente"], l["obra"], l["categoria"], l["natureza"], l["empresa"], l["valor_mes"], l["custos"], l["bdi"]) for l in proj["linhas"]])
@@ -2158,46 +2177,49 @@ def gravar_projecao(conn, proj: dict, arquivo: str, sha256: str, usuario: str | 
     return {"repetido": False, "id": iid, "mes": mes[:7], "linhas": len(proj["linhas"])}
 
 
-def projecao_meses(conn) -> list:
+def projecao_meses(conn, base: str = "REF") -> list:
+    bl = _bl(base)
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT to_char(mes,'YYYY-MM') FROM pnl_importacao WHERE tipo='PROJECAO' AND ativo ORDER BY 1")
+            cur.execute(f"SELECT to_char(mes,'YYYY-MM') FROM pnl_importacao WHERE tipo='PROJECAO' AND ativo AND base='{bl}' ORDER BY 1")
             return [r[0] for r in cur.fetchall()]
     except Exception:
         return []
 
 
-def projecao_do_mes(conn, mes: str) -> dict | None:
+def projecao_do_mes(conn, mes: str, base: str = "REF") -> dict | None:
     """Projecao ativa do mes: {'id','arquivo','quem','quando','linhas':[{obra, cliente, empresa, valor_mes, custos, bdi}]} ou None."""
+    bl = _bl(base)
     try:
         with conn.cursor() as cur:
-            cur.execute("""SELECT id, arquivo_nome, importado_por, importado_em FROM pnl_importacao
-                           WHERE tipo='PROJECAO' AND mes=%s::date AND escopo='' AND ativo ORDER BY id DESC LIMIT 1""", (f"{mes}-01",))
+            cur.execute(f"""SELECT id, arquivo_nome, importado_por, importado_em FROM pnl_importacao
+                           WHERE tipo='PROJECAO' AND mes=%s::date AND escopo='' AND ativo AND base='{bl}' ORDER BY id DESC LIMIT 1""", (f"{mes}-01",))
             imp = cur.fetchone()
             if not imp:
                 return None
-            cur.execute("""SELECT obra, cliente, empresa, valor_mes, custos, bdi FROM pnl_projecao_linha WHERE importacao_id=%s ORDER BY linha""", (imp[0],))
+            cur.execute(f"""SELECT obra, cliente, empresa, valor_mes, custos, bdi FROM pnl_projecao_linha WHERE importacao_id=%s ORDER BY linha""", (imp[0],))
             linhas = [{"obra": o or "", "cliente": c or "", "empresa": e or "", "valor_mes": float(v or 0), "custos": float(cu or 0), "bdi": float(b or 0)} for o, c, e, v, cu, b in cur.fetchall()]
     except Exception:
         return None
     return {"id": imp[0], "arquivo": imp[1], "quem": imp[2], "quando": imp[3], "linhas": linhas}
 
 
-def projecoes_dos_meses(conn, meses: list) -> dict:
+def projecoes_dos_meses(conn, meses: list, base: str = "REF") -> dict:
     """{mes: projecao_do_mes(mes)} para varios meses em 2 consultas (em vez de 2 por mes). Mes sem projecao ativa -> None."""
     meses = list(dict.fromkeys(meses or []))
     saida = {m: None for m in meses}
     if not meses:
         return saida
+    bl = _bl(base)
     try:
         with conn.cursor() as cur:
-            cur.execute("""SELECT DISTINCT ON (mes) to_char(mes,'YYYY-MM'), id, arquivo_nome, importado_por, importado_em FROM pnl_importacao
-                           WHERE tipo='PROJECAO' AND to_char(mes,'YYYY-MM') = ANY(%s) AND escopo='' AND ativo ORDER BY mes, id DESC""", (meses,))
+            cur.execute(f"""SELECT DISTINCT ON (mes) to_char(mes,'YYYY-MM'), id, arquivo_nome, importado_por, importado_em FROM pnl_importacao
+                           WHERE tipo='PROJECAO' AND to_char(mes,'YYYY-MM') = ANY(%s) AND escopo='' AND ativo AND base='{bl}' ORDER BY mes, id DESC""", (meses,))
             imps = cur.fetchall()
             if not imps:
                 return saida
             ids = [i[1] for i in imps]
-            cur.execute("""SELECT importacao_id, obra, cliente, empresa, valor_mes, custos, bdi FROM pnl_projecao_linha WHERE importacao_id = ANY(%s) ORDER BY importacao_id, linha""", (ids,))
+            cur.execute(f"""SELECT importacao_id, obra, cliente, empresa, valor_mes, custos, bdi FROM pnl_projecao_linha WHERE importacao_id = ANY(%s) ORDER BY importacao_id, linha""", (ids,))
             por_imp: dict = {}
             for iid, o, c, e, v, cu, b in cur.fetchall():
                 por_imp.setdefault(iid, []).append({"obra": o or "", "cliente": c or "", "empresa": e or "", "valor_mes": float(v or 0), "custos": float(cu or 0), "bdi": float(b or 0)})
@@ -2249,7 +2271,7 @@ def orcamento_instalado(conn) -> bool:
         return False
 
 
-def gravar_orcamento(conn, orc: dict, arquivo: str, sha256: str, usuario: str | None) -> dict:
+def gravar_orcamento(conn, orc: dict, arquivo: str, sha256: str, usuario: str | None, base: str = "REF") -> dict:
     """Grava o orcamento lido do PDF como importacao ativa (a anterior com o mesmo mes inicial fica ativo=false). Mesmo arquivo: nao grava de novo."""
     ini = (orc["cabecalho"].get("inicio") or "")[:7]
     if not ini:
@@ -2257,15 +2279,15 @@ def gravar_orcamento(conn, orc: dict, arquivo: str, sha256: str, usuario: str | 
     mes = ini + "-01"
     with db.transacao(conn):
         with conn.cursor() as cur:
-            cur.execute("SELECT id, ativo, mes FROM pnl_importacao WHERE tipo='ORCAMENTO' AND arquivo_sha256=%s", (sha256,))
+            cur.execute("SELECT id, ativo, mes FROM pnl_importacao WHERE tipo='ORCAMENTO' AND arquivo_sha256=%s AND base=%s", (sha256, _bl(base)))
             ja = cur.fetchone()
             if ja:
                 return {"repetido": True, "id": ja[0], "ativo": ja[1], "mes": ja[2].strftime("%Y-%m")}
-            cur.execute("UPDATE pnl_importacao SET ativo=false WHERE tipo='ORCAMENTO' AND mes=%s AND escopo='' AND ativo", (mes,))
-            cur.execute("""INSERT INTO pnl_importacao (tipo, mes, escopo, arquivo_nome, arquivo_sha256, importado_por, n_linhas, detalhe)
-                           VALUES ('ORCAMENTO', %s, '', %s, %s, %s, %s, %s) RETURNING id""",
+            cur.execute("UPDATE pnl_importacao SET ativo=false WHERE tipo='ORCAMENTO' AND mes=%s AND escopo='' AND ativo AND base=%s", (mes, _bl(base)))
+            cur.execute("""INSERT INTO pnl_importacao (tipo, mes, escopo, arquivo_nome, arquivo_sha256, importado_por, n_linhas, detalhe, base)
+                           VALUES ('ORCAMENTO', %s, '', %s, %s, %s, %s, %s, %s) RETURNING id""",
                         (mes, arquivo, sha256, usuario, len(orc["linhas"]),
-                         json.dumps({"cabecalho": orc["cabecalho"], "meses": orc["meses"], "avisos": orc["avisos"]}, ensure_ascii=False)))
+                         json.dumps({"cabecalho": orc["cabecalho"], "meses": orc["meses"], "avisos": orc["avisos"]}, ensure_ascii=False), _bl(base)))
             iid = cur.fetchone()[0]
             execute_values(cur, "INSERT INTO pnl_orcamento_linha (importacao_id, codigo, conta, tipo, mes, orcado, realizado, saldo) VALUES %s",
                            [(iid, l["codigo"], l["conta"], l["tipo"], l["mes"] + "-01", l["orcado"], l["realizado"], l["saldo"]) for l in orc["linhas"]])
@@ -2274,20 +2296,21 @@ def gravar_orcamento(conn, orc: dict, arquivo: str, sha256: str, usuario: str | 
     return {"repetido": False, "id": iid, "mes": ini, "linhas": len(orc["linhas"])}
 
 
-def orcamento_ativo(conn) -> dict | None:
+def orcamento_ativo(conn, base: str = "REF") -> dict | None:
     """Orcamento ADM mais recente e ativo: {'id','arquivo','quem','quando','inicio','meses':['AAAA-MM'...]} ou None."""
+    bl = _bl(base)
     try:
         with conn.cursor() as cur:
-            cur.execute("""SELECT id, arquivo_nome, importado_por, importado_em, to_char(mes,'YYYY-MM') FROM pnl_importacao
-                           WHERE tipo='ORCAMENTO' AND ativo ORDER BY mes DESC, id DESC LIMIT 1""")
+            cur.execute(f"""SELECT id, arquivo_nome, importado_por, importado_em, to_char(mes,'YYYY-MM') FROM pnl_importacao
+                           WHERE tipo='ORCAMENTO' AND ativo AND base='{bl}' ORDER BY mes DESC, id DESC LIMIT 1""")
             r = cur.fetchone()
             if not r:
                 return None
-            cur.execute("SELECT DISTINCT to_char(mes,'YYYY-MM') FROM pnl_orcamento_linha WHERE importacao_id=%s ORDER BY 1", (r[0],))
+            cur.execute(f"SELECT DISTINCT to_char(mes,'YYYY-MM') FROM pnl_orcamento_linha WHERE importacao_id=%s ORDER BY 1", (r[0],))
             meses = [x[0] for x in cur.fetchall()]
     except Exception:
         return None
-    return {"id": r[0], "arquivo": r[1], "quem": r[2], "quando": r[3], "inicio": r[4], "meses": meses}
+    return {"id": r[0], "arquivo": r[1], "quem": r[2], "quando": r[3], "inicio": r[4], "meses": meses, "base": bl}
 
 
 def orcamento_resumo(conn, importacao_id: int, mes: str, acumulado: bool = False, top: int = 8, mes_ini: str | None = None) -> dict:
@@ -2333,11 +2356,11 @@ def orcamento_serie_mensal(conn, importacao_id: int) -> list:
     return saida
 
 
-def importacao_por_sha(conn, tipo: str, sha256: str) -> dict | None:
+def importacao_por_sha(conn, tipo: str, sha256: str, base: str = "REF") -> dict | None:
     """Esse arquivo (pelo SHA-256 completo) ja foi salvo? Devolve {id, ativo, mes, quando, quem, linhas} ou None. So leitura; nunca levanta erro."""
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, ativo, mes, importado_em, importado_por, n_linhas FROM pnl_importacao WHERE tipo=%s AND arquivo_sha256=%s", (tipo, sha256))
+            cur.execute("SELECT id, ativo, mes, importado_em, importado_por, n_linhas FROM pnl_importacao WHERE tipo=%s AND arquivo_sha256=%s AND base=%s", (tipo, sha256, _bl(base)))
             r = cur.fetchone()
     except Exception:
         return None
@@ -2450,7 +2473,7 @@ def converter_valor_edicao(tipo: str, v):
 def importacoes_lista(conn, tipo: str | None = None) -> list[dict]:
     """Todas as importacoes da V2 (DRE, folha, projecao, orcamento), da mais nova para a mais antiga, com o numero de edicoes de cada uma."""
     with conn.cursor() as cur:
-        cur.execute("""SELECT id, tipo, mes, escopo, arquivo_nome, ativo, importado_por, importado_em, n_linhas
+        cur.execute("""SELECT id, tipo, mes, escopo, arquivo_nome, ativo, importado_por, importado_em, n_linhas, base
                        FROM pnl_importacao WHERE tipo IN ('DRE','FOLHA','PROJECAO','ORCAMENTO','HISTORICO') AND (%s IS NULL OR tipo=%s) ORDER BY id DESC""", (tipo, tipo))
         rows = cur.fetchall()
     n_ed: dict = {}
@@ -2459,7 +2482,7 @@ def importacoes_lista(conn, tipo: str | None = None) -> list[dict]:
             cur.execute("SELECT importacao_id, count(*) FROM pnl_edicao WHERE importacao_id IS NOT NULL AND acao IN ('EDITOU','ADICIONOU') GROUP BY importacao_id")
             n_ed = {i: n for i, n in cur.fetchall()}
     return [{"id": r[0], "tipo": r[1], "mes": r[2].strftime("%Y-%m"), "escopo": r[3], "arquivo": r[4], "ativo": r[5], "quem": r[6], "quando": r[7],
-             "linhas": r[8], "edicoes": n_ed.get(r[0], 0)} for r in rows]
+             "linhas": r[8], "base": r[9], "edicoes": n_ed.get(r[0], 0)} for r in rows]
 
 
 def importacao_definir_ativo(conn, imp_id: int, ativo: bool, usuario: str | None, motivo: str | None = None) -> dict:
@@ -2467,16 +2490,16 @@ def importacao_definir_ativo(conn, imp_id: int, ativo: bool, usuario: str | None
     Nada e' apagado; fica registrado em pnl_edicao (DESATIVOU/REATIVOU) e no historico do painel."""
     with db.transacao(conn):
         with conn.cursor() as cur:
-            cur.execute("SELECT tipo, mes, escopo, ativo FROM pnl_importacao WHERE id=%s FOR UPDATE", (imp_id,))
+            cur.execute("SELECT tipo, mes, escopo, ativo, base FROM pnl_importacao WHERE id=%s FOR UPDATE", (imp_id,))
             r = cur.fetchone()
             if not r:
                 raise ValueError("Importação não encontrada.")
-            tipo, mes, escopo, ja = r
+            tipo, mes, escopo, ja, base_i = r
             if ja == ativo:
                 return {"mudou": False, "tipo": tipo, "mes": mes.strftime("%Y-%m"), "substituiu": None}
             subst = None
             if ativo:
-                cur.execute("SELECT id FROM pnl_importacao WHERE tipo=%s AND mes=%s AND escopo=%s AND ativo AND id<>%s", (tipo, mes, escopo, imp_id))
+                cur.execute("SELECT id FROM pnl_importacao WHERE tipo=%s AND mes=%s AND escopo=%s AND ativo AND id<>%s AND base=%s", (tipo, mes, escopo, imp_id, base_i))
                 x = cur.fetchone()
                 if x:
                     subst = x[0]

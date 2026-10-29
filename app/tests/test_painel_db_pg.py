@@ -977,7 +977,7 @@ def test_tela_importacoes_mostra_situacao_historico_e_reverte(conn):
         assert at.tabs[1].label == "Importações (V2)"
         tabs_df = [df.value for df in at.tabs[1].dataframe]
         sit = [d for d in tabs_df if "Folha Construtora" in d.columns][0]
-        assert sit.iloc[0]["Folha Construtora"] == "✅" and sit.iloc[0]["Folha Energia"].startswith("❌") and sit.iloc[0]["DRE"].startswith("❌")
+        assert sit.iloc[0]["Folha Construtora"] == "✅ Referência" and sit.iloc[0]["Folha Energia"].startswith("❌") and sit.iloc[0]["DRE"].startswith("❌")
         hist = [d for d in tabs_df if "Situação" in d.columns][0]
         assert list(hist["#"]) == [r1["id"]] and hist.iloc[0]["Situação"] == "em uso"
         at.button(key="pn2_imp_rev_off").click().run()                                       # marcar como fora de uso
@@ -1193,3 +1193,45 @@ def test_credores_sienge_guarda_fantasia_e_muda_o_carimbo(conn):
     P.gravar_credores_sienge(conn, S.normalizar_credores([{"id": 77, "name": "Colaborador Teste Ltda", "tradeName": "Colab T."}]))      # upsert: troca, nao duplica
     assert P.fantasia_por_credor(conn) == {"COLABORADOR TESTE LTDA": "Colab T."} and _contar(conn, "pnl_credor_sienge") == 2
     assert P.gravar_credores_sienge(conn, []) == {"credores": 0, "com_fantasia": 0}
+
+
+# ------------------------------------------------------------------ fase 3: base (Referencia x Caixa) dos arquivos enviados
+def test_folha_enviada_em_cada_base_e_independente(conn):
+    from folha_sintetica import pdf_folha_sintetico
+    import importador_folha as IF
+    lido = IF.ler_recibos_pdf(pdf_folha_sintetico())
+    r1 = P.gravar_folha(conn, lido, "r.pdf", "c" * 64, "teste@x", "CAIXA")
+    mes = r1["mes"]
+    assert P.folha_meses(conn) == [] and P.folha_meses(conn, "CAIXA") == [mes]                 # enviada como Caixa: a base Referencia nao enxerga
+    assert P.folha_do_mes(conn, mes) is None and P.folha_do_mes(conn, mes, "CAIXA")["total"]["colab"] == 3
+    assert P.folha_pessoas_mes(conn, mes) == [] and len(P.folha_pessoas_mes(conn, mes, "CAIXA")) == 3
+    assert P.gravar_folha(conn, lido, "r.pdf", "c" * 64, "teste@x", "CAIXA")["repetido"]       # mesmo arquivo na mesma base: nao grava de novo
+    r2 = P.gravar_folha(conn, lido, "r.pdf", "c" * 64, "teste@x", "REF")                       # o mesmo arquivo pode valer nas duas bases
+    assert not r2["repetido"] and P.folha_meses(conn) == [mes] and P.folha_meses(conn, "CAIXA") == [mes]
+    r3 = P.gravar_folha(conn, lido, "r2.pdf", "d" * 64, "teste@x", "CAIXA")                    # novo arquivo em Caixa troca so' o de Caixa
+    ativos = {(i["id"], i["base"]) for i in P.importacoes_lista(conn) if i["ativo"]}
+    assert ativos == {(r2["id"], "REF"), (r3["id"], "CAIXA")}
+    assert P.importacao_por_sha(conn, "FOLHA", "c" * 64, "REF")["id"] == r2["id"] and P.importacao_por_sha(conn, "FOLHA", "d" * 64, "REF") is None
+    P.importacao_definir_ativo(conn, r1["id"], True, "teste@x")                                # reativar a de Caixa tira so' a de Caixa mais nova
+    ativos = {(i["id"], i["base"]) for i in P.importacoes_lista(conn) if i["ativo"]}
+    assert ativos == {(r2["id"], "REF"), (r1["id"], "CAIXA")}
+
+
+def test_tela_envio_de_recibos_exige_escolher_a_base(conn):
+    from folha_sintetica import pdf_folha_sintetico
+    b = pdf_folha_sintetico()
+    falso = SimpleNamespace(name="r.pdf", getvalue=lambda: b)
+    with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", side_effect=_uploader_por_chave({"pn2_pdf_folha": [falso]})):
+        at = _tela(conn).run()
+        assert not at.exception, at.exception
+        rad = [r for r in at.radio if r.key.startswith("pn2_folha_base_")]
+        assert len(rad) == 1 and rad[0].value is None                                         # sem resposta
+        salvar = [x for x in at.button if (x.key or "").startswith("pn2_folha_salvar_")]
+        assert len(salvar) == 1 and salvar[0].disabled                                        # botao travado
+        rad[0].set_value("CAIXA").run()
+        assert not at.exception, at.exception
+        salvar = [x for x in at.button if (x.key or "").startswith("pn2_folha_salvar_")][0]
+        assert not salvar.disabled
+        salvar.click().run()
+        assert not at.exception, at.exception
+    assert P.folha_meses(conn) == [] and len(P.folha_meses(conn, "CAIXA")) == 1                 # gravou na base escolhida

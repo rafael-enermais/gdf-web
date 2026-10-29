@@ -108,6 +108,21 @@ _SQL_ABERTAS = """SELECT t.bill_id, t.installment_id, 0, 0, t.data_vencimento, C
                   ORDER BY t.bill_id, t.installment_id, r.linha"""
 
 
+# Base REFERENCIA (competencia): o titulo conta no mes da EMISSAO, pelo valor do documento. A parte ja' paga (baixas de dinheiro real) vira linha "Pago"
+# e o resto "A pagar" (mesma tabela e mesmos cards da base Caixa; so' muda quando o titulo entra).
+_SQL_EMITIDOS = """SELECT t.bill_id, t.installment_id, 0, 1, t.data_emissao, {bruto}, {desc},
+                          t.empresa_id, t.empresa_nome, t.contraparte_id, t.contraparte_nome, t.doc_id, t.numero_doc, t.data_vencimento,
+                          r.plano_cod, r.plano_nome, r.centro_custo_id, r.centro_custo_nome, r.percentual
+                   FROM pnl_titulo t
+                   {join} (SELECT bill_id, installment_id, sum(COALESCE(bruto,0)) pago, sum(COALESCE(desconto,0)) dsc FROM pnl_v_baixa
+                           WHERE lado='P' AND tipo_oper_id = ANY(%s) GROUP BY 1, 2) bx
+                          ON bx.bill_id=t.bill_id AND bx.installment_id=t.installment_id
+                   JOIN pnl_v_rateio r ON r.lado=t.lado AND r.bill_id=t.bill_id AND r.installment_id=t.installment_id
+                   WHERE t.lado='P' AND t.data_emissao >= %s::date AND t.data_emissao < (%s::date + interval '1 month')
+                     AND COALESCE(upper(t.previsao),'') <> 'S' AND r.plano_cod = ANY(%s) {filtro}
+                   ORDER BY t.bill_id, t.installment_id, r.linha"""
+
+
 def _para_dict(rows) -> list:
     out = []
     for r in rows:
@@ -125,9 +140,34 @@ def _consulta(conn, sql, par) -> list:
         return _para_dict(cur.fetchall())
 
 
-def buscar_linhas(conn, mes: str) -> dict:
+def _buscar_linhas_ref(conn, mes: str) -> dict:
+    """Base REFERENCIA: titulos EMITIDOS no mes (sem previsao e sem titulo desfeito). Pago = baixas de dinheiro real ate' hoje; a pagar = o que falta do valor do documento."""
+    import painel_db as _P                                                       # noqa: PLC0415  (so' para o filtro de titulos desfeitos; evita importar o painel na carga)
+    import base_data as _BD                                                      # noqa: PLC0415
+    ini, planos, tipos = f"{mes}-01", list(CONTAS), list(_BD.TIPOS_CAIXA["P"])
+    filtro = _P._filtro_desfeitos(True)
+    pagas = _consulta(conn, _SQL_EMITIDOS.format(bruto="LEAST(COALESCE(t.valor_original,0), bx.pago)", desc="bx.dsc", join="JOIN", filtro=filtro + " AND bx.pago > 0.005"),
+                      (tipos, ini, ini, planos))
+    def _abertas(desc):
+        return _consulta(conn, _SQL_EMITIDOS.format(bruto="COALESCE(t.valor_original,0) - LEAST(COALESCE(t.valor_original,0), COALESCE(bx.pago,0))", desc=desc, join="LEFT JOIN",
+                                                    filtro=filtro + " AND COALESCE(t.valor_original,0) - COALESCE(bx.pago,0) > 0.005"), (tipos, ini, ini, planos))
+    try:
+        abertas = _abertas("COALESCE(t.desconto_titulo,0)")
+    except Exception:                                                        # noqa: BLE001  (SQL-40 ainda nao rodou)
+        try:
+            conn.rollback()
+        except Exception:                                                    # noqa: BLE001
+            pass
+        abertas = _abertas("0")
+    return {"baixas": pagas, "abertas": abertas}
+
+
+def buscar_linhas(conn, mes: str, base: str = "CAIXA") -> dict:
     """Linhas (uma por baixa/titulo x linha de apropriacao) das contas PJ no mes 'AAAA-MM': {'baixas': [...], 'abertas': [...]}.
-    Abertas = titulos com vencimento no mes, sem previsao, ainda nao pagos no fim do mes (saldo = valor - baixas ate o fim do mes)."""
+    Abertas = titulos com vencimento no mes, sem previsao, ainda nao pagos no fim do mes (saldo = valor - baixas ate o fim do mes).
+    Base 'REF': titulos emitidos no mes (ver `_buscar_linhas_ref`)."""
+    if base == "REF":
+        return _buscar_linhas_ref(conn, mes)
     ini = f"{mes}-01"
     planos = list(CONTAS)
     baixas = _consulta(conn, _SQL_PAGAS, (ini, ini, list(TIPOS_BAIXA), planos))
@@ -485,9 +525,9 @@ def filtrar_documentos(docs: list, pessoas_sel: list | None = None, situacoes=No
     return out
 
 
-def dados_do_mes(conn, mes: str) -> dict:
-    """Ponto de entrada da tela: le o banco e consolida o mes."""
-    linhas = buscar_linhas(conn, mes)
+def dados_do_mes(conn, mes: str, base: str = "CAIXA") -> dict:
+    """Ponto de entrada da tela: le o banco e consolida o mes. base 'CAIXA' (padrao da aba: pago no mes + a pagar com vencimento no mes) ou 'REF' (emitidos no mes)."""
+    linhas = buscar_linhas(conn, mes, base)
     creds = {l["cred_id"] for lst in linhas.values() for l in lst if l["cred_id"] is not None}
     apoio = carregar_apoio(conn, mes, creds)
     r = consolidar(linhas, apoio, mes)
@@ -495,4 +535,5 @@ def dados_do_mes(conn, mes: str) -> dict:
     r["sem_flash"] = not apoio["flash"]
     r["sem_diretoria"] = not apoio["diretoria"]
     r["sem_mapa"] = not apoio["colab"]
+    r["base"] = base
     return r

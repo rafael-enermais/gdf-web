@@ -17,6 +17,7 @@ import importador_orcamento
 import importador_projecao
 import indicadores_dados as IND
 import painel_db as P
+import base_data as BD
 
 TIPOS = {"DRE": "DRE oficial (PDF)", "FOLHA": "Folha (PDF)", "PROJECAO": "Projeção (xlsx)", "ORCAMENTO": "Orçamento ADM (PDF)", "HISTORICO": "Histórico do painel (HTML)"}
 _BR = dt.timezone(dt.timedelta(hours=-3))
@@ -26,14 +27,25 @@ def _hora(x) -> str:
     return x.astimezone(_BR).strftime("%d/%m/%Y %H:%M") if x else "–"
 
 
-def _ja_salvo(conn, tipo: str, conteudo: bytes) -> bool:
+def _escolhe_base(chave: str):
+    """Pergunta obrigatoria no envio (Caixa x Referencia): sem resposta o botao Salvar fica travado. Devolve 'REF', 'CAIXA' ou None."""
+    b = st.radio("Estes arquivos são de qual base?", BD.BASES, index=None, horizontal=True, key=chave, format_func=lambda x: BD.ROTULO[x],
+                 help="Referência = números do mês de competência (o que foi emitido no mês). Caixa = números do mês em que o dinheiro saiu/entrou. A aba correspondente do Painel da Diretoria só usa o arquivo na base escolhida aqui.")
+    if b is None:
+        st.caption("Escolha a base para liberar o botão Salvar. (Pode enviar o mesmo arquivo duas vezes, uma como Referência e outra como Caixa.)")
+    return b
+
+
+def _ja_salvo(conn, tipo: str, conteudo: bytes, base=None) -> bool:
     """Se este arquivo ja esta salvo no banco, mostra o aviso (numero, mes, quem e quando) e devolve True: a tela nao oferece o botao Salvar de novo.
     Assim, depois de salvar (a pagina recarrega), o usuario continua vendo que gravou."""
-    r = P.importacao_por_sha(conn, tipo, __import__("hashlib").sha256(conteudo).hexdigest())
+    if base is None:                                                                  # sem a base escolhida ainda nao da' para saber (o mesmo arquivo pode existir nas duas bases)
+        return False
+    r = P.importacao_por_sha(conn, tipo, __import__("hashlib").sha256(conteudo).hexdigest(), base)
     if not r:
         return False
     situacao = "em uso" if r["ativo"] else "substituída por uma importação mais nova"
-    st.success(f"✅ Já salvo no banco: importação #{r['id']} (mês {r['mes'][5:]}/{r['mes'][:4]}, {r['linhas']} linhas) por {r['quem'] or '–'} em {_hora(r['quando'])} · {situacao}.")
+    st.success(f"✅ Já salvo no banco ({BD.CURTO[base]}): importação #{r['id']} (mês {r['mes'][5:]}/{r['mes'][:4]}, {r['linhas']} linhas) por {r['quem'] or '–'} em {_hora(r['quando'])} · {situacao}.")
     return True
 
 
@@ -43,6 +55,7 @@ def up_dre(conn, usuario):
     with st.expander("Importar o PDF do DRE gerencial do Sienge", expanded=not P.meses_com_dre(conn)):
         if not P.dre_instalado(conn):
             st.warning("Falta executar o arquivo `sql/v2_dre_pdf.sql` no Supabase (SQL Editor) para o app guardar o DRE lido do PDF. Você já pode ler o PDF e ver o resultado; só não dá para salvar.")
+        st.caption("O DRE em PDF é sempre de referência (competência da contabilidade): serve para conferir o que o app calcula pela API, por isso aqui não há escolha de base.")
         pdf_arq = st.file_uploader("PDF 'DRE GERENCIAL – composição das contas' (Sienge)", type=["pdf"], key="pn2_pdf_dre")
         if pdf_arq is not None:
             pdf_bytes = pdf_arq.getvalue()
@@ -102,9 +115,10 @@ def up_projecao(conn, usuario):
                            f"BDI previsto {F.moeda_br(lido_p['total']['bdi'])}.")
                 for av in lido_p["avisos"]:
                     st.warning(av)
-                if not _ja_salvo(conn, "PROJECAO", b_p) and st.button(f"Salvar como projeção de {lido_p['mes'][5:]}/{lido_p['mes'][:4]}", type="primary", key=f"pn2_proj_salvar_{sha_p}"):
+                base_p = _escolhe_base(f"pn2_proj_base_{sha_p}")
+                if not _ja_salvo(conn, "PROJECAO", b_p, base_p) and st.button(f"Salvar como projeção de {lido_p['mes'][5:]}/{lido_p['mes'][:4]}", type="primary", disabled=base_p is None, key=f"pn2_proj_salvar_{sha_p}"):
                     try:
-                        res_p = P.gravar_projecao(conn, lido_p, arq_p.name, __import__("hashlib").sha256(b_p).hexdigest(), usuario)
+                        res_p = P.gravar_projecao(conn, lido_p, arq_p.name, __import__("hashlib").sha256(b_p).hexdigest(), usuario, base_p)
                         if res_p["repetido"]:
                             st.info(f"Esta mesma planilha já foi importada antes (importação #{res_p['id']}, mês {res_p['mes']}).")
                         else:
@@ -142,9 +156,10 @@ def up_orcamento(conn, usuario):
                     st.warning(av)
                 if not lido_o["avisos"]:
                     st.caption("Conferido: cada total fecha com a soma das contas e o saldo fecha com realizado − orçado.")
-                if not _ja_salvo(conn, "ORCAMENTO", b_o) and st.button("Salvar como Orçamento ADM", type="primary", disabled=not P.orcamento_instalado(conn), key=f"pn2_orc_salvar_{sha_o}"):
+                base_o = _escolhe_base(f"pn2_orc_base_{sha_o}")
+                if not _ja_salvo(conn, "ORCAMENTO", b_o, base_o) and st.button("Salvar como Orçamento ADM", type="primary", disabled=not (P.orcamento_instalado(conn) and base_o), key=f"pn2_orc_salvar_{sha_o}"):
                     try:
-                        res_o = P.gravar_orcamento(conn, lido_o, arq_o.name, __import__("hashlib").sha256(b_o).hexdigest(), usuario)
+                        res_o = P.gravar_orcamento(conn, lido_o, arq_o.name, __import__("hashlib").sha256(b_o).hexdigest(), usuario, base_o)
                         if res_o["repetido"]:
                             st.info(f"Este mesmo arquivo já foi importado antes (importação #{res_o['id']}).")
                         else:
@@ -187,10 +202,11 @@ def up_folha(conn, usuario):
                 st.warning(av)
             if not lido_f["avisos"]:
                 st.caption("Conferido: em todos os recibos a soma dos eventos fecha com o total de proventos e de descontos do recibo.")
-            if not _ja_salvo(conn, "FOLHA", b_f) and st.button(f"Salvar a folha de {comp_f[5:]}/{comp_f[:4]} ({', '.join(P.EMPRESAS_FOLHA.get(e, e) for e in lido_f['empresas'])})", type="primary",
-                                                               disabled=not (_folha_ok and comp_f), key=f"pn2_folha_salvar_{sha_f}"):
+            base_f = _escolhe_base(f"pn2_folha_base_{sha_f}")
+            if not _ja_salvo(conn, "FOLHA", b_f, base_f) and st.button(f"Salvar a folha de {comp_f[5:]}/{comp_f[:4]} ({', '.join(P.EMPRESAS_FOLHA.get(e, e) for e in lido_f['empresas'])})", type="primary",
+                                                               disabled=not (_folha_ok and comp_f and base_f), key=f"pn2_folha_salvar_{sha_f}"):
                 try:
-                    res_f = P.gravar_folha(conn, lido_f, arq_f.name, __import__("hashlib").sha256(b_f).hexdigest(), usuario)
+                    res_f = P.gravar_folha(conn, lido_f, arq_f.name, __import__("hashlib").sha256(b_f).hexdigest(), usuario, base_f)
                     if res_f["repetido"]:
                         st.info(f"Este mesmo arquivo já foi importado antes (importação #{res_f['id']}, mês {res_f['mes']}).")
                     else:
@@ -207,7 +223,7 @@ def up_historico(conn, usuario):
     with st.expander("Importar o histórico do painel da contabilidade (HTML)", expanded=atual is None):
         if not historico.instalado(conn):
             st.warning("Falta executar o arquivo `sql/v2_historico.sql` (SQL-21) no Supabase para o app guardar o histórico. Você já pode ler o arquivo e ver o resultado; só não dá para salvar.")
-        st.caption("Envie o HTML do painel (ex.: “Painel EnerMais Setembro_2026.html”). O app lê só os números do ano (acumulado, desvio mensal, recomposição, horas extras e custos com pessoas); "
+        st.caption("O histórico do painel da contabilidade é sempre de referência (sem escolha de base). Envie o HTML do painel (ex.: “Painel EnerMais Setembro_2026.html”). O app lê só os números do ano (acumulado, desvio mensal, recomposição, horas extras e custos com pessoas); "
                    "nomes de colaboradores e credores do arquivo são descartados. Os números ficam só no banco, nunca no GitHub.")
         if atual:
             st.info(f"Em uso: histórico até {atual['mes'][5:]}/{atual['mes'][:4]} — “{atual['arquivo']}” (importação #{atual['id']}).")
@@ -263,14 +279,16 @@ def _situacao(conn):
     if not meses:
         st.info("Nada importado ainda. Use os blocos de importação acima.")
         return
+    def _marca(tipo, m, escopo=None):
+        bs = {i.get("base") or "REF" for i in imps if i["tipo"] == tipo and i["mes"] == m and (escopo is None or escopo in i["escopo"].split("+"))}
+        return "❌ falta" if not bs else "✅ " + " + ".join(BD.CURTO[b] for b in BD.BASES if b in bs)
     linhas = []
     for m in meses:
         d = {"Mês": f"{m[5:]}/{m[:4]}"}
-        d["DRE"] = "✅" if any(i["tipo"] == "DRE" and i["mes"] == m for i in imps) else "❌ falta"
-        esc = {i["escopo"] for i in imps if i["tipo"] == "FOLHA" and i["mes"] == m}
-        d["Folha Construtora"] = "✅" if "CONSTRUTORA" in esc else "❌ falta"
-        d["Folha Energia"] = "✅" if "ENERGIA" in esc else "❌ falta"
-        d["Projeção"] = "✅" if any(i["tipo"] == "PROJECAO" and i["mes"] == m for i in imps) else "❌ falta"
+        d["DRE"] = _marca("DRE", m)
+        d["Folha Construtora"] = _marca("FOLHA", m, "CONSTRUTORA")
+        d["Folha Energia"] = _marca("FOLHA", m, "ENERGIA")
+        d["Projeção"] = _marca("PROJECAO", m)
         linhas.append(d)
     orc = [i for i in imps if i["tipo"] == "ORCAMENTO"]
     st.dataframe(pd.DataFrame(linhas), hide_index=True, width="stretch")
@@ -289,7 +307,7 @@ def _historico(conn, usuario):
     fs = f2.selectbox("Situação", ["Todas", "Em uso", "Fora de uso"], key="pn2_imp_hist_sit")
     ver = [i for i in lista if (ft == "Todos" or i["tipo"] == ft) and (fs == "Todas" or (i["ativo"] == (fs == "Em uso")))]
     st.dataframe(pd.DataFrame([{"#": i["id"], "Tipo": TIPOS[i["tipo"]], "Mês": f"{i['mes'][5:]}/{i['mes'][:4]}", "Escopo": i["escopo"] or "–", "Arquivo": i["arquivo"],
-                                "Quem": i["quem"] or "–", "Quando": _hora(i["quando"]), "Linhas": i["linhas"], "Edições": i["edicoes"],
+                                "Quem": i["quem"] or "–", "Quando": _hora(i["quando"]), "Linhas": i["linhas"], "Edições": i["edicoes"], "Base": BD.CURTO.get(i.get("base"), "Referência"),
                                 "Situação": "em uso" if i["ativo"] else "fora de uso"} for i in ver]), hide_index=True, width="stretch")
     if not P.edicao_instalada(conn):
         st.warning("Falta executar o **SQL-19** (`sql/v2_edicao.sql`) no Supabase para poder reverter e editar. Até lá só dá para ver o histórico.")

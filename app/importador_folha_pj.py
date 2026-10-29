@@ -348,10 +348,10 @@ def gravar_flash(conn, mes: str, empresa: str, casadas: list, usuario: str | Non
     with db.transacao(conn), conn.cursor() as cur:
         cur.execute("UPDATE pj_flash SET ativo=false WHERE mes=%s::date AND empresa=%s AND ativo", (ini, empresa))
         if por_cred:
-            execute_values(cur, """INSERT INTO pj_flash (mes, empresa, credor_id, premiacao, alimentacao, ativo, importado_por) VALUES %s
-                                   ON CONFLICT (mes, empresa, credor_id) DO UPDATE SET premiacao=EXCLUDED.premiacao, alimentacao=EXCLUDED.alimentacao, ativo=true,
+            execute_values(cur, """INSERT INTO pj_flash (mes, empresa, credor_id, premiacao, alimentacao, ativo, importado_por, base) VALUES %s
+                                   ON CONFLICT (mes, empresa, credor_id, base) DO UPDATE SET premiacao=EXCLUDED.premiacao, alimentacao=EXCLUDED.alimentacao, ativo=true,
                                        importado_por=EXCLUDED.importado_por, importado_em=now()""",
-                           [(ini, empresa, cid, round(v[0], 2), round(v[1], 2), True, usuario) for cid, v in por_cred.items()])
+                           [(ini, empresa, cid, round(v[0], 2), round(v[1], 2), True, usuario, "CAIXA") for cid, v in por_cred.items()])
     return {"pessoas": len(por_cred), "premiacao": round(sum(v[0] for v in por_cred.values()), 2), "alimentacao": round(sum(v[1] for v in por_cred.values()), 2)}
 
 

@@ -244,3 +244,17 @@ def test_nome_escrito_diferente_casa_so_se_for_seguro():
              {"nome": "Jorge Joao da Silva", "nome_chave": c("Jorge Joao da Silva"), "cpf_hash": None, "premiacao": 0.0, "alimentacao": 650.0}]
     r = IP.cruzar_flash(flash, cad)
     assert [(x["credor_id"], x["via"]) for x in r["casadas"]] == [(1, "nome aproximado")] and r["sem_pj"] == 1
+
+
+def test_folha_pj_em_referencia_conta_o_mes_da_emissao(base):
+    cx = FP.dados_do_mes(base, MES, "CAIXA")
+    rf = FP.dados_do_mes(base, MES, "REF")
+    assert cx["base"] == "CAIXA" and rf["base"] == "REF"
+    # Caixa (como antes): pago em outubro + a pagar com vencimento em outubro
+    assert cx["totais"]["pago"] == 44000.0 and cx["totais"]["a_pagar"] == 18160.0
+    # Referencia: titulos EMITIDOS em outubro (todos com emissao 01/10), sem previsao, sem conta que nao e' PJ e sem titulo desfeito (abatimento/substituicao);
+    # o titulo que vence em novembro (555) entra porque foi emitido em outubro
+    assert rf["totais"]["pago"] == 44000.0 and rf["totais"]["a_pagar"] == 18715.0
+    creds_rf, creds_cx = {p["cred_id"] for p in rf["pessoas"]}, {p["cred_id"] for p in cx["pessoas"]}
+    assert not creds_rf & {504, 505, 507, 509}                       # abatimento, substituicao, previsao e conta que nao e' PJ
+    assert 508 in creds_rf and 508 not in creds_cx                    # vence em novembro, mas foi emitido em outubro

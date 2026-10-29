@@ -49,6 +49,7 @@ DEXIE_SQL = Path(__file__).resolve().parent.parent.parent / "sql" / "v2_dexie_me
 APRENDIZADO_SQL = DEXIE_SQL.parent / "v2_dexie_aprendizado.sql"
 METRICA_SQL = DEXIE_SQL.parent / "v2_metrica_registro.sql"
 FOLHA_PJ_SQL = DEXIE_SQL.parent / "v2_folha_pj.sql"
+BASE_UPLOAD_SQL = DEXIE_SQL.parent / "v2_base_upload.sql"
 _estado = {"dsn": None, "tentou": False}
 
 
@@ -136,6 +137,7 @@ def pg_dsn():
         cur.execute(APRENDIZADO_SQL.read_text(encoding="utf-8"))     # SQL-33: anotacoes da Dexie (o que ela aprendeu)
         cur.execute(METRICA_SQL.read_text(encoding="utf-8"))         # SQL-34: registro mensal das metricas do painel de metas
         cur.execute(FOLHA_PJ_SQL.read_text(encoding="utf-8"))        # SQL-40: Folha PJ (desconto do titulo, colaboradores, Flash, diretoria)
+        cur.execute(BASE_UPLOAD_SQL.read_text(encoding="utf-8"))     # SQL-41: base (referencia/caixa) dos arquivos enviados e do Flash
     conn.close()
     return dsn
 
