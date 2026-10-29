@@ -312,13 +312,13 @@ class Base:
         return df[df["obra"].isin(self.obras)]
 
     # ---- Obras do periodo (o mes de referencia ou a soma dos meses com dado)
-    def _obras_mes(self, m: str, lote: dict | None = None):
+    def _obras_mes(self, m: str, lote: dict | None = None, projs: dict | None = None):
         extra = self.memo("obras_extra", lambda: (P.nomes_obras_extra(self.conn), set(P.meses_com_obras(self.conn))))
         nomes_extra, com_obras = extra
         ob_m = (lote[m] if lote is not None and m in lote else P.obras_do_mes(self.conn, m)) if m in com_obras else None
         px = None
         if ob_m:
-            pj_ = P.projecao_do_mes(self.conn, m)
+            pj_ = projs[m] if projs is not None and m in projs else P.projecao_do_mes(self.conn, m)
             px = P.projecao_x_realizado(pj_, ob_m, nomes_extra) if pj_ else None
         return ob_m, px
 
@@ -331,7 +331,8 @@ class Base:
             ms = PER.meses_entre(self.mes_ini, self.mes)
             com_obras = self.memo("obras_extra", lambda: (P.nomes_obras_extra(self.conn), set(P.meses_com_obras(self.conn))))[1]
             lote = P.obras_dos_meses(self.conn, [m for m in ms if m in com_obras])                 # v0.54.6: meses da API em 2 consultas
-            pares = [self._obras_mes(m, lote) for m in ms]
+            projs = P.projecoes_dos_meses(self.conn, [m for m in ms if lote.get(m)])
+            pares = [self._obras_mes(m, lote, projs) for m in ms]
             oks = [(o, px) for o, px in pares if o]
             falt = [m for m, (o, _) in zip(ms, pares) if not o]
             soma = P.somar_obras([o for o, _ in oks])

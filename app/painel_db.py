@@ -906,16 +906,19 @@ def nomes_obras_depara(conn) -> dict:
     return out
 
 
-def obras_da_api(conn, mes: str, api: dict | None = None) -> dict | None:
+def obras_da_api(conn, mes: str, api: dict | None = None, nomes: dict | None = None, proprios="?") -> dict | None:
     """Mesma tabela da aba Obras, mas calculada pela API do Sienge (titulos emitidos no mes, regras padrao: sem previsao, sem NF desfeita, sem titulo
     desfeito, sem centros ADM). Obras sem codigo proprio no de-para ('sem de-para' inclusive) entram em 'Demais obras'. None se nao ha dado no mes."""
     if api is None:
         api = resultado_por_obra_api(conn, mes, sem_previsao=True, sem_distrato=True, sem_desfeitos=True)
     if not api:
         return None
-    nomes = nomes_obras_depara(conn)
+    if nomes is None:
+        nomes = nomes_obras_depara(conn)
+    if proprios == "?":
+        proprios = _codigos_obra_proprios(conn)
     por_obra = {cod: {"nome": nomes.get(cod, ""), "linhas": {"01": v.get("01", 0.0), "04": v.get("04", 0.0), "CP": v.get("CP", v.get("04", 0.0))}} for cod, v in api.items()}
-    ob = _montar_obras(por_obra, _codigos_obra_proprios(conn), None, "API do Sienge (titulos emitidos no mes)", "API")
+    ob = _montar_obras(por_obra, proprios, None, "API do Sienge (titulos emitidos no mes)", "API")
     return ob if ob["linhas"] else None
 
 
@@ -944,7 +947,8 @@ def obras_dos_meses(conn, meses: list) -> dict:
     fontes = {m: fonte_obras(conn, m) for m in meses}
     api_ms = [m for m in meses if fontes[m] != "PDF"]
     em_lote = resultado_por_obra_api_meses(conn, api_ms, sem_previsao=True, sem_distrato=True, sem_desfeitos=True) if api_ms else {}
-    return {m: (obras_do_dre(conn, m) if fontes[m] == "PDF" else obras_da_api(conn, m, api=em_lote.get(m, {}))) for m in meses}
+    nomes, proprios = (nomes_obras_depara(conn), _codigos_obra_proprios(conn)) if api_ms else ({}, None)          # uma vez so' (antes: 2 consultas por mes)
+    return {m: (obras_do_dre(conn, m) if fontes[m] == "PDF" else obras_da_api(conn, m, api=em_lote.get(m, {}), nomes=nomes, proprios=proprios)) for m in meses}
 
 
 def meses_com_obras(conn) -> list:
@@ -1993,6 +1997,35 @@ def projecao_do_mes(conn, mes: str) -> dict | None:
     except Exception:
         return None
     return {"id": imp[0], "arquivo": imp[1], "quem": imp[2], "quando": imp[3], "linhas": linhas}
+
+
+def projecoes_dos_meses(conn, meses: list) -> dict:
+    """{mes: projecao_do_mes(mes)} para varios meses em 2 consultas (em vez de 2 por mes). Mes sem projecao ativa -> None."""
+    meses = list(dict.fromkeys(meses or []))
+    saida = {m: None for m in meses}
+    if not meses:
+        return saida
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT DISTINCT ON (mes) to_char(mes,'YYYY-MM'), id, arquivo_nome, importado_por, importado_em FROM pnl_importacao
+                           WHERE tipo='PROJECAO' AND to_char(mes,'YYYY-MM') = ANY(%s) AND escopo='' AND ativo ORDER BY mes, id DESC""", (meses,))
+            imps = cur.fetchall()
+            if not imps:
+                return saida
+            ids = [i[1] for i in imps]
+            cur.execute("""SELECT importacao_id, obra, cliente, empresa, valor_mes, custos, bdi FROM pnl_projecao_linha WHERE importacao_id = ANY(%s) ORDER BY importacao_id, linha""", (ids,))
+            por_imp: dict = {}
+            for iid, o, c, e, v, cu, b in cur.fetchall():
+                por_imp.setdefault(iid, []).append({"obra": o or "", "cliente": c or "", "empresa": e or "", "valor_mes": float(v or 0), "custos": float(cu or 0), "bdi": float(b or 0)})
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return {m: projecao_do_mes(conn, m) for m in meses}                   # qualquer problema: volta ao caminho de sempre (mes a mes)
+    for m, iid, arq, quem, quando in imps:
+        saida[m] = {"id": iid, "arquivo": arq, "quem": quem, "quando": quando, "linhas": por_imp.get(iid, [])}
+    return saida
 
 
 def projecao_x_realizado(proj: dict, ob: dict, nomes_extra: dict | None = None) -> dict:

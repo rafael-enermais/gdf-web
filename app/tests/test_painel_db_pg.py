@@ -765,6 +765,8 @@ def test_gravar_projecao_e_comparar_com_o_dre(conn):
     assert P.projecao_meses(conn) == ["2026-09"]
     pm = P.projecao_do_mes(conn, "2026-09")
     assert pm["arquivo"] == "proj2.xlsx" and len(pm["linhas"]) == 4 and P.projecao_do_mes(conn, "2025-01") is None
+    lote = P.projecoes_dos_meses(conn, ["2025-01", "2026-09", "2026-10"])               # v0.54.6: varios meses em 2 consultas, igual ao mes a mes
+    assert lote == {"2025-01": None, "2026-09": pm, "2026-10": None} and P.projecoes_dos_meses(conn, []) == {}
     cmp_ = P.projecao_x_realizado(pm, _ob_falso())
     por = {x["codigo"]: x for x in cmp_["linhas"]}
     assert por["103"]["receita_proj"] == 1500.0 and por["103"]["desvio"] == -300.0 and por["103"]["bdi_proj"] == 450.0 and por["103"]["desvio_bdi"] == -50.0

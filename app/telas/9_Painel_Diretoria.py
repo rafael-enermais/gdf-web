@@ -159,12 +159,13 @@ def _obras_meses(_conn, meses_t: tuple, carimbo: str):
     """[(tabela de obras, projecao x realizado)] de cada mes do periodo. v0.54.6: os meses da API saem de 2 consultas ao banco (antes eram 2 por mes: ~6 s no 'Ano ate o mes')."""
     extra, com_obras = _obras_aux(_conn, carimbo)
     obs = P.obras_dos_meses(_conn, [m for m in meses_t if m in com_obras])
+    projs = P.projecoes_dos_meses(_conn, [m for m in meses_t if obs.get(m)])
     saida = []
     for m in meses_t:
         ob_m = obs.get(m)
         px = None
         if ob_m:
-            pj_ = P.projecao_do_mes(_conn, m)
+            pj_ = projs.get(m)
             px = P.projecao_x_realizado(pj_, ob_m, extra) if pj_ else None
         saida.append((ob_m, px))
     return saida
@@ -645,7 +646,9 @@ def _obras_do_periodo():
 
 _ob_mes, _proj_mes = ob, proj
 if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj passam a ser os do PERIODO (e voltam ao do mes no fim)
+    _t_per0 = time.perf_counter()
     ob, proj, _n_ob, _falt_ob = _obras_do_periodo()
+    _t_per = time.perf_counter() - _t_per0
     with aba_ob:
         if not ob:
             _info("Sem dados por obra " + ("neste mês (nenhum título emitido carregado pela API e nenhum PDF importado)." if UM_MES else "em nenhum mês deste período."))
@@ -825,7 +828,7 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
                                            for x in ob["top_prejuizo"]]), hide_index=True, width="stretch")
             if _eh_editor and len(_to) > 1:
                 _to.append(("credores, colaboradores e resto", time.perf_counter()))
-                _cap("Tempo da aba Obras: " + " · ".join(f"{_to[i][0]} {_to[i][1] - _to[i - 1][1]:.1f} s" for i in range(1, len(_to))) + ". Só quem edita vê esta linha.")
+                _cap(f"Tempo da aba Obras: montagem dos meses do período {_t_per:.1f} s · " + " · ".join(f"{_to[i][0]} {_to[i][1] - _to[i - 1][1]:.1f} s" for i in range(1, len(_to))) + ". Só quem edita vê esta linha.")
 ob, proj = _ob_mes, _proj_mes
 
 
