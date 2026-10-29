@@ -164,7 +164,7 @@ def resultado_periodo(conn, e) -> tuple:
         res["total_do_periodo"] = {nomes[k]: {"realizado": soma[k][0], "previsto": soma[k][1]} for k in nomes}
         if any(t and t["fonte"] != "confirmado" for t in termos):
             res["aviso"] = ("Meses ainda NAO confirmados pela contabilidade entram com o valor do PDF oficial (se houver) ou da API do Sienge (padrao, a conferir); "
-                            "veja fonte_por_mes. BDI = receita bruta - custos diretos.")
+                            "veja fonte_por_mes. Receita = receita liquida (linha 03); custos = 04+06+08+10+12; BDI = receita - custos (= linha 14 do DRE).")
     else:
         res["aviso"] = "Nenhum mes do periodo tem dados (nem DRE confirmado/PDF nem titulos emitidos pela API)."
     return res, _tabela(linhas)
@@ -187,7 +187,7 @@ def dre_mes(conn, e) -> tuple:
 
 
 def serie_mensal(conn, e) -> tuple:
-    """Serie mes a mes (receita bruta, custos operacionais diretos, BDI e margem) pelo DRE de cada mes, qualquer fonte (confirmado, PDF ou API a conferir), numa so consulta."""
+    """Serie mes a mes (receita liquida, custos 04+06+08+10+12, BDI e margem) pelo DRE de cada mes, qualquer fonte (confirmado, PDF ou API a conferir), numa so consulta."""
     ini, fim = _intervalo(e.get("mes_ini"), e.get("mes_fim"))
     meses = PER.meses_entre(ini, fim)
     if len(meses) > MAX_SERIE:
@@ -196,7 +196,9 @@ def serie_mensal(conn, e) -> tuple:
     for m in meses:
         d, origem = _dre_resolvido(conn, m)
         v = d.get("valores") or {}
-        rec, cus, bdi = v.get("01") or 0.0, abs(v.get("04") or 0.0), v.get("05") or 0.0
+        rec = v.get("03") or 0.0
+        cus = abs(sum((v.get(k) or 0.0) for k in ("04", "06", "08", "10", "12")))
+        bdi = round(rec - cus, 2)
         if abs(rec) < 0.005 and cus < 0.005:
             continue                                     # mes sem nenhum dado (futuro ou nao carregado)
         linhas.append({"mes": m, "receita": round(rec, 2), "custo_direto": round(cus, 2), "bdi": round(bdi, 2),
@@ -423,7 +425,7 @@ def financiamentos(conn, e) -> tuple:
 
 
 def receita_mensal(conn, e) -> tuple:
-    """Receita bruta mes a mes (DRE confirmado > API) com a variacao sobre o mes anterior."""
+    """Receita liquida mes a mes (DRE confirmado > API) com a variacao sobre o mes anterior."""
     h = _hoje()
     serie = P.receita_mensal(conn, mes_atual=f"{h.year}-{h.month:02d}")
     n = _limite(e.get("ultimos_meses"), 24, 60)
@@ -544,7 +546,7 @@ TOOLS = [
     _t("resultado_periodo", "Resultado da Diretoria (Receita - Custos [padrao DRE 04+06+08+09+10+12] = BDI - Administracao = Resultado), realizado e previsto, mes a mes e somado. So' meses com DRE confirmado entram na soma.",
        {"mes_ini": _INI, "mes_fim": _FIM}, ["mes_ini", "mes_fim"]),
     _t("dre_mes", "DRE gerencial de UM mes (linhas e valores) e a origem do dado (confirmado, PDF oficial ou reconstruido pela API). Para varios meses use serie_mensal (receita/custo/BDI por mes) ou resultado_periodo.", {"mes": _MES}, ["mes"]),
-    _t("serie_mensal", "Receita bruta, custos operacionais diretos, BDI e margem de CADA mes do periodo numa so consulta (maximo 24 meses), com a origem de cada mes (confirmado, PDF ou API a conferir). Use para graficos e comparacoes mes a mes; depois chame montar_grafico (x = mes).",
+    _t("serie_mensal", "Receita liquida (linha 03), custos (04+06+08+10+12), BDI e margem de CADA mes do periodo numa so consulta (maximo 24 meses), com a origem de cada mes (confirmado, PDF ou API a conferir). Use para graficos e comparacoes mes a mes; depois chame montar_grafico (x = mes).",
        {"mes_ini": _INI, "mes_fim": _FIM}, ["mes_ini", "mes_fim"]),
     _t("conferencia_ano", "Tabela de CONFERENCIA entre o app e o painel da contabilidade (historico importado): receita, custos, BDI, administracao e resultado no mes de referencia, de janeiro ate o mes anterior e no acumulado do ano, com diferenca em R$ e % e a origem do dado do app. Use quando pedirem para conferir jan-ago/o ano com o painel da contabilidade."),
     _t("aprendizados", "Anotacoes ATIVAS da equipe (regras da casa, definicoes e conhecimento aprovados): consulte quando a pergunta tocar regra/convencao do app. 'busca' filtra por palavra (opcional).",
@@ -570,7 +572,7 @@ TOOLS = [
     _t("indicadores", "Indicadores financeiros do periodo: prazo medio de recebimento e pagamento, ciclo, necessidade de capital de giro, gasto diario e inadimplencia de hoje.", {"mes_ini": _INI, "mes_fim": _FIM}, ["mes_ini", "mes_fim"]),
     _t("financiamentos", "Carteira de financiamentos (ou investimentos) de hoje: saldo devedor, juros, custo medio, por credor e curva mensal de desembolso.",
        {"grupo": {"type": "string", "enum": ["financiamentos", "investimentos"]}}),
-    _t("receita_mensal", "Receita bruta mes a mes com a fonte de cada mes e a variacao sobre o mes anterior.", {"ultimos_meses": {"type": "integer", "description": "Quantos meses recentes (padrao 24)."}}),
+    _t("receita_mensal", "Receita liquida mes a mes com a fonte de cada mes e a variacao sobre o mes anterior.", {"ultimos_meses": {"type": "integer", "description": "Quantos meses recentes (padrao 24)."}}),
     _t("sincronizacoes", "Ultimas buscas no Sienge (status, quantidade de titulos, erro, quando terminou): diz se o dado esta atualizado.", {"limite": _LIM}),
     _t("logs", "Historico de acoes do app (importacoes, relatorios, edicoes, erros, avisos). Filtro opcional por nivel.", {"nivel": {"type": "string", "enum": ["INFO", "AVISO", "ERRO"]}, "limite": _LIM}),
     _t("conhecimento", "Base de conhecimento interna: reforma tributária (visão geral, cronograma 2026-2033, construção/incorporação, impacto na gestão), demonstrações e CPCs, fórmulas de indicadores, tributos vigentes e glossário do GDF. Sem tema nem busca devolve o índice. Use para perguntas de contabilidade e tributos e para explicar como o app calcula.",

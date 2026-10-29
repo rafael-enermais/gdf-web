@@ -429,9 +429,9 @@ def _termos_mes(B: Base) -> dict:
     """Receita - Custo = BDI - Administracao = Resultado do mes de referencia: {chave: (realizado, previsto)}."""
     ctx = B.ctx
     ob, proj, v = ctx["obras"], ctx.get("proj"), ctx["dre"]["valores"]
-    rec = ob["total"]["receita"] if ob else v["01"]
-    cus = abs(ob["total"]["custo"]) if ob else abs(v["04"])
-    bdi = ob["total"]["bdi"] if ob else v["05"]
+    rec = ob["total"]["receita"] if ob else v["03"]
+    cus = abs(ob["total"]["custo"]) if ob else abs(sum(v.get(k, 0.0) for k in ("04", "06", "08", "10", "12")))
+    bdi = ob["total"]["bdi"] if ob else v["14"]
     adm = ctx["adm"]
     orc = adm["orcamento"] if adm and adm.get("orcamento") else None
     adm_real = orc["total"]["realizado"] if orc else None
@@ -576,7 +576,7 @@ def b_res_receita(B: Base) -> list:
     els = [barras([_rot_curto(x["mes"]) for x in serie], [x["receita"] for x in serie], fmt="mi")]
     if any(x["fonte"].startswith("API") for x in serie):
         els.append(nota("Meses com fonte “API (a conferir)” ainda não têm DRE oficial confirmado e podem mudar quando forem conferidos."))
-    els.append(nota("Cada barra é a receita bruta da DRE do mês. A soma dos meses pode diferir da “Receita (base-line)” do bloco de Resultado, que usa o critério de comparação com o previsto."))
+    els.append(nota("Cada barra é a receita líquida (linha 03) da DRE do mês. A soma dos meses pode diferir da “Receita (base-line)” do bloco de Resultado, que usa o critério de comparação com o previsto."))
     return els
 
 
@@ -1014,9 +1014,9 @@ def _ob_base(B: Base, aba: str = "Obras"):
         return (t["rec"], abs(t["cus"]), t["bdi"]) if t else (None, None, None)
     ob = B.ctx["obras"]
     v = B.ctx["dre"]["valores"]
-    rec = ob["total"]["receita"] if ob else v["01"]
-    cus = abs(ob["total"]["custo"]) if ob else abs(v["04"])
-    bdi = ob["total"]["bdi"] if ob else v["05"]
+    rec = ob["total"]["receita"] if ob else v["03"]
+    cus = abs(ob["total"]["custo"]) if ob else abs(sum(v.get(k, 0.0) for k in ("04", "06", "08", "10", "12")))
+    bdi = ob["total"]["bdi"] if ob else v["14"]
     return rec, cus, bdi
 
 

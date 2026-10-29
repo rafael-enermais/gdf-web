@@ -212,7 +212,7 @@ def p_resumo(c, n, N, ctx):
     for i, (r_, val, sub) in enumerate(cards2):
         kpi(c, MX + i * (kw + 10), y, kw, 62, r_, val, sub)
     y -= 84
-    y = secao(c, y, "Receita bruta mês a mês")
+    y = secao(c, y, "Receita líquida mês a mês")
     serie = ctx["serie"][-12:]
     if len(serie) >= 2:
         unidade(c, W - MX, y + 2)
@@ -258,13 +258,13 @@ def _nome_obra(l, nome_cheio):
 def p_obras(c, n, N, ctx):
     _moldura(c, n, N, "Obras", ctx)
     ob = ctx["obras"]
-    y = titulo(c, TOPY, "Resultado por obra", ("DRE oficial do Sienge (PDF)" if (ob or {}).get("fonte") == "PDF" else "API do Sienge") + " · BDI real = receita bruta − custos diretos")
+    y = titulo(c, TOPY, "Resultado por obra", ("DRE oficial do Sienge (PDF)" if (ob or {}).get("fonte") == "PDF" else "API do Sienge") + " · BDI real = receita líquida (03) + custos (04+06+08+10+12) = lucro líquido (14)")
     if not ob:
         _vazio(c, y, "Sem dados por obra neste mês: não há PDF do DRE importado nem títulos emitidos carregados pela API do Sienge.")
         return
     t = ob["total"]
     kw = (CW - 3 * 10) / 4
-    for i, (r_, val, sub) in enumerate([("Receita bruta", mm(t["receita"]), "todas as obras"), ("Custos", mm(t["custo"]), "padrão: DRE 04+06+08+09+10+12"),
+    for i, (r_, val, sub) in enumerate([("Receita líquida", mm(t["receita"]), "todas as obras (linha 03)"), ("Custos", mm(t["custo"]), "padrão: DRE 04+06+08+10+12"),
                                         ("BDI real", mm(t["bdi"]), "receita − custos"), ("Margem de contribuição", _pc(t["margem"]), "BDI ÷ receita")]):
         kpi(c, MX + i * (kw + 10), y, kw, 62, r_, val, sub, dark=(i == 3))
     y -= 78
@@ -345,8 +345,8 @@ def p_resultado(c, n, N, ctx):
         _vazio(c, y, "Esta página precisa do DRE do mês (receita, custo e BDI) e do Orçamento ADM (para a administração realizada). "
                      "Importe o que falta na aba Importações (V2).")
         return
-    if dv_:                                                      # receita e custo do DRE do mes (fonte confirmada); BDI = receita bruta - custos diretos
-        rec, cus = dv_["01"], dv_["04"]
+    if dv_:                                                      # receita e custo do DRE do mes (fonte confirmada); BDI = receita liquida (03) + custos (04+06+08+10+12) = linha 14
+        rec, cus = dv_["03"], sum(dv_.get(k, 0.0) for k in ("04", "06", "08", "10", "12"))
         bdi = round(rec + cus, 2)
     else:
         rec, cus, bdi = ob["total"]["receita"], ob["total"]["custo"], ob["total"]["bdi"]
@@ -391,7 +391,7 @@ def p_proj(c, n, N, ctx):
     y -= 10
     if cm["sem_correspondencia"]:
         y = caixa_nota(c, y, "Obras da projeção sem correspondência única no DRE: " + "; ".join(f"{o['obra']} ({fnum(o['receita'], 0)})" for o in cm["sem_correspondencia"][:6]) + ".")
-    caixa_nota(c, y, "Custo previsto e BDI previsto vêm da própria planilha de projeção; BDI real = receita bruta − custos diretos do realizado por obra.")
+    caixa_nota(c, y, "Custo previsto e BDI previsto vêm da própria planilha de projeção; BDI real = receita líquida + custos (04+06+08+10+12) do realizado por obra.")
 
 
 def p_despesas(c, n, N, ctx):

@@ -848,24 +848,22 @@ def _codigos_obra_proprios(conn):
         return None
 
 
-CUSTO_PADRAO_LINHAS = ("04", "06", "08", "09", "10", "12")        # padrao da contabilidade (22/10/2026): Custos = DRE 04+06+08+09+10+12 = "Custo Total" do relatorio Custos por obra
+CUSTO_PADRAO_LINHAS = ("04", "06", "08", "10", "12")        # padrao da contabilidade (Suellen, 29/10/2026): Custos = DRE gerencial 04+06+08+10+12; Receita = linha 03 (liquida); BDI = linha 14
 
 
 def custo_padrao_obra(linhas: dict) -> float:
-    """Custo da obra no padrao da contabilidade (negativo, como no DRE). Pela API vem pronto em 'CP' (soma das contas do relatorio de custos por obra);
-    pelo PDF do DRE soma as linhas 04+06+08+09+10+12 que existirem."""
-    if "CP" in linhas:
-        return round(float(linhas["CP"] or 0.0), 2)
+    """Custo da obra no padrao da contabilidade (negativo, como no DRE gerencial): soma das linhas 04+06+08+10+12 que existirem (Suellen, 29/10/2026).
+    Com a Receita Operacional Liquida (linha 03), Receita + Custo = Lucro Liquido apos investimentos (linha 14)."""
     return round(sum(float(linhas.get(k, 0.0) or 0.0) for k in CUSTO_PADRAO_LINHAS), 2)
 
 
 def _montar_obras(por_obra: dict, proprios, importacao_id, arquivo: str, fonte: str) -> dict:
-    """Monta a tabela da aba Obras: por obra, receita bruta (linha 01), CUSTOS no padrao da contabilidade (DRE 04+06+08+09+10+12; `custo_04` guarda so' a linha 04),
+    """Monta a tabela da aba Obras: por obra, RECEITA LIQUIDA (linha 03 do DRE gerencial; sem a 03, a bruta 01), CUSTOS no padrao da contabilidade (DRE 04+06+08+10+12; `custo_04` guarda so' a linha 04),
     BDI real = receita + custos (custos ja vem negativo) e margem = BDI / receita. `por_obra` = {cod: {'nome': ..., 'linhas': {linha_dre: valor}}}.
     Obra sem codigo proprio no de-para vira a linha 'DEM'."""
     linhas, dem = [], {"receita": 0.0, "custo": 0.0, "custo_04": 0.0, "n": 0}
     for cod, o in por_obra.items():
-        rec, cus, c04 = o["linhas"].get("01", 0.0), custo_padrao_obra(o["linhas"]), o["linhas"].get("04", 0.0)
+        rec, cus, c04 = o["linhas"].get("03", o["linhas"].get("01", 0.0)), custo_padrao_obra(o["linhas"]), o["linhas"].get("04", 0.0)
         if abs(rec) < 0.005 and abs(cus) < 0.005:
             continue
         if proprios is not None and cod not in proprios:
@@ -925,7 +923,7 @@ def obras_da_api(conn, mes: str, api: dict | None = None, nomes: dict | None = N
         nomes = nomes_obras_depara(conn)
     if proprios == "?":
         proprios = _codigos_obra_proprios(conn)
-    por_obra = {cod: {"nome": nomes.get(cod, ""), "linhas": {"01": v.get("01", 0.0), "04": v.get("04", 0.0), "CP": v.get("CP", v.get("04", 0.0))}} for cod, v in api.items()}
+    por_obra = {cod: {"nome": nomes.get(cod, ""), "linhas": {k: v.get(k, 0.0) for k in ("01", "03", "04", "06", "08", "10", "12")}} for cod, v in api.items()}
     ob = _montar_obras(por_obra, proprios, None, "API do Sienge (baixas recebidas e pagas no mes)" if base == "CAIXA" else "API do Sienge (titulos emitidos no mes)", "API")
     return ob if ob["linhas"] else None
 
@@ -1120,9 +1118,9 @@ def termos_do_mes(conn, mes: str, base: str = "REF") -> dict | None:
     if not r:
         return None
     v = r["dre"]["valores"]
-    rec, cus = round(v["01"], 2), round(abs(v["04"]), 2)
+    rec, cus = round(v["03"], 2), round(abs(v["04"]), 2)              # receita = LIQUIDA (linha 03; Suellen, 29/10/2026)
     ob0 = obras_do_mes(conn, mes)
-    if ob0:                                                  # custo no padrao da contabilidade: linha 04 do DRE (com as confirmacoes) + o que o padrao 04+06+08+09+10+12 soma alem da 04
+    if ob0:                                                  # custo no padrao da contabilidade: linha 04 do DRE (com as confirmacoes) + o que o padrao 04+06+08+10+12 soma alem da 04
         extra = ob0["total"]["custo"] - ob0["total"].get("custo_04", ob0["total"]["custo"])
         cus = round(abs(v["04"]) + abs(extra), 2) if extra <= 0 else round(max(abs(v["04"]) - extra, 0.0), 2)
     out = {"mes": mes, "rec": rec, "cus": cus, "bdi": round(rec - cus, 2), "fonte": r["fonte"],
@@ -1398,7 +1396,7 @@ def receita_mensal_caixa(conn, mes_atual: str | None = None) -> list:
     for m in sorted(por):
         if mes_atual and m == mes_atual:
             continue
-        rec = round(dre_do_mes(por[m])["valores"]["01"], 2)
+        rec = round(dre_do_mes(por[m])["valores"]["03"], 2)
         if abs(rec) > 0.004:
             out.append({"mes": m, "receita": rec, "fonte": "Recebido (caixa)", "var": None})
     for ant, atu in zip(out, out[1:]):
@@ -1785,6 +1783,9 @@ def _adm_fonte(base: str, sem_previsao: bool) -> tuple:
             "b.data_pagamento", "b.liquido", f"b.lado='P' AND {__import__('base_data').sql_caixa('b')} {prev}")
 
 
+PLANOS_FORA_ADM = ("1.03",)        # 1.03 INVERSOES (transferencias entre empresas, valores indevidos...): nunca entram na Administracao (Suellen, 29/10/2026)
+
+
 def adm_linhas(conn, mes_ini: str, mes_fim: str, prefixos: list, sem_previsao: bool = False, base: str = "CAIXA") -> list:
     """Despesas das unidades ADM (centros de custo com grupo 'ADM' no de-para) entre os meses 'AAAA-MM' (inclusive), por conta, credor e unidade, na base pedida:
     'CAIXA' (padrao) = PAGO no mes do pagamento (liquido da baixa x % do rateio); 'REF' = EMITIDO no mes (valor do titulo x % do rateio). Mesmas regras da aba Despesas
@@ -1807,7 +1808,7 @@ def adm_linhas(conn, mes_ini: str, mes_fim: str, prefixos: list, sem_previsao: b
             pass
         return []
     return [{"plano_cod": c, "plano_nome": n, "credor": cr, "unidade": u, "valor": round(float(v or 0), 2)}
-            for c, n, cr, u, v in linhas if not _excluido(c, prefixos) and not unidade_fora_adm(u)]
+            for c, n, cr, u, v in linhas if not _excluido(c, prefixos) and not _excluido(c, PLANOS_FORA_ADM) and not unidade_fora_adm(u)]
 
 
 def adm_evolucao(conn, mes_ini: str, mes_fim: str, prefixos: list, sem_previsao: bool = False, base: str = "CAIXA") -> list:
@@ -1830,7 +1831,7 @@ def adm_evolucao(conn, mes_ini: str, mes_fim: str, prefixos: list, sem_previsao:
     linhas = [l[:3] for l in linhas if not unidade_fora_adm(l[3])]
     por = {}
     for m, c, v in linhas:
-        if not _excluido(c, prefixos):
+        if not _excluido(c, prefixos) and not _excluido(c, PLANOS_FORA_ADM):
             por[m] = round(por.get(m, 0.0) + float(v or 0), 2)
     return [{"mes": m, "valor": por[m]} for m in sorted(por)]
 
@@ -1892,7 +1893,7 @@ def adm_resumo(linhas: list, chaves_outros: list | None = None, nomes: dict | No
 
 # ---------------------------------------------------------------- Receita mes a mes (aba Pessoas: linha "Receita: var. % s/ mes anterior")
 def receita_mensal(conn, mes_atual: str | None = None, sem_distrato: bool = True, base: str = "REF") -> list:
-    """Receita bruta por mes: 1) DRE CONFIRMADO do mes (linha 01.01); 2) API (titulos emitidos no mes, sem previsao e sem NF desfeita), o padrao; o DRE oficial
+    """Receita LIQUIDA por mes (linha 03 do DRE gerencial = bruta - deducoes; Suellen, 29/10/2026): 1) DRE CONFIRMADO do mes (01.01+02.01+02.02); 2) API (titulos emitidos no mes, sem previsao e sem NF desfeita), o padrao; o DRE oficial
     importado (PDF) so' vale em meses anteriores a rotina de emissao da API. O mes em andamento ('mes_atual') fica de fora (incompleto).
     Meses so' com API (sem DRE importado/confirmado) ANTES da primeira sincronizacao de emissao ficam de fora: la a base tem so' residuos de titulos
     antigos (receita parcial, variacao % absurda). Devolve [{'mes','receita','fonte','var'}] em ordem; 'var' = variacao sobre o mes anterior (fracao)
@@ -1910,15 +1911,16 @@ def receita_mensal(conn, mes_atual: str | None = None, sem_distrato: bool = True
         rec, fonte = None, None
         conf = confirmacao_ativa(conn, m)
         if conf and "01.01" in (conf["valores"] or {}):
-            rec, fonte = float(conf["valores"]["01.01"]), "DRE confirmado"
+            cv = conf["valores"]
+            rec, fonte = float(cv["01.01"]) + float(cv.get("02.01") or 0.0) + float(cv.get("02.02") or 0.0), "DRE confirmado"
         if rec is None and cobertura_ini and m < cobertura_ini:            # antes da rotina de emissao da API: so' o PDF (se houver) serve
             imp = dre_importacao_ativa(conn, m)
             if not imp:
                 continue
-            rec = round(sum(o["linhas"].get("01", 0.0) for o in dre_por_obra_importado(conn, imp["id"]).values()), 2)
+            rec = round(sum(o["linhas"].get("03", o["linhas"].get("01", 0.0)) for o in dre_por_obra_importado(conn, imp["id"]).values()), 2)
             fonte = "DRE oficial (PDF)"
         if rec is None:
-            rec = float(dre_do_mes(resultado_por_conta(conn, m, sem_previsao=True, sem_distrato=sem_distrato))["valores"]["01"])
+            rec = float(dre_do_mes(resultado_por_conta(conn, m, sem_previsao=True, sem_distrato=sem_distrato))["valores"]["03"])
             fonte = "API (a conferir)"
         if abs(rec) > 0.004:
             out.append({"mes": m, "receita": round(rec, 2), "fonte": fonte, "var": None})

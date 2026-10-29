@@ -46,20 +46,20 @@ def test_contas_das_categorias_marcar_pai_inclui_filhos():
     assert not (C.contas_das_categorias(["05.04"]) & set(C.CONTAS_POR_CATEGORIA["05.03"]))
 
 
-def test_obras_custo_no_padrao_da_contabilidade_e_bdi_acompanha():
-    """Custos = DRE 04+06+08+09+10+12 (ou 'CP' da API); BDI = receita + custos; custo_04 guarda so' a linha 04."""
+def test_obras_receita_liquida_custo_04_06_08_10_12_e_bdi_acompanha():
+    """Suellen 29/10/2026: receita = liquida (linha 03; sem a 03, a bruta 01); custos = DRE 04+06+08+10+12; BDI = receita + custos (= linha 14); custo_04 guarda so' a linha 04."""
     por_obra = {
-        "100": {"nome": "A", "linhas": {"01": 1000.0, "04": -400.0, "06": -10.0, "08": -5.0, "09": -1.0, "10": -4.0, "12": -20.0}},   # PDF: soma das linhas
-        "101": {"nome": "B", "linhas": {"01": 500.0, "04": -100.0, "CP": -130.0}},                                                        # API: CP pronto
-        "999": {"nome": "fora", "linhas": {"01": 10.0, "04": -2.0, "CP": -3.0}},                                                          # sem de-para proprio -> Demais
+        "100": {"nome": "A", "linhas": {"01": 1100.0, "03": 1000.0, "04": -400.0, "06": -10.0, "08": -5.0, "09": -1.0, "10": -4.0, "12": -20.0}},   # 09 nao entra
+        "101": {"nome": "B", "linhas": {"01": 500.0, "04": -100.0, "06": -30.0}},                                                                   # sem a 03 -> usa a 01
+        "999": {"nome": "fora", "linhas": {"01": 10.0, "03": 10.0, "04": -2.0, "08": -1.0}},                                                        # sem de-para proprio -> Demais
     }
     ob = P._montar_obras(por_obra, {"100", "101"}, None, "x", "API")
     por = {l["obra"]: l for l in ob["linhas"]}
-    assert por["100"]["custo"] == -440.0 and por["100"]["custo_04"] == -400.0 and por["100"]["bdi"] == 560.0
-    assert por["101"]["custo"] == -130.0 and por["101"]["bdi"] == 370.0
+    assert por["100"]["receita"] == 1000.0 and por["100"]["custo"] == -439.0 and por["100"]["custo_04"] == -400.0 and por["100"]["bdi"] == 561.0
+    assert por["101"]["receita"] == 500.0 and por["101"]["custo"] == -130.0 and por["101"]["bdi"] == 370.0
     assert por["DEM"]["custo"] == -3.0 and por["DEM"]["custo_04"] == -2.0
-    assert ob["total"]["custo"] == -573.0 and ob["total"]["custo_04"] == -502.0
-    assert ob["total"]["bdi"] == round(1510.0 - 573.0, 2)
+    assert ob["total"]["receita"] == 1510.0 and ob["total"]["custo"] == -572.0 and ob["total"]["custo_04"] == -502.0
+    assert ob["total"]["bdi"] == round(1510.0 - 572.0, 2)
     # varios meses somados mantem o padrao e o custo_04
     soma = P.somar_obras([ob, ob])
-    assert soma["total"]["custo"] == -1146.0 and soma["total"]["custo_04"] == -1004.0 and soma["total"]["bdi"] == round(3020.0 - 1146.0, 2)
+    assert soma["total"]["custo"] == -1144.0 and soma["total"]["custo_04"] == -1004.0 and soma["total"]["bdi"] == round(3020.0 - 1144.0, 2)
