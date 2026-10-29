@@ -49,6 +49,17 @@ def base(conn):
     return conn
 
 
+def _meses_alvo():
+    """Um mes que a tela de envio oferece (o segundo da lista: independe da data de hoje)."""
+    import folha_pj_ui as UI
+    return UI._meses_opcoes()[1]
+
+
+def _meses_alvo_outro(alvo):
+    import folha_pj_ui as UI
+    return next(m for m in UI._meses_opcoes() if m != alvo)
+
+
 def _por_cred(r, cred):
     return next(p for p in r["pessoas"] if p["cred_id"] == cred)
 
@@ -155,6 +166,11 @@ def test_flash_cruza_por_cpf_e_por_nome_e_entra_no_painel(base):
     assert cruz["sem_pj"] == 1 and cruz["ambiguas"] == 0 and {c["credor_id"]: c["via"] for c in cruz["casadas"]} == {501: "CPF", 502: "nome"}
     res = IP.gravar_flash(base, MES, "ENERMAIS ENERGIA LTDA", cruz["casadas"], "teste@x")
     assert res == {"pessoas": 2, "premiacao": 3100.0, "alimentacao": 1400.0}
+    # salvaguarda do mes: o app avisa quando o mes escolhido ja' tem Flash ativo (e nada nos outros meses/empresas)
+    ex = IP.flash_existente(base, MES, ["ENERMAIS ENERGIA LTDA", "OUTRA EMPRESA"])
+    assert list(ex) == ["ENERMAIS ENERGIA LTDA"] and ex["ENERMAIS ENERGIA LTDA"]["pessoas"] == 2
+    assert ex["ENERMAIS ENERGIA LTDA"]["premiacao"] == 3100.0 and ex["ENERMAIS ENERGIA LTDA"]["alimentacao"] == 1400.0 and ex["ENERMAIS ENERGIA LTDA"]["quem"] == "teste@x"
+    assert IP.flash_existente(base, "2026-09", ["ENERMAIS ENERGIA LTDA"]) == {} and IP.flash_existente(base, MES, []) == {}
     r = FP.dados_do_mes(base, MES)
     j = _por_cred(r, 501)
     assert j["ajuda_custo"] == 3100.0 and j["alimentacao"] == 650.0 and j["custo_total"] == pytest.approx(12000 - 50 + 3100 + 650)
@@ -166,6 +182,7 @@ def test_flash_cruza_por_cpf_e_por_nome_e_entra_no_painel(base):
     with base.cursor() as cur:
         cur.execute("SELECT count(*) FROM pj_flash WHERE NOT ativo")
         assert cur.fetchone()[0] == 1
+    assert IP.flash_existente(base, MES, ["ENERMAIS ENERGIA LTDA"])["ENERMAIS ENERGIA LTDA"]["pessoas"] == 1      # so' o Flash vigente conta
 
 
 def test_nome_ambiguo_nao_casa_e_planilha_protegida_e_recusada():

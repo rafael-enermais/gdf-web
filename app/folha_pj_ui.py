@@ -301,8 +301,10 @@ def _arquivos_do_mes(conn, ok: bool, seg: str, usuario) -> None:
         if lidos:
             abas_mes = [x["aba"] for x in lidos if x["tipo"] in ("mapa", "novos") and len(x["aba"]) == 7 and x["aba"][2] == "-"]
             opcoes = _meses_opcoes()
-            dica = f"{abas_mes[0][3:]}-{abas_mes[0][:2]}" if abas_mes else opcoes[0]
-            mes_n = st.selectbox("Mês dos arquivos", opcoes, index=opcoes.index(dica) if dica in opcoes else 0, format_func=lambda m: f"{m[5:]}/{m[:4]}", key=f"fpj_mes_{v}")
+            dica = f"{abas_mes[0][3:]}-{abas_mes[0][:2]}" if abas_mes else None
+            # Sem a aba do mes (so' Flash, que nao traz o mes no nome) nao ha' mes pre-escolhido: a pessoa escolhe de proposito (antes abria no mes mais recente e setembro foi gravado como outubro)
+            mes_n = st.selectbox("Mês dos arquivos", opcoes, index=opcoes.index(dica) if dica in opcoes else None, placeholder="Escolha o mês (o Flash não diz o mês)",
+                                 format_func=lambda m: f"{m[5:]}/{m[:4]}", key=f"fpj_mes_{v}")
             cad = dict(IP.colaboradores_cadastrados(conn))
             for x in lidos:                              # o mapa deste envio vale para o cruzamento da previa
                 if x["tipo"] in ("mapa", "novos"):
@@ -338,8 +340,21 @@ def _arquivos_do_mes(conn, ok: bool, seg: str, usuario) -> None:
                 st.warning("Escolha a empresa dos arquivos de Flash marcados com ⚠ para poder salvar.")
             if any(x["tipo"] == "flash" for x in lidos) and not cad:
                 st.warning("O mapa de colaboradores ainda não foi enviado: sem ele o Flash não tem com quem cruzar.")
-            pode = ok and not falta_emp
-            if st.button(f"Confirmar e salvar {len(lidos)} arquivo(s) de {mes_n[5:]}/{mes_n[:4]}", type="primary", disabled=not pode, key=f"fpj_confirma_{v}"):
+            substitui = {}
+            if mes_n is None:
+                st.warning("Escolha o mês dos arquivos para poder salvar.")
+            elif empresas_flash:
+                substitui = IP.flash_existente(conn, mes_n, empresas_flash)
+                for emp_, d_ in substitui.items():
+                    quando = d_["quando"].strftime("%d/%m %H:%M") if d_.get("quando") else "?"
+                    st.warning(f"Já existe Flash de {mes_n[5:]}/{mes_n[:4]} para {emp_}: {d_['pessoas']} pessoas, ajuda de custo {_m(d_['premiacao'])} e vale {_m(d_['alimentacao'])} "
+                               f"(enviado por {d_['quem'] or '?'} em {quando}). Salvar substitui esse Flash (o antigo fica guardado como inativo).")
+            ok_subst = True
+            if substitui:
+                ok_subst = st.checkbox(f"Confirmo que o mês é {mes_n[5:]}/{mes_n[:4]} e que quero substituir o Flash já salvo", key=f"fpj_subst_{v}")
+            pode = ok and not falta_emp and mes_n is not None and ok_subst
+            rotulo = f"Confirmar e salvar {len(lidos)} arquivo(s) de {mes_n[5:]}/{mes_n[:4]}" if mes_n else "Confirmar e salvar (escolha o mês)"
+            if st.button(rotulo, type="primary", disabled=not pode, key=f"fpj_confirma_{v}"):
                 msgs = []
                 try:
                     for x in (y for y in lidos if y["tipo"] in ("mapa", "novos")):

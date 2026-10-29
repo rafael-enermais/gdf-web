@@ -641,8 +641,10 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
             if not UM_MES:
                 _cap(f"Soma de {_n_ob} {'mês' if _n_ob == 1 else 'meses'} com dados por obra em {PER_ROT} (PDF oficial ou API do Sienge)." + (f" Sem dados (fora da soma): {', '.join(_rot(m) for m in _falt_ob)}." if _falt_ob else "")
                      + " Colaboradores = os do mês de referência; faturamento e custo por colaborador = média mensal do período.")
+            _to = [("início", time.perf_counter())]                                                # v0.54.5: cronometro por bloco (so' o editor ve)
             colab_info = _colaboradores()
-            pj_linhas = _pj_obra(conn, mes_ini, mes, CARIMBO)                                   # cada PJ aparece em todas as obras em que recebeu (com o %)
+            pj_linhas = _pj_obra(conn, mes_ini, mes, CARIMBO)
+            _to.append(("contas pagas do período + PJ", time.perf_counter()))                                   # cada PJ aparece em todas as obras em que recebeu (com o %)
             pj_obra = {}
             for _x in pj_linhas:
                 pj_obra.setdefault(_x["obra"], set()).add(_x["credor"])
@@ -734,6 +736,7 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
                 regs_c.append({"Nome": _nf, "Função": f"Prestador de serviço (PJ) — {round(x['pct'] * 100)}% nesta obra" + (f" · razão social: {x['credor']}" if _nf != x["credor"] else ""),
                                "Tipo": "PJ", "dest": _destino_ob(x["obra"])})
             col_df = pd.DataFrame([r for r in regs_c if r["dest"]], columns=["Nome", "Função", "Tipo", "dest"])
+            _to.append(("tabela, folha CLT e fantasias", time.perf_counter()))
             _rot_obras = _txt_sel([("demais obras" if c == "DEM" else nomes_ob.get(c, c)) for c in cods_sel], "todas as obras")
             # ---- custos por categoria (relatorio "Custos por obra - nivel" da contabilidade): segue as obras marcadas na tabela
             _md(f"**Custos por categoria · {_rot_obras}**")
@@ -759,6 +762,7 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
                      "Segue as obras marcadas na tabela acima (nenhuma marcada = todas). Valor negativo é crédito. O total acompanha a coluna “Custos” da tabela de obras (padrão da contabilidade: DRE 04+06+08+09+10+12).")
             else:
                 _cap("Sem custos por categoria para esta seleção (faltam títulos emitidos no período ou o de-para de centros de custo → obra).")
+            _to.append(("custos por categoria", time.perf_counter()))
             _contas_cat = CON.contas_das_categorias(cats_sel) if cats_sel else None
             _rot_cat = _txt_sel(cats_sel, "") if cats_sel else ""
             _md(f"**Principais credores · {_rot_obras}" + (f" · categoria {_rot_cat}" if cats_sel else "") + "**")
@@ -772,6 +776,7 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
                     alvo += [c for c in dd_ob["obra"].unique() if c not in proprias and c not in nao_obra] if len(dd_ob) else []
             else:
                 alvo = None
+            _to.append(("despesas sem PJ", time.perf_counter()))
             cr_ob = DD.credores_da_obra(dd_ob, alvo, mes)
             if cr_ob["linhas"]:
                 st.dataframe(pd.DataFrame({"Credor": [x["chave"] for x in cr_ob["linhas"]], f"Acumulado {ACUM}": [_m(x["acumulado"]) for x in cr_ob["linhas"]],
@@ -806,6 +811,9 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
                 _md("**Obras com maior prejuízo " + ("no mês**" if UM_MES else "no período**"))
                 st.dataframe(pd.DataFrame([{"Obra": x["obra"], "Nome": RPP._nome_obra(x, nome_cheio), "BDI": _m(x["bdi"]), "Margem": F.pct_br(x["margem"]) if x["margem"] is not None else "–"}
                                            for x in ob["top_prejuizo"]]), hide_index=True, width="stretch")
+            if _eh_editor and len(_to) > 1:
+                _to.append(("credores, colaboradores e resto", time.perf_counter()))
+                _cap("Tempo da aba Obras: " + " · ".join(f"{_to[i][0]} {_to[i][1] - _to[i - 1][1]:.1f} s" for i in range(1, len(_to))) + ". Só quem edita vê esta linha.")
 ob, proj = _ob_mes, _proj_mes
 
 

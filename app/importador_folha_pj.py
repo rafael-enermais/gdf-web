@@ -126,6 +126,16 @@ def resumo_salvo(conn) -> dict:
     return {"colaboradores": int(n or 0), "quando": quando, "flash": fl}
 
 
+def flash_existente(conn, mes: str, empresas: list) -> dict:
+    """Flash ATIVO ja' gravado para o mes ('YYYY-MM') e as empresas dadas: {empresa: {pessoas, premiacao, alimentacao, quem, quando}}. Serve para avisar antes de substituir."""
+    if not empresas:
+        return {}
+    with conn.cursor() as cur:
+        cur.execute("""SELECT empresa, count(*), COALESCE(sum(premiacao),0), COALESCE(sum(alimentacao),0), max(importado_por), max(importado_em)
+                       FROM pj_flash WHERE ativo AND mes = %s::date AND empresa = ANY(%s) GROUP BY empresa""", (f"{mes}-01", list(empresas)))
+        return {e: {"pessoas": int(n), "premiacao": float(p), "alimentacao": float(v), "quem": q, "quando": w} for e, n, p, v, q, w in cur.fetchall()}
+
+
 def ler_mapa_colaboradores(conteudo: bytes, segredo: str, aba: str | None = None) -> dict:
     """Le a planilha da folha (aba do mes) ou o arquivo 'Novos colaboradores PJ'. Devolve {'aba','linhas':[{credor_id,nome,funcao,centro,empresa,cpf_hash,admissao}],'avisos':[...]}.
     So' entram linhas de vinculo PJ (ou sem coluna de vinculo) com codigo de credor do Sienge."""
