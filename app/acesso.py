@@ -112,3 +112,40 @@ def definir_investimentos_para_visualizador(conn, liberar: bool, quem: str | Non
             cur.execute("INSERT INTO pnl_config (chave, valor, alterado_por) VALUES (%s,%s,%s) "
                         "ON CONFLICT (chave) DO UPDATE SET valor=EXCLUDED.valor, alterado_por=EXCLUDED.alterado_por, alterado_em=now()", (CHAVE_INVEST, v, quem))
     return bool(liberar)
+
+
+# ---------------------------------------------------------------- configuracao: base de data (Referencia x Caixa) FIXADA pelo editor para o login de visualizacao
+def bases_fixadas(conn) -> dict:
+    """{aba: 'REF'|'CAIXA'} fixadas pelo editor para a Diretoria (sem SQL novo: usa pnl_config, SQL-29). Sem a tabela ou sem nada fixado: {}."""
+    import base_data as BD
+    if not config_instalada(conn):
+        return {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT chave, valor FROM pnl_config WHERE chave LIKE %s", (BD.PREFIXO_CHAVE + "%",))
+            linhas = cur.fetchall()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return {}
+    por_chave = {c: BD.valida(v) for c, v in linhas}
+    return {aba: por_chave[BD.chave_config(aba)] for aba in BD.ABAS if por_chave.get(BD.chave_config(aba))}
+
+
+def definir_base_fixada(conn, aba: str, base: str | None, quem: str | None) -> str | None:
+    """Fixa (REF/CAIXA) ou solta (None) a base da aba para o visualizador. Nunca apaga: soltar grava vazio. Devolve a base gravada."""
+    import base_data as BD
+    if aba not in BD.ABAS:
+        raise ValueError(f"Aba desconhecida: {aba}")
+    b = BD.valida(base) if base else None
+    if base and not b:
+        raise ValueError(f"Base invalida: {base}")
+    if not config_instalada(conn):
+        raise RuntimeError("Falta executar o SQL-29 (sql/v2_config.sql) no Supabase.")
+    with db.transacao(conn):
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO pnl_config (chave, valor, alterado_por) VALUES (%s,%s,%s) "
+                        "ON CONFLICT (chave) DO UPDATE SET valor=EXCLUDED.valor, alterado_por=EXCLUDED.alterado_por, alterado_em=now()", (BD.chave_config(aba), b or "", quem))
+    return b

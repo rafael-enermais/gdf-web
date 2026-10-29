@@ -11,6 +11,7 @@ import pandas as pd
 import streamlit as st
 
 import acesso
+import base_data as BD
 import custos_obra_nivel as CON
 import estilo
 import diretoria_dados as DD
@@ -69,50 +70,50 @@ def _confirmados(_conn, carimbo: str) -> list:
 
 
 @st.cache_data(ttl=1800, show_spinner="Lendo as contas pagas do período…")
-def _pagos(_conn, mes_ini: str, mes: str, carimbo: str):
-    """Contas pagas de `mes_ini` ate o mes (credor, centro de custo, obra) + as contas excluidas das Despesas pelas regras. Devolve (linhas, prefixos_fora)."""
+def _pagos(_conn, mes_ini: str, mes: str, carimbo: str, base: str = BD.CAIXA):
+    """Contas pagas (base CAIXA) ou emitidas (base REF) de `mes_ini` ate o mes (credor, centro de custo, obra) + as contas excluidas das Despesas pelas regras. Devolve (linhas, prefixos_fora)."""
     regras = P.regras_ativas(_conn, "DESPESAS")
-    linhas = DD.pagos_detalhe(_conn, mes_ini, mes, sem_previsao=P.exclui_previsao(regras))
+    linhas = DD.pagos_detalhe(_conn, mes_ini, mes, sem_previsao=P.exclui_previsao(regras), base=base)
     return DD.para_df(linhas), P.prefixos_excluidos(regras)                    # ja' como tabela (DataFrame): guardar/ler do cache e' ~10x mais rapido que lista de dicts
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _pj_mes(_conn, mes_ini: str, mes: str, carimbo: str) -> dict:
-    """PJ do mes (contas pagas 'Salarios PJ'); guardado: o calculo nao se repete a cada clique."""
-    return DD.pj_do_mes(_pagos(_conn, mes_ini, mes, carimbo)[0], mes)
+def _pj_mes(_conn, mes_ini: str, mes: str, carimbo: str, base: str = BD.CAIXA) -> dict:
+    """PJ do mes (contas 'Salarios PJ'); guardado: o calculo nao se repete a cada clique."""
+    return DD.pj_do_mes(_pagos(_conn, mes_ini, mes, carimbo, base)[0], mes)
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _pj_obra(_conn, mes_ini: str, mes: str, carimbo: str) -> list:
-    return DD.pj_por_obra(_pagos(_conn, mes_ini, mes, carimbo)[0], mes)
+def _pj_obra(_conn, mes_ini: str, mes: str, carimbo: str, base: str = BD.CAIXA) -> list:
+    return DD.pj_por_obra(_pagos(_conn, mes_ini, mes, carimbo, base)[0], mes)
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _credores_pj_nomes(_conn, mes_ini: str, mes: str, carimbo: str) -> set:
-    return DD.credores_pj(_pagos(_conn, mes_ini, mes, carimbo)[0])
+def _credores_pj_nomes(_conn, mes_ini: str, mes: str, carimbo: str, base: str = BD.CAIXA) -> set:
+    return DD.credores_pj(_pagos(_conn, mes_ini, mes, carimbo, base)[0])
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _despesas(_conn, mes_ini: str, mes: str, carimbo: str) -> pd.DataFrame:
-    """Contas pagas sem as contas excluidas das Despesas pelas regras (guardado)."""
-    df, fora = _pagos(_conn, mes_ini, mes, carimbo)
+def _despesas(_conn, mes_ini: str, mes: str, carimbo: str, base: str = BD.CAIXA) -> pd.DataFrame:
+    """Contas pagas (ou emitidas, na base REF) sem as contas excluidas das Despesas pelas regras (guardado)."""
+    df, fora = _pagos(_conn, mes_ini, mes, carimbo, base)
     return DD.despesas_df(df, fora)
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _despesas_sem_pj(_conn, mes_ini: str, mes: str, carimbo: str) -> pd.DataFrame:
+def _despesas_sem_pj(_conn, mes_ini: str, mes: str, carimbo: str, base: str = BD.CAIXA) -> pd.DataFrame:
     """Despesas sem os credores que sao colaboradores PJ (eles ja' estao na lista de colaboradores)."""
-    return DD.sem_credores(_despesas(_conn, mes_ini, mes, carimbo), _credores_pj_nomes(_conn, mes_ini, mes, carimbo))
+    return DD.sem_credores(_despesas(_conn, mes_ini, mes, carimbo, base), _credores_pj_nomes(_conn, mes_ini, mes, carimbo, base))
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _pessoas_df(_conn, mes_ini: str, mes: str, carimbo: str) -> pd.DataFrame:
-    return DD.pessoas_df(_pagos(_conn, mes_ini, mes, carimbo)[0])
+def _pessoas_df(_conn, mes_ini: str, mes: str, carimbo: str, base: str = BD.CAIXA) -> pd.DataFrame:
+    return DD.pessoas_df(_pagos(_conn, mes_ini, mes, carimbo, base)[0])
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def _pessoas_sem_grupo(_conn, mes_ini: str, mes: str, carimbo: str) -> pd.DataFrame:
-    return DD.sem_grupo_enermais(_pessoas_df(_conn, mes_ini, mes, carimbo), _nucleos_grupo(_conn, carimbo))
+def _pessoas_sem_grupo(_conn, mes_ini: str, mes: str, carimbo: str, base: str = BD.CAIXA) -> pd.DataFrame:
+    return DD.sem_grupo_enermais(_pessoas_df(_conn, mes_ini, mes, carimbo, base), _nucleos_grupo(_conn, carimbo))
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -207,15 +208,15 @@ def _demais_pj(_conn, carimbo: str) -> list:
 
 
 @st.cache_data(ttl=1800, show_spinner="Lendo a administração do período…")
-def _adm_periodo(_conn, mes_ini: str, mes: str, carimbo: str):
-    """Administracao no periodo: pagamentos das unidades ADM (mes de referencia e periodo todo) e orcado x realizado (mes, periodo e serie). None se nao ha nada."""
+def _adm_periodo(_conn, mes_ini: str, mes: str, carimbo: str, base: str = BD.CAIXA):
+    """Administracao no periodo: despesas das unidades ADM (pagas na base CAIXA, emitidas na REF; mes de referencia e periodo todo) e orcado x realizado (mes, periodo e serie). None se nao ha nada."""
     linhas_mes, linhas_per = [], []
     if P.meses_com_dados(_conn) and P.centro_grupo_instalado(_conn):
         regras = P.regras_ativas(_conn, "DESPESAS")
         fora_adm = [p for p in P.prefixos_excluidos(regras) if p != "2.02.01"]          # o orcamento ADM inclui o pessoal ADM (2.02.01)
         sem_prev = P.exclui_previsao(regras)
-        linhas_mes = P.adm_linhas(_conn, mes, mes, fora_adm, sem_previsao=sem_prev)
-        linhas_per = P.adm_linhas(_conn, mes_ini, mes, fora_adm, sem_previsao=sem_prev) if mes_ini != mes else linhas_mes
+        linhas_mes = P.adm_linhas(_conn, mes, mes, fora_adm, sem_previsao=sem_prev, base=base)
+        linhas_per = P.adm_linhas(_conn, mes_ini, mes, fora_adm, sem_previsao=sem_prev, base=base) if mes_ini != mes else linhas_mes
     orc = P.orcamento_ativo(_conn) if P.orcamento_instalado(_conn) else None
     orc_mes = orc_per = None
     serie, serie_g = [], []
@@ -412,14 +413,56 @@ aba_res, aba_ob, aba_adm, aba_desp, aba_pes, aba_pj, aba_clt, aba_ind, aba_fin =
 aba_inv = _abas[9] if _mostra_inv else None
 
 
+# ------------------------------------------------------------------ base de data da aba: Referencia (emissao) x Caixa (pagamento)
+@st.cache_data(ttl=30, show_spinner=False)
+def _fixadas(_conn, carimbo: str) -> dict:
+    """Bases que o editor FIXOU para a Diretoria (guardado 30 s; limpa ao fixar)."""
+    return acesso.bases_fixadas(_conn)
+
+
+def _fixar_base(aba: str, base):
+    try:
+        acesso.definir_base_fixada(conn, aba, base, usuario)
+        _fixadas.clear()
+        st.toast(f"Aba {aba}: " + (f"“{BD.CURTO[base]}” fixada para a Diretoria." if base else "voltou ao padrão da aba para a Diretoria."), icon="✅")
+    except Exception as exc:                                  # noqa: BLE001
+        st.session_state["dir_base_erro"] = f"Não consegui salvar a escolha: {exc}"
+
+
+def _base_aba(aba: str) -> str:
+    """Base de data da aba. EDITOR: seletor Referência x Caixa no topo da aba (e botão para FIXAR a base para a Diretoria). VISUALIZADOR: nenhum controle, so' a base fixada
+    (ou o padrao da aba) com um rotulo dizendo qual e'. Devolve 'REF' ou 'CAIXA'."""
+    fix = _fixadas(conn, CARIMBO).get(aba)
+    if not _eh_editor:
+        b = BD.resolver(aba, None, fix, False)
+        _cap(BD.legenda(b, fixada=bool(fix)))
+        return b
+    chave = "dir_base_" + BD.chave_config(aba)[len(BD.PREFIXO_CHAVE):]
+    padrao_ed = BD.resolver(aba, None, fix, True)
+    c1, c2 = st.columns([3, 3], vertical_alignment="center")
+    with c1:
+        b = st.radio("Base de data desta aba", BD.BASES, index=BD.BASES.index(padrao_ed), format_func=lambda x: BD.ROTULO[x], horizontal=True, key=chave,
+                     help="Referência = mês em que o título foi emitido (competência). Caixa = mês em que o pagamento realmente saiu (baixa no Sienge). Vale só para esta aba.")
+    with c2:
+        if fix == b:
+            st.button("✔ Fixada para a Diretoria · soltar", key=chave + "_solta", on_click=_fixar_base, args=(aba, None), help="Solta: a Diretoria volta a ver o padrão desta aba.")
+        else:
+            st.button(f"Fixar “{BD.CURTO[b]}” para a Diretoria", key=chave + "_fixa", on_click=_fixar_base, args=(aba, b),
+                      help="O login de visualização vê só o painel, sem seletor, nesta base.")
+    if st.session_state.get("dir_base_erro"):
+        _warn(st.session_state.pop("dir_base_erro"))
+    _cap(BD.legenda(b) + f" A Diretoria vê hoje: **{BD.CURTO[fix] if fix else BD.CURTO[BD.padrao(aba)] + ' (padrão da aba)'}**.")
+    return b
+
+
 # ------------------------------------------------------------------ dados compartilhados entre abas (PJ e colaboradores)
-def _pagos_df():
-    return _pagos(conn, mes_ini, mes, CARIMBO)
+def _pagos_df(base: str = BD.CAIXA):
+    return _pagos(conn, mes_ini, mes, CARIMBO, base)
 
 
-def _colaboradores():
-    """Colaboradores do mes: CLT (recibos da folha) + PJ (contas pagas 'Salarios PJ'). -> dict com total, obra, adm, pj, por_obra_pj; None onde falta fonte."""
-    pj = _pj_mes(conn, mes_ini, mes, CARIMBO)
+def _colaboradores(base: str = BD.CAIXA):
+    """Colaboradores do mes: CLT (recibos da folha) + PJ (contas 'Salarios PJ', pagas ou emitidas conforme a base). -> dict com total, obra, adm, pj, por_obra_pj; None onde falta fonte."""
+    pj = _pj_mes(conn, mes_ini, mes, CARIMBO, base)
     clt = pes["folha"]["total"]["colab"] if pes else None
     return {"pj": pj, "clt": clt}
 
@@ -835,7 +878,8 @@ ob, proj = _ob_mes, _proj_mes
 # ------------------------------------------------------------------ 3) ADMINISTRACAO
 if aba_adm.open or _TODAS:
     with aba_adm:
-        ap = _adm_periodo(conn, mes_ini, mes, CARIMBO)
+        base_a = _base_aba("Administração")
+        ap = _adm_periodo(conn, mes_ini, mes, CARIMBO, base_a)
         if not ap:
             _info("Falta sincronizar as contas pagas do período e/ou importar o Orçamento ADM.")
         else:
@@ -916,7 +960,7 @@ if aba_adm.open or _TODAS:
                 df_a = df_a[df_a["plano_cod"].map(_no_grupo)] if len(df_a) else df_a
                 _md("#### Quem recebeu: unidade → credor → contas" + (f" · {_txt_sel(filtros_cod, '', 1).replace(' selecionados', ' grupos')}" if filtros_cod else "") + (f" · {len(contas_sel)} conta(s) filtrada(s)" if contas_sel else ""))
                 if not len(df_l) and not len(df_a):
-                    _info("Nenhum pagamento da administração neste grupo no período.")
+                    _info("Nenhum pagamento da administração neste grupo no período." if base_a == BD.CAIXA else "Nenhum título da administração emitido neste grupo no período.")
                 else:
                     un_mes = df_l.groupby("unidade")["valor"].sum() if len(df_l) else pd.Series(dtype=float)
                     un_ano = df_a.groupby("unidade")["valor"].sum() if len(df_a) else pd.Series(dtype=float)
@@ -925,7 +969,7 @@ if aba_adm.open or _TODAS:
                     un["ano"] = un["unidade"].map(lambda u: float(un_ano.get(u, 0.0)))
                     un = un.sort_values(["ano", "mes"], ascending=False).reset_index(drop=True)
                     tot_u = float(un["ano"].sum())
-                    _cap(f"Pago nas unidades da administração (contas pagas, inclui pessoal). 1) Marque uma ou mais unidades (ou deixe sem marcação para ver todas). 2) Marque um ou mais credores para ver as contas deles. "
+                    _cap(f"{'Pago' if base_a == BD.CAIXA else 'Emitido'} nas unidades da administração ({'contas pagas' if base_a == BD.CAIXA else 'títulos emitidos'}, inclui pessoal). 1) Marque uma ou mais unidades (ou deixe sem marcação para ver todas). 2) Marque um ou mais credores para ver as contas deles. "
                          f"Mês = {_rot(mes)}; período = {PER_ROT}. As unidades Mega Aragoiânia e Sette Locações não entram no cenário da Administração.")
                     un_m = pd.DataFrame({"Unidade": un["unidade"], _rot(mes): un["mes"].map(lambda x: _m(x) if abs(x) > 0.005 else "–"), ACUM: un["ano"].map(_m),
                                          "% do período": un["ano"].map(lambda x: F.pct_br(x / tot_u) if tot_u else "–")})
@@ -961,22 +1005,25 @@ if aba_adm.open or _TODAS:
                                          hide_index=True, width="stretch")
                         ct_a = d_a.groupby(["plano_cod", "plano_nome"], as_index=False)["valor"].sum().sort_values("valor", ascending=False)
                         ct_m = d_l.groupby("plano_cod")["valor"].sum() if len(d_l) else pd.Series(dtype=float)
-                        _md(f"Contas pagas a **{_txt_sel(sc, '', 2)}**")
+                        _md(f"Contas {'pagas' if base_a == BD.CAIXA else 'emitidas'} a **{_txt_sel(sc, '', 2)}**")
                         st.dataframe(pd.DataFrame({"Conta": ct_a["plano_cod"] + " · " + ct_a["plano_nome"].fillna(""), _rot(mes): ct_a["plano_cod"].map(lambda c: _m(ct_m.get(c)) if abs(float(ct_m.get(c, 0.0))) > 0.005 else "–"),
                                                    ACUM: ct_a["valor"].map(_m)}), hide_index=True, width="stretch")
-                    _cap("Conferência: o Realizado do orçamento (tabela de grupos) vem do relatório de Orçamento ADM importado; aqui é o valor efetivamente pago no Sienge (contas pagas). "
-                         "Podem diferir por competência × caixa, previsões e reapropriações.")
+                    _cap("Conferência: o Realizado do orçamento (tabela de grupos) vem do relatório de Orçamento ADM importado (referência/competência); abaixo é o valor " +
+                         ("efetivamente pago no Sienge (contas pagas). Podem diferir por competência × caixa, previsões e reapropriações." if base_a == BD.CAIXA else
+                          "emitido no Sienge (valor do título no mês da emissão), que deve ficar próximo do orçamento. Podem diferir por previsões e reapropriações."))
             _cap("Orçamento ADM consolidado das unidades. O orçado por unidade ainda não vem do banco (só o consolidado); o realizado por unidade vem das contas pagas.")
 
 
 # ------------------------------------------------------------------ 4) DESPESAS (acumulado do periodo, em cascata conta -> credor -> obra)
 if aba_desp.open or _TODAS:
     with aba_desp:
-        dfp, fora = _pagos_df()
+        base_d = _base_aba("Despesas")
+        _v_d = "Pago" if base_d == BD.CAIXA else "Emitido"                      # verbo das legendas: caixa = pago; referencia = emitido
+        dfp, fora = _pagos_df(base_d)
         if not len(dfp):
-            _info("Falta sincronizar as contas pagas do período.")
+            _info("Falta sincronizar as contas pagas do período." if base_d == BD.CAIXA else "Falta sincronizar os títulos emitidos do período.")
         else:
-            dd = _despesas(conn, mes_ini, mes, CARIMBO)
+            dd = _despesas(conn, mes_ini, mes, CARIMBO, base_d)
             ms = PER.meses_entre(mes_ini, mes)
             rots = [m[5:] + "/" + m[2:4] for m in ms]
             tot_ano = float(dd["valor"].sum()) if len(dd) else 0.0
@@ -987,9 +1034,9 @@ if aba_desp.open or _TODAS:
             top5 = sum(x[1] for x in contas_mes[:5])
             top12 = sum(x[1] for x in contas_ano[:12])
             k = st.columns(4)
-            k[0].metric(f"Pago em {_rot(mes)}", _mi(tot_mes), "exceto contas de pessoas", delta_color="off", border=True)
+            k[0].metric(f"{_v_d} em {_rot(mes)}", _mi(tot_mes), "exceto contas de pessoas", delta_color="off", border=True)
             k[1].metric(f"Top 5 de {_rot(mes)}", F.pct_br(top5 / tot_mes) if tot_mes else "–", "do total do mês", delta_color="off", border=True)
-            k[2].metric(f"Pago {ACUM}", _mi(tot_ano), "exceto contas de pessoas", delta_color="off", border=True)
+            k[2].metric(f"{_v_d} {ACUM}", _mi(tot_ano), "exceto contas de pessoas", delta_color="off", border=True)
             k[3].metric(f"Top 12 {ACUM}", F.pct_br(top12 / tot_ano) if tot_ano else "–", "do total do período", delta_color="off", border=True)
             e1, e2 = st.columns(2)
             with e1:
@@ -1003,13 +1050,13 @@ if aba_desp.open or _TODAS:
                 _md(f"**Top 5 de {_rot(mes)}**")
                 st.dataframe(pd.DataFrame({"Conta": [x[0] for x in contas_mes[:5]], _rot(mes): [_m(x[1]) for x in contas_mes[:5]],
                                            "% do mês": [F.pct_br(x[1] / tot_mes) if tot_mes else "–" for x in contas_mes[:5]]}), hide_index=True, width="stretch")
-                _cap("Contas pagas, exceto as contas de pessoas e encargos (aba Pessoas). Conforme as regras da aba “Regras” do Painel EnerMais.")
+                _cap(f"Contas {'pagas' if base_d == BD.CAIXA else 'emitidas'}, exceto as contas de pessoas e encargos (aba Pessoas). Conforme as regras da aba “Regras” do Painel EnerMais.")
             with e2:
                 _md(f"**Evolução mensal · {_txt_sel(conta or [], 'todas as contas')} (12 meses)**")
                 if mes_ini <= MES_INI_G:
                     dd12 = dd
                 else:                                                            # periodo curto: carrega os 12 meses so' para o grafico (cartoes e tabelas seguem o periodo)
-                    dd12 = _despesas(conn, MES_INI_G, mes, CARIMBO)
+                    dd12 = _despesas(conn, MES_INI_G, mes, CARIMBO, base_d)
                 vals = DD.serie_mensal(dd12, MESES_G, conta)
                 estilo.altair(_barras_mes([m[5:] + "/" + m[2:4] for m in MESES_G], vals, destaque=len(MESES_G) - 1), width="stretch")
                 cr = DD.agrupar(dd, "credor", mes, conta=conta)
@@ -1029,14 +1076,15 @@ if aba_desp.open or _TODAS:
                     st.dataframe(pd.DataFrame({"Obra / centro de custo": [x["chave"] for x in ob_["linhas"]], ACUM: [_m(x["acumulado"]) for x in ob_["linhas"]],
                                                "%": [F.pct_br(x["acumulado"] / ob_["total"]) if ob_["total"] else "–" for x in ob_["linhas"]],
                                                _rot(mes): [_m(x["mes"]) if abs(x["mes"]) > 0.005 else "–" for x in ob_["linhas"]]}), hide_index=True, width="stretch")
-                    _cap("Obra pelo centro de custo do lançamento no pagamento." + ("" if ob_["n"] <= len(ob_["linhas"]) else f" Top {len(ob_['linhas'])} de {ob_['n']}."))
+                    _cap(("Obra pelo centro de custo do lançamento no pagamento." if base_d == BD.CAIXA else "Obra pelo centro de custo do rateio do título.") + ("" if ob_["n"] <= len(ob_["linhas"]) else f" Top {len(ob_['linhas'])} de {ob_['n']}."))
 
 
 # ------------------------------------------------------------------ 5) PESSOAS
 if aba_pes.open or _TODAS:
     with aba_pes:
-        dfp, _fora = _pagos_df()
-        info = _colaboradores()
+        base_p = _base_aba("Pessoas")
+        dfp, _fora = _pagos_df(base_p)
+        info = _colaboradores(base_p)
         pj = info["pj"]
         clt = info["clt"]
         ms = PER.meses_entre(mes_ini, mes)
@@ -1064,10 +1112,10 @@ if aba_pes.open or _TODAS:
             if _hc:
                 rots_hc = [m[5:] + "/" + m[2:4] for m, _ in _hc]
                 estilo.altair(_barras_mes(rots_hc, [x for _, x in _hc], titulo_y="colaboradores", destaque=len(_hc) - 1, divisor=1, altura=220), width="stretch")
-            _cap(f"Colaboradores = CLT pelos recibos da folha + PJ pelos credores de “Salários PJ” pagos no mês" + (f" ({pj['obra']} em obras e {pj['adm']} na administração)." if pj["total"] else "."))
+            _cap(f"Colaboradores = CLT pelos recibos da folha + PJ pelos credores de “Salários PJ” {'pagos' if base_p == BD.CAIXA else 'com título emitido'} no mês" + (f" ({pj['obra']} em obras e {pj['adm']} na administração)." if pj["total"] else "."))
             # custos prioritarios com pessoas, por colaborador
             if len(dfp):
-                pdf_ = _pessoas_df(conn, mes_ini, mes, CARIMBO)
+                pdf_ = _pessoas_df(conn, mes_ini, mes, CARIMBO, base_p)
                 _md("**Custos prioritários com pessoas — por colaborador**")
                 tabp = DD.tabela_pessoas(pdf_, mes, n_mes, soma_antes, meses=ms)
                 todas = st.radio("Linhas", ["Top 5", "Todas"], horizontal=True, key="dir_pes_linhas", label_visibility="collapsed")
@@ -1086,7 +1134,7 @@ if aba_pes.open or _TODAS:
                     _cap(f"Contas de pessoal de obra (2.01.02) e ADM (2.02.01), sem salários CLT/PJ e premiações. Total do mês (todas as contas): {_m(tot_m)}. "
                                "R$/colab. acumulado = acumulado até o mês anterior ÷ soma do headcount mensal desses meses" + ("." if soma_antes else " (indisponível sem o headcount dos meses anteriores)."))
                     d1, d2 = st.columns(2)
-                    pdf_cr = _pessoas_sem_grupo(conn, mes_ini, mes, CARIMBO)       # contabilidade 21/10: credores do grupo ENERMAIS fora das listas
+                    pdf_cr = _pessoas_sem_grupo(conn, mes_ini, mes, CARIMBO, base_p)       # contabilidade 21/10: credores do grupo ENERMAIS fora das listas
                     with d1:
                         cr = DD.agrupar(pdf_cr, "credor", mes, conta=conta_p)
                         _md(f"**Principais credores · {_txt_sel(conta_p or [], 'todas as contas')}**")

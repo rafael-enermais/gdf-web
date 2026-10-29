@@ -1591,44 +1591,63 @@ def unidade_fora_adm(nome) -> bool:
     return any(all(p in s for p in ps) for ps in UNIDADES_FORA_ADM)
 
 
-def adm_linhas(conn, mes_ini: str, mes_fim: str, prefixos: list, sem_previsao: bool = False) -> list:
-    """Despesas PAGAS das unidades ADM (centros de custo com grupo 'ADM' no de-para) entre os meses 'AAAA-MM' (inclusive), por conta, credor e unidade:
-    soma(liquido da baixa x % do rateio). Mesmas regras da aba Despesas (contas excluidas, previsao). Sem de-para no banco devolve [].
+def _adm_fonte(base: str, sem_previsao: bool) -> tuple:
+    """(FROM+JOINs, coluna da data, coluna do valor, filtro) das despesas ADM na base pedida. 'CAIXA': baixas (liquido, data do pagamento). 'REF': titulos emitidos
+    (valor do documento, data da emissao), sem titulos desfeitos/AEJ (as mesmas regras da aba Resultado)."""
+    prev = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
+    if base == "REF":
+        return ("""pnl_titulo t
+                   JOIN pnl_v_rateio r ON r.lado=t.lado AND r.bill_id=t.bill_id AND r.installment_id=t.installment_id
+                   JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id AND g.grupo = 'ADM'""",
+                "t.data_emissao", "t.valor_original", f"t.lado='P' {prev} {_filtro_desfeitos(True)}")
+    return ("""pnl_v_baixa b
+              JOIN pnl_v_rateio r ON r.lado=b.lado AND r.bill_id=b.bill_id AND r.installment_id=b.installment_id
+              JOIN pnl_titulo t ON t.lado=b.lado AND t.bill_id=b.bill_id AND t.installment_id=b.installment_id
+              JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id AND g.grupo = 'ADM'""",
+            "b.data_pagamento", "b.liquido", f"b.lado='P' {prev}")
+
+
+def adm_linhas(conn, mes_ini: str, mes_fim: str, prefixos: list, sem_previsao: bool = False, base: str = "CAIXA") -> list:
+    """Despesas das unidades ADM (centros de custo com grupo 'ADM' no de-para) entre os meses 'AAAA-MM' (inclusive), por conta, credor e unidade, na base pedida:
+    'CAIXA' (padrao) = PAGO no mes do pagamento (liquido da baixa x % do rateio); 'REF' = EMITIDO no mes (valor do titulo x % do rateio). Mesmas regras da aba Despesas
+    (contas excluidas, previsao). Sem de-para no banco devolve [].
     Devolve [{'plano_cod','plano_nome','credor','unidade','valor'}]."""
     ini, fim = _periodo(mes_ini, mes_fim)
-    filtro = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
+    de, col_data, col_valor, filtro = _adm_fonte(base, sem_previsao)
     try:
         with conn.cursor() as cur:
             cur.execute(f"""SELECT r.plano_cod, max(r.plano_nome), COALESCE(NULLIF(trim(t.contraparte_nome),''),'(sem credor)'),
-                                   COALESCE(NULLIF(trim(g.empresa_nome),''),'(sem unidade)'), sum(b.liquido * r.percentual / 100.0)
-                            FROM pnl_v_baixa b
-                            JOIN pnl_v_rateio r ON r.lado=b.lado AND r.bill_id=b.bill_id AND r.installment_id=b.installment_id
-                            JOIN pnl_titulo t ON t.lado=b.lado AND t.bill_id=b.bill_id AND t.installment_id=b.installment_id
-                            JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id AND g.grupo = 'ADM'
-                            WHERE b.lado='P' AND b.data_pagamento >= %s::date AND b.data_pagamento < (%s::date + interval '1 month') {filtro}
+                                   COALESCE(NULLIF(trim(g.empresa_nome),''),'(sem unidade)'), sum({col_valor} * r.percentual / 100.0)
+                            FROM {de}
+                            WHERE {filtro} AND {col_data} >= %s::date AND {col_data} < (%s::date + interval '1 month')
                             GROUP BY r.plano_cod, 3, 4""", (ini, fim))
             linhas = cur.fetchall()
     except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         return []
     return [{"plano_cod": c, "plano_nome": n, "credor": cr, "unidade": u, "valor": round(float(v or 0), 2)}
             for c, n, cr, u, v in linhas if not _excluido(c, prefixos) and not unidade_fora_adm(u)]
 
 
-def adm_evolucao(conn, mes_ini: str, mes_fim: str, prefixos: list, sem_previsao: bool = False) -> list:
-    """Total pago nas unidades ADM mes a mes (mesmas regras de adm_linhas): [{'mes','valor'}], so' meses com movimento."""
+def adm_evolucao(conn, mes_ini: str, mes_fim: str, prefixos: list, sem_previsao: bool = False, base: str = "CAIXA") -> list:
+    """Total das unidades ADM mes a mes na base pedida (mesmas regras de adm_linhas): [{'mes','valor'}], so' meses com movimento."""
     ini, fim = _periodo(mes_ini, mes_fim)
-    filtro = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
+    de, col_data, col_valor, filtro = _adm_fonte(base, sem_previsao)
     try:
         with conn.cursor() as cur:
-            cur.execute(f"""SELECT to_char(b.data_pagamento,'YYYY-MM'), r.plano_cod, sum(b.liquido * r.percentual / 100.0), COALESCE(NULLIF(trim(g.empresa_nome),''),'(sem unidade)')
-                            FROM pnl_v_baixa b
-                            JOIN pnl_v_rateio r ON r.lado=b.lado AND r.bill_id=b.bill_id AND r.installment_id=b.installment_id
-                            JOIN pnl_titulo t ON t.lado=b.lado AND t.bill_id=b.bill_id AND t.installment_id=b.installment_id
-                            JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id AND g.grupo = 'ADM'
-                            WHERE b.lado='P' AND b.data_pagamento >= %s::date AND b.data_pagamento < (%s::date + interval '1 month') {filtro}
+            cur.execute(f"""SELECT to_char({col_data},'YYYY-MM'), r.plano_cod, sum({col_valor} * r.percentual / 100.0), COALESCE(NULLIF(trim(g.empresa_nome),''),'(sem unidade)')
+                            FROM {de}
+                            WHERE {filtro} AND {col_data} >= %s::date AND {col_data} < (%s::date + interval '1 month')
                             GROUP BY 1, 2, 4""", (ini, fim))
             linhas = cur.fetchall()
     except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         return []
     linhas = [l[:3] for l in linhas if not unidade_fora_adm(l[3])]
     por = {}

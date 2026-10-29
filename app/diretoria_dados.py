@@ -44,24 +44,40 @@ def _excluido(cod: str, prefixos) -> bool:
 
 
 # ------------------------------------------------------------------ banco
-def pagos_detalhe(conn, mes_ini: str, mes_fim: str, sem_previsao: bool = False) -> list:
-    """Pago (liquido da baixa x % do rateio) entre os meses 'AAAA-MM' (inclusive), por mes de pagamento, conta, credor, centro de custo e obra do de-para.
+def pagos_detalhe(conn, mes_ini: str, mes_fim: str, sem_previsao: bool = False, base: str = "CAIXA") -> list:
+    """Valores por mes, conta do plano, credor, centro de custo e obra do de-para, entre os meses 'AAAA-MM' (inclusive).
+    base 'CAIXA' (padrao): PAGO = liquido da baixa x % do rateio, no mes do PAGAMENTO. base 'REF': COMPETENCIA = valor do titulo x % do rateio, no mes da EMISSAO
+    (so' titulos a pagar, sem previsao se pedido e sem titulos desfeitos/AEJ, as mesmas regras da aba Resultado).
     Devolve [{'mes','plano_cod','plano_nome','credor','cc','obra','grupo','valor'}]. Sem o de-para de centros de custo, 'obra' e 'grupo' ficam vazios."""
     filtro = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
-    base = """SELECT to_char(b.data_pagamento,'YYYY-MM'), r.plano_cod, max(r.plano_nome),
-                     COALESCE(NULLIF(trim(t.contraparte_nome),''),'(sem credor)'),
-                     COALESCE(NULLIF(trim(r.centro_custo_nome),''),'(sem centro de custo)'),
-                     {obra}, {grupo}, sum(b.liquido * r.percentual / 100.0)
-              FROM pnl_v_baixa b
-              JOIN pnl_v_rateio r ON r.lado=b.lado AND r.bill_id=b.bill_id AND r.installment_id=b.installment_id
-              JOIN pnl_titulo t ON t.lado=b.lado AND t.bill_id=b.bill_id AND t.installment_id=b.installment_id
-              {juncao}
-              WHERE b.lado='P' AND b.data_pagamento >= %s::date AND b.data_pagamento < (%s::date + interval '1 month') {filtro}
-              GROUP BY 1, 2, 4, 5, 6, 7"""
+    if base == "REF":
+        import painel_db as P
+        base_sql = """SELECT to_char(t.data_emissao,'YYYY-MM'), r.plano_cod, max(r.plano_nome),
+                         COALESCE(NULLIF(trim(t.contraparte_nome),''),'(sem credor)'),
+                         COALESCE(NULLIF(trim(r.centro_custo_nome),''),'(sem centro de custo)'),
+                         {obra}, {grupo}, sum(t.valor_original * r.percentual / 100.0)
+                  FROM pnl_titulo t
+                  JOIN pnl_v_rateio r ON r.lado=t.lado AND r.bill_id=t.bill_id AND r.installment_id=t.installment_id
+                  {juncao}
+                  WHERE t.lado='P' AND t.data_emissao >= %s::date AND t.data_emissao < (%s::date + interval '1 month') {filtro}
+                  GROUP BY 1, 2, 4, 5, 6, 7"""
+        filtro = filtro + " " + P._filtro_desfeitos(True)
+    else:
+        base_sql = """SELECT to_char(b.data_pagamento,'YYYY-MM'), r.plano_cod, max(r.plano_nome),
+                         COALESCE(NULLIF(trim(t.contraparte_nome),''),'(sem credor)'),
+                         COALESCE(NULLIF(trim(r.centro_custo_nome),''),'(sem centro de custo)'),
+                         {obra}, {grupo}, sum(b.liquido * r.percentual / 100.0)
+                  FROM pnl_v_baixa b
+                  JOIN pnl_v_rateio r ON r.lado=b.lado AND r.bill_id=b.bill_id AND r.installment_id=b.installment_id
+                  JOIN pnl_titulo t ON t.lado=b.lado AND t.bill_id=b.bill_id AND t.installment_id=b.installment_id
+                  {juncao}
+                  WHERE b.lado='P' AND b.data_pagamento >= %s::date AND b.data_pagamento < (%s::date + interval '1 month') {filtro}
+                  GROUP BY 1, 2, 4, 5, 6, 7"""
     par = (f"{mes_ini}-01", f"{mes_fim}-01")
+    juncao_g = "LEFT JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id"
     tentativas = (
-        base.format(obra="COALESCE(g.codigo_obra,'')", grupo="COALESCE(g.grupo,'')", juncao="LEFT JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id", filtro=filtro),
-        base.format(obra="''", grupo="''", juncao="", filtro=filtro),
+        base_sql.format(obra="COALESCE(g.codigo_obra,'')", grupo="COALESCE(g.grupo,'')", juncao=juncao_g, filtro=filtro),
+        base_sql.format(obra="''", grupo="''", juncao="", filtro=filtro),
     )
     for sql in tentativas:
         try:
