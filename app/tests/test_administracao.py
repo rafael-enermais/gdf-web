@@ -253,7 +253,8 @@ def test_credor_grupo_demais_pj_e_independente_do_outros_dir(conn):
 
 def test_unidade_mega_aragoiania_fica_fora_do_cenario_adm_sem_acento_nem_caixa():
     assert P.unidade_fora_adm("MEGA ARAGOIÂNIA") and P.unidade_fora_adm("Mega Aragoiania Energia SPE Ltda") and P.unidade_fora_adm("mega  aragoiânia")
-    assert not P.unidade_fora_adm("EMPRESA A") and not P.unidade_fora_adm("MEGA SOLAR") and not P.unidade_fora_adm(None)
+    assert P.unidade_fora_adm("SETTE LOCACOES LTDA") and P.unidade_fora_adm("Sette Locações Ltda")                       # 29/10/2026: a Sette tambem sai
+    assert not P.unidade_fora_adm("EMPRESA A") and not P.unidade_fora_adm("MEGA SOLAR") and not P.unidade_fora_adm(None) and not P.unidade_fora_adm("ENERMAIS ENERGIA LTDA")
 
 
 @pytest.mark.pg

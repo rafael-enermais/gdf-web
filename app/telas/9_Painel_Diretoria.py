@@ -926,7 +926,7 @@ if aba_adm.open or _TODAS:
                     un = un.sort_values(["ano", "mes"], ascending=False).reset_index(drop=True)
                     tot_u = float(un["ano"].sum())
                     _cap(f"Pago nas unidades da administração (contas pagas, inclui pessoal). 1) Marque uma ou mais unidades (ou deixe sem marcação para ver todas). 2) Marque um ou mais credores para ver as contas deles. "
-                         f"Mês = {_rot(mes)}; período = {PER_ROT}. A unidade Mega Aragoiânia não entra no cenário da Administração.")
+                         f"Mês = {_rot(mes)}; período = {PER_ROT}. As unidades Mega Aragoiânia e Sette Locações não entram no cenário da Administração.")
                     un_m = pd.DataFrame({"Unidade": un["unidade"], _rot(mes): un["mes"].map(lambda x: _m(x) if abs(x) > 0.005 else "–"), ACUM: un["ano"].map(_m),
                                          "% do período": un["ano"].map(lambda x: F.pct_br(x / tot_u) if tot_u else "–")})
                     ev_u = st.dataframe(un_m, hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row", key=_chave("dir_adm_un", filtros_cod, contas_sel))

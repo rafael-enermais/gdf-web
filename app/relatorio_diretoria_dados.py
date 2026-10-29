@@ -864,7 +864,7 @@ def b_adm_unidades(B: Base) -> list:
     rows = [("norm", [u[:160], _z0(float(un_mes.get(u, 0.0))), _n0(float(un_ano.get(u, 0.0))), _pc(float(un_ano.get(u, 0.0)) / tot) if tot else "–"]) for u in nomes]
     rows.append(("tot", ["Total", _n0(float(un_mes.sum())), _n0(tot), "100,0%"]))
     return [tab(["Unidade", _rot(B.mes), B.acum, "% do período"], rows, [3.4, 1.4, 1.6, 1.1]),
-            nota(f"Pago nas unidades da administração (contas pagas, inclui pessoal), sem a unidade Mega Aragoiânia. Mês = {_rot(B.mes)}; período = {B.per_rot}.")]
+            nota(f"Pago nas unidades da administração (contas pagas, inclui pessoal), sem as unidades Mega Aragoiânia e Sette Locações. Mês = {_rot(B.mes)}; período = {B.per_rot}.")]
 
 
 def b_adm_credores(B: Base) -> list:

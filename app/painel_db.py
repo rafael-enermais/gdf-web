@@ -1582,7 +1582,7 @@ def _periodo(mes_ini: str, mes_fim: str) -> tuple:
     return f"{mes_ini}-01", f"{mes_fim}-01"
 
 
-UNIDADES_FORA_ADM = (("mega", "aragoi"),)        # 28/10/2026 (pedido da Suellen): a unidade Mega Aragoiania sai do cenario da Administracao (todas as palavras no nome da unidade)
+UNIDADES_FORA_ADM = (("mega", "aragoi"), ("sette",))        # pedido da Suellen: Mega Aragoiania (28/10/2026) e Sette Locacoes (29/10/2026) saem do cenario da Administracao (todas as palavras no nome da unidade)
 
 
 def unidade_fora_adm(nome) -> bool:
