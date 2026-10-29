@@ -491,7 +491,8 @@ def _pagos_df(base: str = BD.CAIXA):
 def _colaboradores(base: str = BD.CAIXA):
     """Colaboradores do mes: CLT (recibos da folha) + PJ (contas 'Salarios PJ', pagas ou emitidas conforme a base). -> dict com total, obra, adm, pj, por_obra_pj; None onde falta fonte."""
     pj = _pj_mes(conn, mes_ini, mes, CARIMBO, base)
-    clt = pes["folha"]["total"]["colab"] if pes else None
+    pes_b = pes if base == BD.REF else (_folha_base(conn, mes, CARIMBO, BD.CAIXA) or pes)       # headcount nao muda com a base: sem recibo de Caixa, usa o de Referencia
+    clt = pes_b["folha"]["total"]["colab"] if pes_b else None
     return {"pj": pj, "clt": clt}
 
 
@@ -1179,13 +1180,18 @@ if aba_pes.open or _TODAS:
         if not pes and not len(dfp) and not hc_por_mes:
             _info("Faltam os recibos da folha e as contas pagas deste mês.")
         else:
-            rec_ref = rec
+            rec_ref, cus_k, bdi_k = rec, cus, bdi                                   # Referencia: o mesmo Resultado da aba Resultado
+            if base_p == BD.CAIXA:                                                  # Caixa: recebido e pago do mes (os cartoes seguem a base DESTA aba)
+                _tc = _termos_meses(conn, (mes,), CARIMBO, BD.CAIXA)[0]
+                rec_ref, cus_k, bdi_k = (_tc["rec"], abs(_tc["cus"]), _tc["bdi"]) if _tc else (None, None, None)
             k = st.columns(4)
             if n_mes:
                 k[0].metric(f"Colaboradores {_rot(mes)}", f"{int(n_mes):,}".replace(",", "."), (f"{clt} CLT + {pj['total']} PJ" if clt is not None else None), delta_color="off", border=True)
-                k[1].metric("Receita por colaborador", _mi(rec_ref / n_mes), border=True)
-                k[2].metric("Custo por colaborador", _mi(cus / n_mes), border=True)
-                k[3].metric("BDI por colaborador", _mi(bdi / n_mes), border=True)
+                if rec_ref is not None:
+                    k[1].metric("Receita por colaborador", _mi(rec_ref / n_mes), border=True)
+                    k[2].metric("Custo por colaborador", _mi(cus_k / n_mes), border=True)
+                    k[3].metric("BDI por colaborador", _mi(bdi_k / n_mes), border=True)
+                    _cap(f"Receita, custos e BDI do mês na base {'Caixa (recebido e pago nas obras)' if base_p == BD.CAIXA else 'Referência (a mesma da aba Resultado)'} ÷ colaboradores do mês.")
             _md("**Colaboradores ativos**")
             _hc = [(m, hc_por_mes.get(m, n_mes if m == mes else None)) for m in MESES_G]       # grafico: 12 meses
             _hc = [(m, x) for m, x in _hc if x is not None]
