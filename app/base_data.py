@@ -56,3 +56,16 @@ def legenda(base: str, fixada: bool = False) -> str:
     else:
         t = "Base: **Caixa** — conta o mês em que o pagamento **realmente saiu** (data da baixa no Sienge), pelo valor pago. Título ainda em aberto não entra."
     return t + (" Base definida pela contabilidade para este painel." if fixada else "")
+
+
+# ---------------------------------------------------------------- o que conta como DINHEIRO REAL na base Caixa (decisao do Rafael, 29/10/2026)
+# Pagar: 1 Pagamento, 10 Adiantamento, 1002 Movimento bancario (pagamento). Fora: 3 Cancelamento, 5 Substituicao, 8 Abatimento de adiantamento (troca de documento, nao e'
+# dinheiro) e 1030 transferencia entre empresas. Receber: 2 Recebimento (fora: 3 Cancelamento, 4 Reparcelamento, 5 Substituicao, 7 Distrato). Mesma definicao dos Indicadores.
+TIPOS_CAIXA = {"P": (1, 10, 1002), "R": (2,)}
+
+
+def sql_caixa(alias: str = "b") -> str:
+    """Trecho SQL (sem parametros; so' inteiros fixos) que deixa so' as baixas que sao dinheiro de verdade, para o alias da tabela de baixas."""
+    p = ",".join(str(int(x)) for x in TIPOS_CAIXA["P"])
+    r = ",".join(str(int(x)) for x in TIPOS_CAIXA["R"])
+    return f"(({alias}.lado='P' AND {alias}.tipo_oper_id IN ({p})) OR ({alias}.lado='R' AND {alias}.tipo_oper_id IN ({r})))"

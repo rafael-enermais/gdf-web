@@ -906,11 +906,13 @@ def nomes_obras_depara(conn) -> dict:
     return out
 
 
-def obras_da_api(conn, mes: str, api: dict | None = None, nomes: dict | None = None, proprios="?") -> dict | None:
-    """Mesma tabela da aba Obras, mas calculada pela API do Sienge (titulos emitidos no mes, regras padrao: sem previsao, sem NF desfeita, sem titulo
-    desfeito, sem centros ADM). Obras sem codigo proprio no de-para ('sem de-para' inclusive) entram em 'Demais obras'. None se nao ha dado no mes."""
+def obras_da_api(conn, mes: str, api: dict | None = None, nomes: dict | None = None, proprios="?", base: str = "REF") -> dict | None:
+    """Mesma tabela da aba Obras, mas calculada pela API do Sienge: base 'REF' = titulos emitidos no mes (regras padrao: sem previsao, sem NF desfeita, sem titulo
+    desfeito, sem centros ADM); base 'CAIXA' = baixas de dinheiro real do mes (recebido e pago). Obras sem codigo proprio no de-para ('sem de-para' inclusive) entram
+    em 'Demais obras'. None se nao ha dado no mes."""
     if api is None:
-        api = resultado_por_obra_api(conn, mes, sem_previsao=True, sem_distrato=True, sem_desfeitos=True)
+        api = (resultado_por_obra_caixa_meses(conn, [mes]).get(mes, {}) if base == "CAIXA"
+               else resultado_por_obra_api(conn, mes, sem_previsao=True, sem_distrato=True, sem_desfeitos=True))
     if not api:
         return None
     if nomes is None:
@@ -918,7 +920,7 @@ def obras_da_api(conn, mes: str, api: dict | None = None, nomes: dict | None = N
     if proprios == "?":
         proprios = _codigos_obra_proprios(conn)
     por_obra = {cod: {"nome": nomes.get(cod, ""), "linhas": {"01": v.get("01", 0.0), "04": v.get("04", 0.0), "CP": v.get("CP", v.get("04", 0.0))}} for cod, v in api.items()}
-    ob = _montar_obras(por_obra, proprios, None, "API do Sienge (titulos emitidos no mes)", "API")
+    ob = _montar_obras(por_obra, proprios, None, "API do Sienge (baixas recebidas e pagas no mes)" if base == "CAIXA" else "API do Sienge (titulos emitidos no mes)", "API")
     return ob if ob["linhas"] else None
 
 
@@ -935,15 +937,24 @@ def fonte_obras(conn, mes: str) -> str | None:
     return "PDF" if imp and ini and mes < ini else "API"
 
 
-def obras_do_mes(conn, mes: str) -> dict | None:
-    """Tabela de Obras do mes pela fonte de `fonte_obras` (PDF oficial ou API do Sienge). None se nao ha dado."""
+def obras_do_mes(conn, mes: str, base: str = "REF") -> dict | None:
+    """Tabela de Obras do mes. Base 'REF' (padrao): pela fonte de `fonte_obras` (PDF oficial ou API do Sienge). Base 'CAIXA': sempre pela API (baixas de dinheiro real do mes).
+    None se nao ha dado."""
+    if base == "CAIXA":
+        return obras_da_api(conn, mes, base="CAIXA")
     return obras_do_dre(conn, mes) if fonte_obras(conn, mes) == "PDF" else obras_da_api(conn, mes)
 
 
-def obras_dos_meses(conn, meses: list) -> dict:
+def obras_dos_meses(conn, meses: list, base: str = "REF") -> dict:
     """{mes: tabela de Obras (ou None)} para varios meses; o mesmo resultado de chamar `obras_do_mes` mes a mes, mas os meses da API saem de 2 consultas so' (ver
-    `resultado_por_obra_api_meses`). Meses cuja fonte e' o PDF seguem o caminho de sempre."""
+    `resultado_por_obra_api_meses`). Meses cuja fonte e' o PDF seguem o caminho de sempre. Base 'CAIXA': todos os meses pela API de baixas (1 consulta so')."""
     meses = list(dict.fromkeys(meses or []))
+    if base == "CAIXA":
+        if not meses:
+            return {}
+        em_lote = resultado_por_obra_caixa_meses(conn, meses)
+        nomes, proprios = nomes_obras_depara(conn), _codigos_obra_proprios(conn)
+        return {m: obras_da_api(conn, m, api=em_lote.get(m, {}), nomes=nomes, proprios=proprios, base="CAIXA") for m in meses}
     fontes = {m: fonte_obras(conn, m) for m in meses}
     api_ms = [m for m in meses if fontes[m] != "PDF"]
     em_lote = resultado_por_obra_api_meses(conn, api_ms, sem_previsao=True, sem_distrato=True, sem_desfeitos=True) if api_ms else {}
@@ -1093,10 +1104,12 @@ def dre_resolvido(conn, mes: str) -> dict | None:
     return {"dre": dre, "fonte": "api", "origem": "API do Sienge (padrao, a conferir)", "conf": None, "imp": None}
 
 
-def termos_do_mes(conn, mes: str) -> dict | None:
+def termos_do_mes(conn, mes: str, base: str = "REF") -> dict | None:
     """Os cinco termos do Resultado de UM mes: receita, custos diretos e BDI (= receita - custos) do DRE do mes (`dre_resolvido`: confirmado > API; PDF so' antes da API),
     administracao (orcamento ADM: realizado e orcado) e a projecao (receita e BDI previstos). A tabela de obras (projecao x realizado) vem da mesma fonte
     (`obras_do_mes`). None se o mes nao tem dado. Valores None quando falta a fonte (sem orcamento, sem projecao). 'fonte' diz de onde vieram os numeros."""
+    if base == "CAIXA":
+        return _termos_do_mes_caixa(conn, mes)
     r = dre_resolvido(conn, mes)
     if not r:
         return None
@@ -1120,6 +1133,21 @@ def termos_do_mes(conn, mes: str) -> dict | None:
             if abs(px["receita_proj_total"]) > 0.005:
                 out["rec_p"], out["bdi_p"] = px["receita_proj_total"], px["total"]["bdi_proj"]
     return out
+
+
+def _termos_do_mes_caixa(conn, mes: str) -> dict | None:
+    """Os termos do Resultado em CAIXA: receita RECEBIDA, custos PAGOS nas obras (mesma tabela da aba Obras em caixa), BDI de caixa e administracao PAGA nas unidades ADM
+    (sem Mega/Sette, mesmas regras da aba Administracao). Orcado e projecao sao de referencia: ficam n/d (None). None se o mes nao tem recebimento nem pagamento de obra."""
+    ob = obras_do_mes(conn, mes, "CAIXA")
+    if not ob:
+        return None
+    rec, cus = round(ob["total"]["receita"], 2), round(abs(ob["total"]["custo"]), 2)
+    adm_real = None
+    if centro_grupo_instalado(conn):
+        regras = regras_ativas(conn, "DESPESAS")
+        fora_adm = [p for p in prefixos_excluidos(regras) if p != "2.02.01"]
+        adm_real = round(sum(l["valor"] for l in adm_linhas(conn, mes, mes, fora_adm, sem_previsao=exclui_previsao(regras), base="CAIXA")), 2)
+    return {"mes": mes, "rec": rec, "cus": cus, "bdi": round(rec - cus, 2), "fonte": "caixa", "adm_real": adm_real, "adm_orc": None, "rec_p": None, "bdi_p": None}
 
 
 def somar_termos(lista: list) -> dict | None:
@@ -1247,6 +1275,141 @@ def resultado_por_obra_api_meses(conn, meses: list, sem_previsao: bool = False, 
             dre = dre_do_mes([{"plano_cod": k, "plano_nome": "", "valor": x} for k, x in contas.items()])
             saida[m][cod_obra] = {**dre["valores"], "CP": round(sum(x for k, x in contas.items() if k in CON.MAPA), 2)}
     return saida
+
+
+# ---------------------------------------------------------------- Base CAIXA (v0.55.0): o que realmente foi pago/recebido no mes (data da baixa), so' dinheiro real
+def _caixa_meses_sql(juncao: str = "", extra: str = "") -> str:
+    """Corpo comum das consultas de caixa: baixas de dinheiro real (ver base_data.TIPOS_CAIXA) x rateio, com o titulo para o filtro de previsao."""
+    import base_data as BD
+    return f"""FROM pnl_v_baixa b
+               JOIN pnl_titulo t ON t.lado=b.lado AND t.bill_id=b.bill_id AND t.installment_id=b.installment_id
+               JOIN pnl_v_rateio r ON r.lado=b.lado AND r.bill_id=b.bill_id AND r.installment_id=b.installment_id
+               {juncao}
+               WHERE {BD.sql_caixa('b')} AND b.data_pagamento >= %s::date AND b.data_pagamento < (%s::date + interval '1 month') {extra}"""
+
+
+def resultado_por_conta_caixa(conn, mes: str, sem_previsao: bool = False, so_obras: bool = False) -> list:
+    """Como `resultado_por_conta`, mas em CAIXA: soma(liquido da baixa x % do rateio) das baixas de DINHEIRO REAL feitas no mes (recebimentos +, pagamentos -, pelo
+    sinal do DRE). Sem filtros de distrato/titulo desfeito (esses documentos nao movimentam caixa). `so_obras` tira os centros ADM. Devolve [{'plano_cod','plano_nome','valor'}]."""
+    ini = f"{mes}-01"
+    extra = ("AND COALESCE(upper(t.previsao),'') <> 'S' " if sem_previsao else "") + ("AND COALESCE(g.grupo,'') <> 'ADM'" if so_obras else "")
+    juncao = "LEFT JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id" if so_obras else ""
+    with conn.cursor() as cur:
+        cur.execute(f"""SELECT b.lado, r.plano_cod, max(r.plano_nome), sum(b.liquido * r.percentual / 100.0)
+                        {_caixa_meses_sql(juncao, extra)} GROUP BY b.lado, r.plano_cod""", (ini, ini))
+        linhas = cur.fetchall()
+    por = {}
+    for lado, cod, nome, v in linhas:
+        a = por.setdefault(cod, {"plano_cod": cod, "plano_nome": nome, "valor": 0.0})
+        a["valor"] = round(a["valor"] + _sinal_resultado(lado, cod) * float(v or 0), 2)
+    return sorted(por.values(), key=lambda d: d["plano_cod"])
+
+
+def resultado_por_obra_caixa_meses(conn, meses: list, sem_previsao: bool = True) -> dict:
+    """Como `resultado_por_obra_api_meses`, mas em CAIXA: {mes: {codigo_obra: {linha_dre: valor}}} pelas baixas de dinheiro real de cada mes (sem centros ADM). 1 consulta
+    para o intervalo todo. Mes sem movimento fica fora."""
+    meses = sorted(set(meses or []))
+    if not meses:
+        return {}
+    extra = ("AND COALESCE(upper(t.previsao),'') <> 'S' " if sem_previsao else "") + "AND COALESCE(g.grupo,'') <> 'ADM'"
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""SELECT COALESCE(g.codigo_obra,'sem de-para'), to_char(b.data_pagamento,'YYYY-MM'), b.lado, r.plano_cod, sum(b.liquido * r.percentual / 100.0)
+                            {_caixa_meses_sql("LEFT JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id", extra)} GROUP BY 1, 2, b.lado, r.plano_cod""",
+                        (f"{meses[0]}-01", f"{meses[-1]}-01"))
+            linhas = cur.fetchall()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return {}
+    quer = set(meses)
+    por_mes: dict = {}
+    for cod_obra, m, lado, plano, v in linhas:
+        if m in quer:
+            c = por_mes.setdefault(m, {}).setdefault(cod_obra, {})
+            c[plano] = round(c.get(plano, 0.0) + _sinal_resultado(lado, plano) * float(v or 0), 2)
+    import custos_obra_nivel as CON
+    saida = {}
+    for m, por_obra in por_mes.items():
+        saida[m] = {}
+        for cod_obra, contas in por_obra.items():
+            dre = dre_do_mes([{"plano_cod": k, "plano_nome": "", "valor": x} for k, x in contas.items()])
+            saida[m][cod_obra] = {**dre["valores"], "CP": round(sum(x for k, x in contas.items() if k in CON.MAPA), 2)}
+    return saida
+
+
+def caixa_cobertura_ini(conn) -> str | None:
+    """Primeiro mes ('AAAA-MM') com a carga de PAGAMENTOS/RECEBIMENTOS funcionando (antes dele a base so' tem residuos de janelas de outros meses). Guardado 2 min."""
+    def _q():
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT to_char(min(mes), 'YYYY-MM') FROM pnl_sync WHERE lado='R' AND tipo_data='P' AND status <> 'ERRO'")
+                return cur.fetchone()[0]
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return None
+    return _memo(("cob_caixa", id(conn)), 120, _q)
+
+
+def receita_mensal_caixa(conn, mes_atual: str | None = None) -> list:
+    """Receita RECEBIDA por mes (base Caixa): linha 01 do DRE montada com as baixas de recebimento do mes. Meses a partir da cobertura da carga de recebimentos; o mes em
+    andamento ('mes_atual') fica de fora. Devolve [{'mes','receita','fonte','var'}] em ordem (var = variacao sobre o mes anterior quando consecutivos e anterior > 0)."""
+    ini = caixa_cobertura_ini(conn)
+    if not ini:
+        return []
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT to_char(b.data_pagamento,'YYYY-MM'), r.plano_cod, sum(b.liquido * r.percentual / 100.0)
+                           FROM pnl_v_baixa b JOIN pnl_titulo t ON t.lado=b.lado AND t.bill_id=b.bill_id AND t.installment_id=b.installment_id
+                           JOIN pnl_v_rateio r ON r.lado=b.lado AND r.bill_id=b.bill_id AND r.installment_id=b.installment_id
+                           WHERE b.lado='R' AND b.tipo_oper_id = ANY(%s) AND COALESCE(upper(t.previsao),'') <> 'S' AND b.data_pagamento >= %s::date
+                           GROUP BY 1, 2""", (list(__import__("base_data").TIPOS_CAIXA["R"]), f"{ini}-01"))
+            linhas = cur.fetchall()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return []
+    por: dict = {}
+    for m, cod, v in linhas:
+        por.setdefault(m, []).append({"plano_cod": cod, "plano_nome": "", "valor": float(v or 0)})
+    out = []
+    for m in sorted(por):
+        if mes_atual and m == mes_atual:
+            continue
+        rec = round(dre_do_mes(por[m])["valores"]["01"], 2)
+        if abs(rec) > 0.004:
+            out.append({"mes": m, "receita": rec, "fonte": "Recebido (caixa)", "var": None})
+    for ant, atu in zip(out, out[1:]):
+        ya, ma = (int(x) for x in ant["mes"].split("-"))
+        yb, mb = (int(x) for x in atu["mes"].split("-"))
+        if (yb * 12 + mb) - (ya * 12 + ma) == 1 and ant["receita"] > 0:
+            atu["var"] = round(atu["receita"] / ant["receita"] - 1, 4)
+    return out
+
+
+def custos_obra_linhas_caixa(conn, mes_ini: str, mes_fim: str, sem_previsao: bool = True) -> list:
+    """Como `custos_obra_linhas`, em CAIXA: [(codigo_obra, 'AAAA-MM', plano_cod, resultado)] do que foi PAGO de mes_ini ate mes_fim (so' as contas das 7 categorias, sem centros ADM)."""
+    import custos_obra_nivel as CON
+    extra = ("AND COALESCE(upper(t.previsao),'') <> 'S' " if sem_previsao else "") + "AND COALESCE(g.grupo,'') <> 'ADM' AND r.plano_cod = ANY(%s)"
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""SELECT COALESCE(g.codigo_obra,'sem de-para'), to_char(b.data_pagamento,'YYYY-MM'), b.lado, r.plano_cod, sum(b.liquido * r.percentual / 100.0)
+                            {_caixa_meses_sql("LEFT JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id", extra)} GROUP BY 1, 2, b.lado, r.plano_cod""",
+                        (f"{mes_ini}-01", f"{mes_fim}-01", list(CON.CONTAS)))
+            return [(o, m, plano, round(_sinal_resultado(lado, plano) * float(v or 0), 2)) for o, m, lado, plano, v in cur.fetchall()]
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return []
 
 
 def custos_obra_linhas(conn, mes_ini: str, mes_fim: str, sem_previsao: bool = True, sem_desfeitos: bool = True) -> list:
@@ -1604,7 +1767,7 @@ def _adm_fonte(base: str, sem_previsao: bool) -> tuple:
               JOIN pnl_v_rateio r ON r.lado=b.lado AND r.bill_id=b.bill_id AND r.installment_id=b.installment_id
               JOIN pnl_titulo t ON t.lado=b.lado AND t.bill_id=b.bill_id AND t.installment_id=b.installment_id
               JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id AND g.grupo = 'ADM'""",
-            "b.data_pagamento", "b.liquido", f"b.lado='P' {prev}")
+            "b.data_pagamento", "b.liquido", f"b.lado='P' AND {__import__('base_data').sql_caixa('b')} {prev}")
 
 
 def adm_linhas(conn, mes_ini: str, mes_fim: str, prefixos: list, sem_previsao: bool = False, base: str = "CAIXA") -> list:
@@ -1713,12 +1876,14 @@ def adm_resumo(linhas: list, chaves_outros: list | None = None, nomes: dict | No
 
 
 # ---------------------------------------------------------------- Receita mes a mes (aba Pessoas: linha "Receita: var. % s/ mes anterior")
-def receita_mensal(conn, mes_atual: str | None = None, sem_distrato: bool = True) -> list:
+def receita_mensal(conn, mes_atual: str | None = None, sem_distrato: bool = True, base: str = "REF") -> list:
     """Receita bruta por mes: 1) DRE CONFIRMADO do mes (linha 01.01); 2) API (titulos emitidos no mes, sem previsao e sem NF desfeita), o padrao; o DRE oficial
     importado (PDF) so' vale em meses anteriores a rotina de emissao da API. O mes em andamento ('mes_atual') fica de fora (incompleto).
     Meses so' com API (sem DRE importado/confirmado) ANTES da primeira sincronizacao de emissao ficam de fora: la a base tem so' residuos de titulos
     antigos (receita parcial, variacao % absurda). Devolve [{'mes','receita','fonte','var'}] em ordem; 'var' = variacao sobre o mes anterior (fracao)
     so' quando os dois meses vieram da lista e o anterior e' > 0."""
+    if base == "CAIXA":
+        return receita_mensal_caixa(conn, mes_atual)
     meses = set(meses_com_emissao(conn)) | set(meses_com_dre(conn)) | set(meses_confirmados(conn))
     if mes_atual:
         meses.discard(mes_atual)

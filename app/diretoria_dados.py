@@ -46,7 +46,7 @@ def _excluido(cod: str, prefixos) -> bool:
 # ------------------------------------------------------------------ banco
 def pagos_detalhe(conn, mes_ini: str, mes_fim: str, sem_previsao: bool = False, base: str = "CAIXA") -> list:
     """Valores por mes, conta do plano, credor, centro de custo e obra do de-para, entre os meses 'AAAA-MM' (inclusive).
-    base 'CAIXA' (padrao): PAGO = liquido da baixa x % do rateio, no mes do PAGAMENTO. base 'REF': COMPETENCIA = valor do titulo x % do rateio, no mes da EMISSAO
+    base 'CAIXA' (padrao): PAGO = liquido da baixa x % do rateio, no mes do PAGAMENTO, so' dinheiro real (pagamento, adiantamento, mov. bancario; sem substituicao/cancelamento/abatimento). base 'REF': COMPETENCIA = valor do titulo x % do rateio, no mes da EMISSAO
     (so' titulos a pagar, sem previsao se pedido e sem titulos desfeitos/AEJ, as mesmas regras da aba Resultado).
     Devolve [{'mes','plano_cod','plano_nome','credor','cc','obra','grupo','valor'}]. Sem o de-para de centros de custo, 'obra' e 'grupo' ficam vazios."""
     filtro = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
@@ -71,8 +71,10 @@ def pagos_detalhe(conn, mes_ini: str, mes_fim: str, sem_previsao: bool = False, 
                   JOIN pnl_v_rateio r ON r.lado=b.lado AND r.bill_id=b.bill_id AND r.installment_id=b.installment_id
                   JOIN pnl_titulo t ON t.lado=b.lado AND t.bill_id=b.bill_id AND t.installment_id=b.installment_id
                   {juncao}
-                  WHERE b.lado='P' AND b.data_pagamento >= %s::date AND b.data_pagamento < (%s::date + interval '1 month') {filtro}
+                  WHERE b.lado='P' AND b.data_pagamento >= %s::date AND b.data_pagamento < (%s::date + interval '1 month') AND {caixa} {filtro}
                   GROUP BY 1, 2, 4, 5, 6, 7"""
+    import base_data as _BD
+    base_sql = base_sql.replace("{caixa}", _BD.sql_caixa("b"))
     par = (f"{mes_ini}-01", f"{mes_fim}-01")
     juncao_g = "LEFT JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id"
     tentativas = (

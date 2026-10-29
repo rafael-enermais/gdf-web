@@ -39,11 +39,11 @@ def test_legenda_diz_a_base_em_uso():
 
 
 # ------------------------------------------------------------------ banco
-def _t(bill, credor, valor, emissao, pago, data_pag, plano, cc, previsao="N"):
-    """Titulo com emissao e (opcional) pagamento em datas diferentes: `pago` = valor realmente baixado (None = em aberto)."""
+def _t(bill, credor, valor, emissao, pago, data_pag, plano, cc, previsao="N", extras=()):
+    """Titulo com emissao e (opcional) pagamento em datas diferentes: `pago` = valor realmente baixado (None = em aberto). `extras` = baixas adicionais (ex.: substituicao)."""
     reg = {"billId": bill, "installmentId": 1, "companyId": 5, "companyName": "CONSTRUTORA", "originId": "CP", "documentIdentificationId": "NFS ",
            "forecastDocument": previsao, "creditorId": bill, "creditorName": credor, "issueDate": emissao, "dueDate": emissao, "originalAmount": valor,
-           "payments": [_pg(1, data_pag, pago)] if pago else [], "paymentsCategories": [_c(plano, "Conta " + plano, 100, cc, f"CC {cc}")]}
+           "payments": ([_pg(1, data_pag, pago)] if pago else []) + list(extras), "paymentsCategories": [_c(plano, "Conta " + plano, 100, cc, f"CC {cc}")]}
     return reg
 
 
@@ -53,6 +53,8 @@ def _monta(conn):
         _t(22, "FORN EMITIDO SET ABERTO", 400.0, "2026-09-05", None, None, "2030102", 1),                      # competencia set, ainda nao pago
         _t(23, "FORN EMITIDO SET PAGO SET", 200.0, "2026-09-06", 200.0, "2026-09-25", "2030104", 2),           # competencia e caixa em set
         _t(24, "FORN PREVISAO", 150.0, "2026-09-20", None, None, "2030102", 1, previsao="S"),
+        # 400 emitido em set; pago 100 em dinheiro + 300 de SUBSTITUICAO (troca de documento: nao e' caixa)
+        _t(25, "FORN MISTO", 400.0, "2026-09-02", 100.0, "2026-09-15", "2030102", 1, extras=[_pg(2, "2026-09-16", 300.0, 5, "Substituição")]),
     ]
     sid = P.criar_sync(conn, "2026-08", "P", "P", "teste@x")
     cont = P.gravar_normalizado(conn, sid, S.normalizar_titulos("P", regs))
@@ -71,11 +73,11 @@ def test_despesas_nas_duas_bases(conn):
     _monta(conn)
     caixa = DD.pagos_detalhe(conn, "2026-08", "2026-09", sem_previsao=True, base=BD.CAIXA)
     ref = DD.pagos_detalhe(conn, "2026-08", "2026-09", sem_previsao=True, base=BD.REF)
-    assert (_por(caixa, "2026-08"), _por(caixa, "2026-09")) == (0.0, 1200.0)         # caixa: so' o que foi pago (1000 em set + 200 em set)
-    assert (_por(ref, "2026-08"), _por(ref, "2026-09")) == (1000.0, 600.0)           # referencia: emitido (1000 em ago; 400 aberto + 200 em set)
+    assert (_por(caixa, "2026-08"), _por(caixa, "2026-09")) == (0.0, 1300.0)         # caixa: so' dinheiro real (1000 + 200 + 100; os 300 de substituicao ficam fora)
+    assert (_por(ref, "2026-08"), _por(ref, "2026-09")) == (1000.0, 1000.0)          # referencia: emitido (1000 em ago; em set 400 aberto + 200 + 400 do titulo misto)
     assert DD.pagos_detalhe(conn, "2026-08", "2026-09", sem_previsao=True) == caixa  # sem `base`: continua CAIXA (nada muda para quem nao escolhe)
     sem_filtro = DD.pagos_detalhe(conn, "2026-09", "2026-09", sem_previsao=False, base=BD.REF)
-    assert _por(sem_filtro, "2026-09") == 750.0                                      # sem a regra de previsao entra o documento de previsao (150)
+    assert _por(sem_filtro, "2026-09") == 1150.0                                     # sem a regra de previsao entra o documento de previsao (150)
     assert all(l["credor"] and l["plano_cod"] for l in ref)
 
 
@@ -84,14 +86,15 @@ def test_administracao_nas_duas_bases(conn):
     _monta(conn)
     ev_c = {x["mes"]: x["valor"] for x in P.adm_evolucao(conn, "2026-08", "2026-09", [], sem_previsao=True)}
     ev_r = {x["mes"]: x["valor"] for x in P.adm_evolucao(conn, "2026-08", "2026-09", [], sem_previsao=True, base=BD.REF)}
-    assert ev_c == {"2026-09": 1200.0}
-    assert ev_r == {"2026-08": 1000.0, "2026-09": 600.0}
+    assert ev_c == {"2026-09": 1300.0}
+    assert ev_r == {"2026-08": 1000.0, "2026-09": 1000.0}
     lin_r = P.adm_linhas(conn, "2026-09", "2026-09", [], sem_previsao=True, base=BD.REF)
-    assert round(sum(l["valor"] for l in lin_r), 2) == 600.0 and {l["credor"] for l in lin_r} == {"FORN EMITIDO SET ABERTO", "FORN EMITIDO SET PAGO SET"}
+    assert round(sum(l["valor"] for l in lin_r), 2) == 1000.0 and {l["credor"] for l in lin_r} == {"FORN EMITIDO SET ABERTO", "FORN EMITIDO SET PAGO SET", "FORN MISTO"}
     lin_c = P.adm_linhas(conn, "2026-09", "2026-09", [], sem_previsao=True)
-    assert {l["credor"] for l in lin_c} == {"FORN EMITIDO AGO PAGO SET", "FORN EMITIDO SET PAGO SET"}
+    assert {l["credor"] for l in lin_c} == {"FORN EMITIDO AGO PAGO SET", "FORN EMITIDO SET PAGO SET", "FORN MISTO"}
+    assert round(sum(l["valor"] for l in lin_c if l["credor"] == "FORN MISTO"), 2) == 100.0          # so' os 100 em dinheiro, nao os 300 da substituicao
     assert P.adm_linhas(conn, "2026-09", "2026-09", ["2.03"], sem_previsao=True, base=BD.REF) == [] and \
-           round(sum(l["valor"] for l in P.adm_linhas(conn, "2026-09", "2026-09", ["2.03.01.04"], sem_previsao=True, base=BD.REF)), 2) == 400.0   # contas excluidas valem nas 2 bases
+           round(sum(l["valor"] for l in P.adm_linhas(conn, "2026-09", "2026-09", ["2.03.01.04"], sem_previsao=True, base=BD.REF)), 2) == 800.0   # contas excluidas valem nas 2 bases
 
 
 @pytest.mark.pg
@@ -107,6 +110,57 @@ def test_base_fixada_para_a_diretoria_vai_e_volta(conn):
     with pytest.raises(ValueError):
         acesso.definir_base_fixada(conn, "Despesas", "talvez", "ed@x")
 
+
+
+def _rec(bill, valor, emissao, recebido, data_rec, cc=1049, oper=2):
+    """Titulo a RECEBER (receita 1.01.01.01) com emissao e recebimento em datas diferentes (tipo 2 = Recebimento; 7 = Distrato nao e' caixa)."""
+    return {"billId": bill, "installmentId": 1, "companyId": 5, "companyName": "CONSTRUTORA", "originId": "NS", "documentIdentificationId": "NFS ", "clientId": 900,
+            "clientName": "CLIENTE TESTE", "issueDate": emissao, "dueDate": emissao, "originalAmount": valor,
+            "receipts": ([{"sequencialNumber": 1, "paymentDate": data_rec, "netAmount": recebido, "grossAmount": recebido, "taxAmount": 0.0, "operationTypeId": oper,
+                           "operationTypeName": "Recebimento"}] if recebido else []),
+            "receiptsCategories": [{"financialCategoryId": "1010101", "financialCategoryName": "Receitas de Serviços", "financialCategoryRate": 100,
+                                    "costCenterId": cc, "costCenterName": "CON - OBRA 103", "projectId": 5, "projectName": "CONSTRUTORA"}]}
+
+
+def _monta_resultado(conn):
+    P.limpar_memo()
+    sp = P.criar_sync(conn, "2026-08", "P", "P", "teste@x")
+    regs_p = [_t(31, "FORN MATERIAL", 1000.0, "2026-08-20", 1000.0, "2026-09-10", "2010104", 1049,
+                 extras=[_pg(2, "2026-09-11", 400.0, 5, "Substituição")]),                                    # custo de obra 103: emitido em ago, pago em set (+ substituicao fora)
+              _t(32, "FORN MATERIAL 2", 300.0, "2026-09-03", None, None, "2010104", 1049)]                    # emitido em set, ainda nao pago
+    cont = P.gravar_normalizado(conn, sp, S.normalizar_titulos("P", regs_p))
+    P.finalizar_sync(conn, sp, "OK", cont["titulos"], cont["baixas"], cont["rateios"], cont["liquido"])
+    sr = P.criar_sync(conn, "2026-08", "R", "P", "teste@x")
+    regs_r = [_rec(61, 2000.0, "2026-08-15", 1800.0, "2026-09-30"),                                           # emitido em ago, recebido em set
+              _rec(62, 500.0, "2026-09-05", None, None),                                                       # emitido em set, nao recebido
+              _rec(63, 700.0, "2026-09-06", 700.0, "2026-09-20", oper=7)]                                      # distrato: nao e' dinheiro
+    cont = P.gravar_normalizado(conn, sr, S.normalizar_titulos("R", regs_r))
+    P.finalizar_sync(conn, sr, "OK", cont["titulos"], cont["baixas"], cont["rateios"], cont["liquido"])
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO pnl_centro_grupo (centro_custo_id, centro_nome, empresa_nome, grupo, codigo_obra, obra_nome) VALUES "
+                    "(1049,'OBRA 103','EMPRESA A','OBRA','103','OBRA CENTO E TRES') ON CONFLICT DO NOTHING")
+
+
+@pytest.mark.pg
+def test_resultado_e_obras_em_caixa_so_contam_dinheiro_real(conn):
+    _monta_resultado(conn)
+    c = {x["plano_cod"]: x["valor"] for x in P.resultado_por_conta_caixa(conn, "2026-09", sem_previsao=True)}
+    assert c["1.01.01.01"] == 1800.0 and c["2.01.01.04"] == -1000.0                  # recebido 1800 (distrato fora); pago 1000 (substituicao de 400 fora)
+    assert {x["plano_cod"]: x["valor"] for x in P.resultado_por_conta_caixa(conn, "2026-08", sem_previsao=True)} == {}      # nada foi pago/recebido em agosto
+    ob = P.obras_do_mes(conn, "2026-09", "CAIXA")
+    assert ob and ob["fonte"] == "API" and "baixas" in ob["arquivo"]
+    assert (ob["total"]["receita"], ob["total"]["custo"], ob["total"]["bdi"]) == (1800.0, -1000.0, 800.0)
+    assert [l["obra"] for l in ob["linhas"]] == ["103"] and ob["linhas"][0]["nome"] == "OBRA CENTO E TRES"
+    em_ref = P.obras_do_mes(conn, "2026-09", "REF")                                   # referencia: emitido em set = receita 500 e custo 300 (o de ago nao entra)
+    assert (em_ref["total"]["receita"], em_ref["total"]["custo"]) == (500.0, -300.0)
+    lote = P.obras_dos_meses(conn, ["2026-08", "2026-09"], "CAIXA")
+    assert lote["2026-08"] is None and lote["2026-09"]["total"] == ob["total"]       # em lote = mes a mes
+    t = P.termos_do_mes(conn, "2026-09", "CAIXA")
+    assert (t["rec"], t["cus"], t["bdi"], t["fonte"]) == (1800.0, 1000.0, 800.0, "caixa") and t["rec_p"] is None and t["adm_orc"] is None
+    assert P.termos_do_mes(conn, "2026-08", "CAIXA") is None
+    assert [(x["mes"], x["receita"]) for x in P.receita_mensal(conn, base="CAIXA")] == [("2026-09", 1800.0)]
+    ln = P.custos_obra_linhas_caixa(conn, "2026-08", "2026-09")
+    assert [(o, m, pl, v) for o, m, pl, v in ln] == [("103", "2026-09", "2.01.01.04", -1000.0)]
 
 # ------------------------------------------------------------------ tela (Painel da Diretoria)
 APP = __import__("pathlib").Path(__file__).resolve().parent.parent
@@ -161,3 +215,25 @@ def test_editor_escolhe_a_base_por_aba_e_visualizador_so_ve_a_fixada(conn):
         assert not vi2.exception, vi2.exception
         assert any("Referência" in x and "definida pela contabilidade" in x for x in _legendas(vi2))
         assert any("Caixa" in x for x in _legendas(vi2))                                           # as outras abas seguem no padrao (Caixa)
+
+
+@pytest.mark.pg
+def test_resultado_e_obras_tem_seletor_e_abrem_em_caixa_sem_erro(conn):
+    from unittest.mock import patch
+    from test_administracao import _montar
+    _montar(conn)
+    _monta_resultado(conn)
+    with patch("conexao.get_conn", return_value=conn):
+        ed = _tela(conn, "contabilidade@empresa.com")
+        ed.run()
+        assert not ed.exception, ed.exception
+        chaves = {r.key for r in ed.radio}
+        assert {"dir_base_resultado", "dir_base_obras"} <= chaves
+        assert ed.radio(key="dir_base_resultado").value == BD.REF and ed.radio(key="dir_base_obras").value == BD.REF        # padroes de hoje
+        ed.radio(key="dir_base_resultado").set_value(BD.CAIXA).run()
+        assert not ed.exception, ed.exception
+        ed.radio(key="dir_base_obras").set_value(BD.CAIXA).run()
+        assert not ed.exception, ed.exception
+        assert sum("Caixa" in x for x in _legendas(ed)) >= 2
+        ed.radio(key="dir_base_resultado").set_value(BD.REF).run()                                    # e volta sem quebrar
+        assert not ed.exception, ed.exception
