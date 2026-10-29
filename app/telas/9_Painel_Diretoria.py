@@ -154,8 +154,20 @@ def _obras_mes(_conn, m: str, carimbo: str):
     return ob_m, px
 
 
+@st.cache_data(ttl=1800, show_spinner="Somando as obras do período…")
 def _obras_meses(_conn, meses_t: tuple, carimbo: str):
-    return [_obras_mes(_conn, m, carimbo) for m in meses_t]
+    """[(tabela de obras, projecao x realizado)] de cada mes do periodo. v0.54.6: os meses da API saem de 2 consultas ao banco (antes eram 2 por mes: ~6 s no 'Ano ate o mes')."""
+    extra, com_obras = _obras_aux(_conn, carimbo)
+    obs = P.obras_dos_meses(_conn, [m for m in meses_t if m in com_obras])
+    saida = []
+    for m in meses_t:
+        ob_m = obs.get(m)
+        px = None
+        if ob_m:
+            pj_ = P.projecao_do_mes(_conn, m)
+            px = P.projecao_x_realizado(pj_, ob_m, extra) if pj_ else None
+        saida.append((ob_m, px))
+    return saida
 
 
 @st.cache_data(ttl=1800, show_spinner=False)

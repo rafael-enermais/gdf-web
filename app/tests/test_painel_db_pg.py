@@ -381,6 +381,25 @@ def test_resultado_por_obra_api_usa_o_de_para(conn):
     assert r["103"]["01"] == 2000.0
 
 
+def test_obras_dos_meses_em_lote_da_o_mesmo_resultado_que_mes_a_mes(conn):
+    """v0.54.6: a aba Obras do periodo le varios meses em 2 consultas; o resultado tem que ser identico ao de `obras_do_mes` mes a mes (inclusive mes sem dado)."""
+    from test_folha_pj_pg import _regs as regs_outubro
+    _ingerir(conn, lado="P", tipo="I")                                        # setembro
+    _ingerir(conn, regs=income(), lado="R", tipo="I")
+    _ingerir(conn, regs=regs_outubro(), lado="P", tipo="I", mes="2026-10")      # outubro
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO pnl_centro_grupo (centro_custo_id, centro_nome, grupo, codigo_obra) VALUES (1,'SEDE','ADM','ADM'),(1049,'ANASTACIO','OBRA','103'),(1005,'EE - ANASTACIO','OBRA','103')")
+    meses = ["2026-08", "2026-09", "2026-10"]
+    lote = P.obras_dos_meses(conn, meses)
+    assert list(lote) == meses and lote["2026-08"] is None and lote["2026-09"] and lote["2026-10"]
+    for m in meses:
+        assert lote[m] == P.obras_do_mes(conn, m), m
+    a = P.resultado_por_obra_api_meses(conn, meses, sem_previsao=True)
+    for m in ("2026-09", "2026-10"):
+        assert a[m] == P.resultado_por_obra_api(conn, m, sem_previsao=True), m
+    assert "2026-08" not in a and P.resultado_por_obra_api_meses(conn, []) == {}
+
+
 def _uploader_por_chave(arquivos):
     """Substitui st.file_uploader: devolve o arquivo falso conforme a chave (key) do campo; sem arquivo -> None."""
     def _f(*a, **kw):

@@ -906,10 +906,11 @@ def nomes_obras_depara(conn) -> dict:
     return out
 
 
-def obras_da_api(conn, mes: str) -> dict | None:
+def obras_da_api(conn, mes: str, api: dict | None = None) -> dict | None:
     """Mesma tabela da aba Obras, mas calculada pela API do Sienge (titulos emitidos no mes, regras padrao: sem previsao, sem NF desfeita, sem titulo
     desfeito, sem centros ADM). Obras sem codigo proprio no de-para ('sem de-para' inclusive) entram em 'Demais obras'. None se nao ha dado no mes."""
-    api = resultado_por_obra_api(conn, mes, sem_previsao=True, sem_distrato=True, sem_desfeitos=True)
+    if api is None:
+        api = resultado_por_obra_api(conn, mes, sem_previsao=True, sem_distrato=True, sem_desfeitos=True)
     if not api:
         return None
     nomes = nomes_obras_depara(conn)
@@ -934,6 +935,16 @@ def fonte_obras(conn, mes: str) -> str | None:
 def obras_do_mes(conn, mes: str) -> dict | None:
     """Tabela de Obras do mes pela fonte de `fonte_obras` (PDF oficial ou API do Sienge). None se nao ha dado."""
     return obras_do_dre(conn, mes) if fonte_obras(conn, mes) == "PDF" else obras_da_api(conn, mes)
+
+
+def obras_dos_meses(conn, meses: list) -> dict:
+    """{mes: tabela de Obras (ou None)} para varios meses; o mesmo resultado de chamar `obras_do_mes` mes a mes, mas os meses da API saem de 2 consultas so' (ver
+    `resultado_por_obra_api_meses`). Meses cuja fonte e' o PDF seguem o caminho de sempre."""
+    meses = list(dict.fromkeys(meses or []))
+    fontes = {m: fonte_obras(conn, m) for m in meses}
+    api_ms = [m for m in meses if fontes[m] != "PDF"]
+    em_lote = resultado_por_obra_api_meses(conn, api_ms, sem_previsao=True, sem_distrato=True, sem_desfeitos=True) if api_ms else {}
+    return {m: (obras_do_dre(conn, m) if fontes[m] == "PDF" else obras_da_api(conn, m, api=em_lote.get(m, {}))) for m in meses}
 
 
 def meses_com_obras(conn) -> list:
@@ -1187,6 +1198,50 @@ def resultado_por_obra_api(conn, mes: str, sem_previsao: bool = False, sem_distr
     for cod_obra, contas in por_obra.items():
         dre = dre_do_mes([{"plano_cod": k, "plano_nome": "", "valor": x} for k, x in contas.items()])
         saida[cod_obra] = {**dre["valores"], "CP": round(sum(x for k, x in contas.items() if k in CON.MAPA), 2)}      # CP = custo padrao (contas do relatorio de custos por obra)
+    return saida
+
+
+def resultado_por_obra_api_meses(conn, meses: list, sem_previsao: bool = False, sem_distrato: bool = True, sem_desfeitos: bool = True) -> dict:
+    """Igual a `resultado_por_obra_api`, mas para VARIOS meses de uma vez: {mes: {codigo_obra: {linha_dre: valor}}}. Faz 2 consultas para o intervalo todo (em vez de 2 por mes;
+    a das baixas varre a tabela de baixas inteira a cada chamada, e era o que deixava a aba Obras lenta no periodo 'Ano ate o mes'). Mes sem dado fica fora do resultado."""
+    meses = sorted(set(meses or []))
+    if not meses:
+        return {}
+    filtro = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
+    filtro += " " + _filtro_distrato(sem_distrato) + " " + _filtro_desfeitos(sem_desfeitos)
+    with conn.cursor() as cur:
+        try:
+            cur.execute(f"""SELECT COALESCE(g.codigo_obra,'sem de-para'), to_char(t.data_emissao,'YYYY-MM'), t.lado, r.plano_cod, sum(t.valor_original * r.percentual / 100.0)
+                            FROM pnl_titulo t JOIN pnl_v_rateio r ON r.lado=t.lado AND r.bill_id=t.bill_id AND r.installment_id=t.installment_id
+                            LEFT JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id
+                            WHERE t.data_emissao >= %s::date AND t.data_emissao < (%s::date + interval '1 month') {filtro}
+                              AND COALESCE(g.grupo,'') <> 'ADM'
+                            GROUP BY 1, 2, t.lado, r.plano_cod""", (f"{meses[0]}-01", f"{meses[-1]}-01"))
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return {}
+        linhas = cur.fetchall()
+    quer = set(meses)
+    por_mes: dict = {}
+    for cod_obra, m, lado, plano, v in linhas:
+        if m in quer:
+            c = por_mes.setdefault(m, {}).setdefault(cod_obra, {})
+            c[plano] = round(c.get(plano, 0.0) + _sinal_resultado(lado, plano) * float(v or 0), 2)
+    for cod_obra, m, ex in _extras_baixa(conn, filtro, meses[0], meses[-1], por_mes=True):
+        if m in quer:
+            c = por_mes.setdefault(m, {}).setdefault(cod_obra, {})
+            for plano, v in ex.items():
+                c[plano] = round(c.get(plano, 0.0) + v, 2)
+    import custos_obra_nivel as CON
+    saida = {}
+    for m, por_obra in por_mes.items():
+        saida[m] = {}
+        for cod_obra, contas in por_obra.items():
+            dre = dre_do_mes([{"plano_cod": k, "plano_nome": "", "valor": x} for k, x in contas.items()])
+            saida[m][cod_obra] = {**dre["valores"], "CP": round(sum(x for k, x in contas.items() if k in CON.MAPA), 2)}
     return saida
 
 
