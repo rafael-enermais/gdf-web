@@ -127,6 +127,14 @@ def _folha_pessoas(_conn, mes: str, carimbo: str, base: str = BD.REF) -> list:
     return P.folha_pessoas_mes(_conn, mes, base)
 
 
+def _comp_caixa(_conn, mes: str, carimbo: str):
+    """Folha CLT que conta como PAGA no `mes` (base Caixa). Regra da contabilidade (29/10/2026): nao ha arquivo de pagamento do liquido, entao a folha de COMPETENCIA do mes
+    anterior vale como paga no mes (folha de setembro, paga em outubro). Recibos que alguem enviou como Caixa neste mes tem prioridade. -> (competencia 'AAAA-MM', base dos recibos)"""
+    if _folha_base(_conn, mes, carimbo, BD.CAIXA):
+        return mes, BD.CAIXA
+    return PER.somar_meses(mes, -1), BD.REF
+
+
 @st.cache_data(ttl=1800, show_spinner=False)
 def _folha_base(_conn, mes: str, carimbo: str, base: str) -> dict | None:
     """Folha CLT do mes + serie de HE dos recibos enviados na base escolhida (mesmo formato de `pes`)."""
@@ -243,7 +251,7 @@ def _adm_periodo(_conn, mes_ini: str, mes: str, carimbo: str, base: str = BD.CAI
         linhas_mes = P.adm_linhas(_conn, mes, mes, fora_adm, sem_previsao=sem_prev, base=base)
         linhas_per = P.adm_linhas(_conn, mes_ini, mes, fora_adm, sem_previsao=sem_prev, base=base) if mes_ini != mes else linhas_mes
     orc = None
-    if P.orcamento_instalado(_conn):                              # Caixa: o orcamento enviado como Caixa; sem ele, o de referencia (com aviso na tela)
+    if P.orcamento_instalado(_conn):                              # o orcamento so' existe em competencia (Suellen, 29/10/2026): em Caixa a comparacao usa o de referencia, com aviso na tela
         orc = P.orcamento_ativo(_conn, base) or (P.orcamento_ativo(_conn, BD.REF) if base == BD.CAIXA else None)
     orc_base = (orc or {}).get("base") or base
     orc_mes = orc_per = None
@@ -460,7 +468,7 @@ def _fixar_base(aba: str, base):
 def _base_aba(aba: str, nota: str = "") -> str:
     """Base de data da aba. EDITOR: seletor Referência x Caixa no topo da aba (e botão para FIXAR a base para a Diretoria). VISUALIZADOR: nenhum controle, so' a base fixada
     (ou o padrao da aba) com um rotulo dizendo qual e'. Devolve 'REF' ou 'CAIXA'."""
-    fix = _fixadas(conn, CARIMBO).get(aba)
+    fix = None if aba in BD.SO_REF else _fixadas(conn, CARIMBO).get(aba)
     if not _eh_editor:
         b = BD.resolver(aba, None, fix, False)
         _cap(BD.legenda(b, fixada=bool(fix)) + nota)
@@ -472,14 +480,16 @@ def _base_aba(aba: str, nota: str = "") -> str:
         b = st.radio("Base de data desta aba", BD.BASES, index=BD.BASES.index(padrao_ed), format_func=lambda x: BD.ROTULO[x], horizontal=True, key=chave,
                      help="Referência = mês em que o título foi emitido (competência). Caixa = mês em que o pagamento realmente saiu (baixa no Sienge). Vale só para esta aba.")
     with c2:
-        if fix == b:
+        if aba in BD.SO_REF:
+            st.caption("A Diretoria vê sempre Referência nesta aba (decisão da contabilidade, 29/10/2026). O Caixa aqui é só para análise.")
+        elif fix == b:
             st.button("✔ Fixada para a Diretoria · soltar", key=chave + "_solta", on_click=_fixar_base, args=(aba, None), help="Solta: a Diretoria volta a ver o padrão desta aba.")
         else:
             st.button(f"Fixar “{BD.CURTO[b]}” para a Diretoria", key=chave + "_fixa", on_click=_fixar_base, args=(aba, b),
                       help="O login de visualização vê só o painel, sem seletor, nesta base.")
     if st.session_state.get("dir_base_erro"):
         _warn(st.session_state.pop("dir_base_erro"))
-    _cap(BD.legenda(b) + nota + f" A Diretoria vê hoje: **{BD.CURTO[fix] if fix else BD.CURTO[BD.padrao(aba)] + ' (padrão da aba)'}**.")
+    _cap(BD.legenda(b) + nota + (" A Diretoria vê sempre: **Referência**." if aba in BD.SO_REF else f" A Diretoria vê hoje: **{BD.CURTO[fix] if fix else BD.CURTO[BD.padrao(aba)] + ' (padrão da aba)'}**."))
     return b
 
 
@@ -491,8 +501,7 @@ def _pagos_df(base: str = BD.CAIXA):
 def _colaboradores(base: str = BD.CAIXA):
     """Colaboradores do mes: CLT (recibos da folha) + PJ (contas 'Salarios PJ', pagas ou emitidas conforme a base). -> dict com total, obra, adm, pj, por_obra_pj; None onde falta fonte."""
     pj = _pj_mes(conn, mes_ini, mes, CARIMBO, base)
-    pes_b = pes if base == BD.REF else (_folha_base(conn, mes, CARIMBO, BD.CAIXA) or pes)       # headcount nao muda com a base: sem recibo de Caixa, usa o de Referencia
-    clt = pes_b["folha"]["total"]["colab"] if pes_b else None
+    clt = pes["folha"]["total"]["colab"] if pes else None                                         # headcount do mes (recibos do mes), em qualquer base
     return {"pj": pj, "clt": clt}
 
 
@@ -964,7 +973,7 @@ if aba_adm.open or _TODAS:
         else:
             o, ac, so = ap["orc_mes"], ap["orc_per"], ap["serie_orc"]
             if base_a == BD.CAIXA and ap.get("orc_base") == BD.REF and (o or ac):
-                _cap("Orçado: nenhum Orçamento ADM foi enviado como Caixa; a comparação usa o orçamento de referência.")
+                _cap("Orçado: o Orçamento ADM é só de competência (Referência); em Caixa a comparação usa esse orçamento, com o realizado pago no mês.")
             linhas_mes, linhas_per = ap["linhas_mes"], ap["linhas_per"]
             grp_sel = None
             contas_sel: list = []                                      # contas marcadas (a tabela de contas so' aparece com algum grupo marcado)
@@ -1249,22 +1258,25 @@ if aba_pj.open or _TODAS:
     with aba_pj:
         if mes_ini != mes:
             _cap(f"A Folha PJ mostra sempre o mês de referência ({_rot(mes)}), não soma o período.")
-        base_pj = _base_aba("Folha PJ", " Nesta aba o Caixa também lista, como “A pagar”, o que vence no mês e ainda não foi pago; o Flash vale nas duas bases.")
+        base_pj = _base_aba("Folha PJ", " Em Caixa entra só o que foi pago no mês; em Referência, a competência do mês são os títulos emitidos no mês seguinte. O Flash vale nas duas bases.")
         FPU.aba_folha_pj(conn, mes, CARIMBO, _rot(mes), base_pj)
 
 
 # ------------------------------------------------------------------ 6b) FOLHA CLT (ao lado de Folha PJ; recibos da folha importados)
 if aba_clt.open or _TODAS:
     with aba_clt:
-        base_c = _base_aba("Folha CLT", " Os recibos da folha entram na base em que foram enviados (Importações V2); histórico do painel da contabilidade e DRE são de referência.")
+        base_c = _base_aba("Folha CLT", " Referência = recibos da folha do próprio mês; Caixa = a folha do mês anterior, paga neste mês. Histórico do painel da contabilidade e DRE são de referência.")
         if base_c == BD.CAIXA:
-            pes_t, hist_t, serie_t = _folha_base(conn, mes, CARIMBO, BD.CAIXA), None, [x for x in _serie_caixa(conn, mes_atual=f"{agora_br().year}-{agora_br().month:02d}", carimbo=CARIMBO) if MES_INI_G <= x["mes"] <= mes]
+            comp_c, base_rec = _comp_caixa(conn, mes, CARIMBO)
+            pes_t, hist_t, serie_t = _folha_base(conn, comp_c, CARIMBO, base_rec), None, [x for x in _serie_caixa(conn, mes_atual=f"{agora_br().year}-{agora_br().month:02d}", carimbo=CARIMBO) if MES_INI_G <= x["mes"] <= mes]
         else:
+            comp_c, base_rec = mes, BD.REF
             pes_t, hist_t, serie_t = pes, hist, ctx["serie"]
+        if base_c == BD.CAIXA and comp_c != mes:
+            _cap(f"Em Caixa, a folha de competência **{_rot(comp_c)}** conta como paga em **{_rot(mes)}** (regra da contabilidade: o líquido é pago no mês seguinte; não há arquivo de pagamento).")
         if not pes_t:
-            _info("Faltam os recibos da folha deste mês" + (" enviados como Caixa: envie o PDF em Importações V2 marcando “Caixa”, ou troque a base da aba para Referência." if base_c == BD.CAIXA
-                                                         else ": envie o PDF em Importações V2."))
-        _clt_todos = _folha_pessoas(conn, mes, CARIMBO, base_c)
+            _info(f"Faltam os recibos da folha de {_rot(comp_c)}: envie o PDF em Importações V2." if base_c == BD.CAIXA else "Faltam os recibos da folha deste mês: envie o PDF em Importações V2.")
+        _clt_todos = _folha_pessoas(conn, comp_c, CARIMBO, base_rec)
         _obras_sel, _cant_sel = [], []
         if _clt_todos:
             _md("**Colaboradores CLT por obra e canteiro**")

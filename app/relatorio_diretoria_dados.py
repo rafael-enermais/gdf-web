@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+import base_data as BD
 import custos_obra_nivel as CON
 import diretoria_dados as DD
 import folha_pj_dados as FP
@@ -239,6 +240,40 @@ class Base:
         return self._m[chave]
 
     @property
+    def bases(self) -> dict:
+        """Base (REF/CAIXA) de cada aba no PDF: a MESMA que a Diretoria ve (fixada pelo editor; sem fixar, o padrao da aba; Resultado e Obras sempre Referencia).
+        Decisao da contabilidade em 29/10/2026: o PDF segue a base fixada para a Diretoria, nao o seletor de quem gera."""
+        def f():
+            import acesso
+            try:
+                fix = acesso.bases_fixadas(self.conn)
+            except Exception:                                                # noqa: BLE001
+                fix = {}
+            return {a: BD.resolver(a, None, fix.get(a), False) for a in BD.ABAS}
+        return self.memo("bases", f)
+
+    def comp_clt(self, aba: str = "Folha CLT"):
+        """Folha CLT usada pela aba: (competencia 'AAAA-MM', base dos recibos). Referencia: a do proprio mes. Caixa: a de competencia do mes anterior (paga neste mes), salvo
+        recibos enviados como Caixa neste mes (mesma regra da aba Folha CLT)."""
+        def f():
+            if self.bases[aba] == BD.REF:
+                return self.mes, BD.REF
+            if P.folha_do_mes(self.conn, self.mes, BD.CAIXA):
+                return self.mes, BD.CAIXA
+            return PER.somar_meses(self.mes, -1), BD.REF
+        return self.memo(("comp_clt", aba), f)
+
+    def clt_folha(self):
+        """Mesmo formato de `ctx['pessoas']` ({'folha', 'serie'}) para a base da Folha CLT; None se nao ha recibos."""
+        def f():
+            if self.bases["Folha CLT"] == BD.REF:
+                return self.ctx["pessoas"]
+            c, b = self.comp_clt()
+            fo = P.folha_do_mes(self.conn, c, b)
+            return {"folha": fo, "serie": [x for x in P.folha_serie(self.conn, b) if x["he_pct"] is not None]} if fo else None
+        return self.memo("clt_folha", f)
+
+    @property
     def filtra_obra(self) -> bool:
         return bool(self.obras)
 
@@ -275,32 +310,33 @@ class Base:
         return self.memo("nomes_por_codigo", f)
 
     # ---- contas pagas (Despesas, Pessoas, PJ por obra)
-    def _pagos(self, ini: str):
+    def _pagos(self, ini: str, base: str):
         def f():
             regras = P.regras_ativas(self.conn, "DESPESAS")
-            linhas = DD.pagos_detalhe(self.conn, ini, self.mes, sem_previsao=P.exclui_previsao(regras))
+            linhas = DD.pagos_detalhe(self.conn, ini, self.mes, sem_previsao=P.exclui_previsao(regras), base=base)
             return DD.para_df(linhas), P.prefixos_excluidos(regras)
-        return self.memo(("pagos", ini), f)
+        return self.memo(("pagos", ini, base), f)
 
-    def pagos(self):
-        return self._pagos(self.mes_ini)
+    def pagos(self, aba: str = "Despesas"):
+        """Contas pagas/emitidas do periodo na base da aba (`aba` = a aba cujo bloco pede)."""
+        return self._pagos(self.mes_ini, self.bases[aba])
 
-    def despesas(self) -> pd.DataFrame:
-        return self.memo("despesas", lambda: DD.despesas_df(*self.pagos()))
+    def despesas(self, aba: str = "Despesas") -> pd.DataFrame:
+        return self.memo(("despesas", aba), lambda: DD.despesas_df(*self.pagos(aba)))
 
-    def despesas_12(self) -> pd.DataFrame:
+    def despesas_12(self, aba: str = "Despesas") -> pd.DataFrame:
         if self.mes_ini <= self.mes_ini_g:
-            return self.despesas()
-        return self.memo("despesas12", lambda: DD.despesas_df(*self._pagos(self.mes_ini_g)))
+            return self.despesas(aba)
+        return self.memo(("despesas12", aba), lambda: DD.despesas_df(*self._pagos(self.mes_ini_g, self.bases[aba])))
 
-    def pj_nomes(self) -> set:
-        return self.memo("pj_nomes", lambda: DD.credores_pj(self.pagos()[0]))
+    def pj_nomes(self, aba: str = "Despesas") -> set:
+        return self.memo(("pj_nomes", aba), lambda: DD.credores_pj(self.pagos(aba)[0]))
 
-    def despesas_sem_pj(self) -> pd.DataFrame:
-        return self.memo("desp_sem_pj", lambda: DD.sem_credores(self.despesas(), self.pj_nomes()))
+    def despesas_sem_pj(self, aba: str = "Despesas") -> pd.DataFrame:
+        return self.memo(("desp_sem_pj", aba), lambda: DD.sem_credores(self.despesas(aba), self.pj_nomes(aba)))
 
     def pessoas_df(self) -> pd.DataFrame:
-        return self.memo("pessoas_df", lambda: DD.pessoas_df(self.pagos()[0]))
+        return self.memo("pessoas_df", lambda: DD.pessoas_df(self.pagos("Pessoas")[0]))
 
     def pessoas_sem_grupo(self) -> pd.DataFrame:
         return self.memo("pessoas_sem_grupo", lambda: DD.sem_grupo_enermais(self.pessoas_df(), GE.nucleos_do_grupo(self.conn)))
@@ -348,19 +384,20 @@ class Base:
         return self.memo("obras_periodo", f)
 
     def pj_obra(self) -> list:
-        return self.memo("pj_obra", lambda: DD.pj_por_obra(self.pagos()[0], self.mes))
+        return self.memo("pj_obra", lambda: DD.pj_por_obra(self.pagos("Obras")[0], self.mes))
 
     def adm_periodo(self):
         def f():
             c, mes, mes_ini = self.conn, self.mes, self.mes_ini
+            base = self.bases["Administração"]
             linhas_mes, linhas_per = [], []
             if P.meses_com_dados(c) and P.centro_grupo_instalado(c):
                 regras = P.regras_ativas(c, "DESPESAS")
                 fora_adm = [p for p in P.prefixos_excluidos(regras) if p != "2.02.01"]
                 sem_prev = P.exclui_previsao(regras)
-                linhas_mes = P.adm_linhas(c, mes, mes, fora_adm, sem_previsao=sem_prev)
-                linhas_per = P.adm_linhas(c, mes_ini, mes, fora_adm, sem_previsao=sem_prev) if mes_ini != mes else linhas_mes
-            orc = P.orcamento_ativo(c) if P.orcamento_instalado(c) else None
+                linhas_mes = P.adm_linhas(c, mes, mes, fora_adm, sem_previsao=sem_prev, base=base)
+                linhas_per = P.adm_linhas(c, mes_ini, mes, fora_adm, sem_previsao=sem_prev, base=base) if mes_ini != mes else linhas_mes
+            orc = (P.orcamento_ativo(c, base) or (P.orcamento_ativo(c, BD.REF) if base == BD.CAIXA else None)) if P.orcamento_instalado(c) else None      # orcamento so' em competencia: Caixa usa o de referencia
             orc_mes = orc_per = None
             serie, serie_g = [], []
             if orc:
@@ -378,10 +415,13 @@ class Base:
         return self.memo("adm_periodo", f)
 
     def pj_dados(self) -> dict:
-        return self.memo("pj_dados", lambda: FP.dados_do_mes(self.conn, self.mes))
+        return self.memo("pj_dados", lambda: FP.dados_do_mes(self.conn, self.mes, self.bases["Folha PJ"]))
 
     def clt_todos(self) -> list:
-        return self.memo("clt_todos", lambda: P.folha_pessoas_mes(self.conn, self.mes))
+        def f():
+            c, b = self.comp_clt()
+            return P.folha_pessoas_mes(self.conn, c, b)
+        return self.memo("clt_todos", f)
 
 
 # ------------------------------------------------------------------ RESULTADO
@@ -719,7 +759,7 @@ def b_ob_credores(B: Base) -> list:
     if not R:
         return _sem_obras(B)
     proprias = R["proprias"]
-    dd_ob = B.despesas_sem_pj()
+    dd_ob = B.despesas_sem_pj("Obras")
     nao_obra = ("ADM", "99", "")
     alvo = None
     if B.filtra_obra:
@@ -950,8 +990,8 @@ def b_desp_obras(B: Base) -> list:
 def _pessoas_base(B: Base):
     def f():
         ctx = B.ctx
-        pes = ctx["pessoas"]
-        dfp = B.pagos()[0]
+        pes = ctx["pessoas"]                                                        # headcount do mes (recibos do mes), em qualquer base
+        dfp = B.pagos("Pessoas")[0]
         pj = DD.pj_do_mes(dfp, B.mes)
         clt = pes["folha"]["total"]["colab"] if pes else None
         ms = PER.meses_entre(B.mes_ini, B.mes)
@@ -967,7 +1007,11 @@ def _pessoas_base(B: Base):
     return B.memo("pessoas_base", f)
 
 
-def _ob_base(B: Base):
+def _ob_base(B: Base, aba: str = "Obras"):
+    """(receita, custo, BDI) do mes na base da aba: Referencia = tabela de obras; Caixa = recebido e pago nas obras."""
+    if B.bases[aba] == BD.CAIXA:
+        t = B.memo("termo_caixa", lambda: P.termos_do_mes(B.conn, B.mes, BD.CAIXA))
+        return (t["rec"], abs(t["cus"]), t["bdi"]) if t else (None, None, None)
     ob = B.ctx["obras"]
     v = B.ctx["dre"]["valores"]
     rec = ob["total"]["receita"] if ob else v["01"]
@@ -980,11 +1024,15 @@ def b_pes_kpis(B: Base) -> list:
     S = _pessoas_base(B)
     if not S["n_mes"]:
         return [nota("Faltam os recibos da folha e as contas pagas deste mês.")]
-    rec, cus, bdi = _ob_base(B)
+    rec, cus, bdi = _ob_base(B, "Pessoas")
     n = S["n_mes"]
-    return [kpis([K(f"Colaboradores {_rot(B.mes)}", f"{int(n):,}".replace(",", "."), (f"{S['clt']} CLT + {S['pj']['total']} PJ" if S["clt"] is not None else "")),
-                  K("Receita por colaborador", _mi(rec / n)), K("Custo por colaborador", _mi(cus / n)), K("BDI por colaborador", _mi(bdi / n))], 4),
-            nota("Colaboradores = CLT pelos recibos da folha + PJ pelos credores de “Salários PJ” pagos no mês. Receita, custo e BDI do mês de referência (tabela de obras).")]
+    cx = B.bases["Pessoas"] == BD.CAIXA
+    k = [K(f"Colaboradores {_rot(B.mes)}", f"{int(n):,}".replace(",", "."), (f"{S['clt']} CLT + {S['pj']['total']} PJ" if S["clt"] is not None else ""))]
+    if rec is not None:
+        k += [K("Receita por colaborador", _mi(rec / n)), K("Custo por colaborador", _mi(cus / n)), K("BDI por colaborador", _mi(bdi / n))]
+    return [kpis(k, 4),
+            nota(("Colaboradores = CLT pelos recibos da folha do mês + PJ pelos credores de “Salários PJ” pagos no mês. Receita, custo e BDI do mês em Caixa (recebido e pago nas obras)."
+                  if cx else "Colaboradores = CLT pelos recibos da folha + PJ pelos credores de “Salários PJ” com título emitido no mês. Receita, custo e BDI do mês de referência (tabela de obras)."))]
 
 
 def b_pes_headcount(B: Base) -> list:
@@ -1195,7 +1243,8 @@ def _clt_filtrada(B: Base) -> list:
 
 def _sem_clt(B: Base) -> list | None:
     if not B.clt_todos():
-        return [nota("Faltam os recibos da folha deste mês: envie o PDF em Importações V2.")]
+        c, _b = B.comp_clt()
+        return [nota(f"Faltam os recibos da folha de {_rot(c)}: envie o PDF em Importações V2.")]
     if not _clt_filtrada(B):
         return [nota("Nenhum colaborador CLT nas obras escolhidas.")]
     return None
@@ -1248,16 +1297,18 @@ def b_clt_selecao(B: Base) -> list:
 
 def b_clt_he_receita(B: Base) -> list:
     ctx = B.ctx
-    pes = ctx["pessoas"]
-    sf = HIST.serie_he_combinada(B.hist, pes["serie"] if pes else [])
-    ev = DD.evolucao_he_receita(sf, ctx["serie"], B.meses_g)
+    pes = B.clt_folha()
+    cx = B.bases["Folha CLT"] == BD.CAIXA
+    serie_rec = [x for x in P.receita_mensal(B.conn, mes_atual=f"{B.hoje.year}-{B.hoje.month:02d}", base=BD.CAIXA) if B.mes_ini_g <= x["mes"] <= B.mes] if cx else ctx["serie"]
+    sf = HIST.serie_he_combinada(None if cx else B.hist, pes["serie"] if pes else [])
+    ev = DD.evolucao_he_receita(sf, serie_rec, B.meses_g)
     com = [x for x in ev if x["he_pct"] is not None]
     if len(com) < 2:
         return [nota("A série mensal de HE aparece com 2 ou mais meses de folha (ou com o histórico do painel).")]
     fv = lambda x: "n/d" if x is None else _pc(x, 1)                              # noqa: E731
     rows = [("norm", [_rot(x["mes"]), _pc(x["he_pct"]) if x["he_pct"] is not None else "–", _z0(x["he"]) if x["he"] is not None else "–", fv(x["var_he"]), _z0(x["receita"]) if x["receita"] is not None else "–",
                       fv(x["var_receita"])]) for x in ev]
-    cp = DD.comparar_periodos(sf, ctx["serie"], B.mes_ini, B.mes)
+    cp = DD.comparar_periodos(sf, serie_rec, B.mes_ini, B.mes)
     els = [barras([_rot_curto(x["mes"]) for x in com], [round(x["he_pct"] * 100, 1) for x in com], fmt="p1", unidade="% HE ÷ remuneração", titulo="HE + DSR ÷ remuneração, mês a mês (%)", h=90),
            tab(["Mês", "HE ÷ rem.", "Custo de HE (R$)", "Var. HE", "Receita (R$)", "Var. receita"], rows, [1, 1, 1.4, 0.9, 1.5, 0.9], fs=6.6)]
     fvp = lambda x: "n/d" if x is None else _pc(x, 1)                                # noqa: E731
@@ -1270,9 +1321,10 @@ def b_clt_he_receita(B: Base) -> list:
 
 
 def b_clt_empresa_obra(B: Base) -> list:
-    pes = B.ctx["pessoas"]
+    pes = B.clt_folha()
     if not pes:
-        return [nota("Faltam os recibos da folha deste mês: envie o PDF em Importações V2.")]
+        c, _b = B.comp_clt()
+        return [nota(f"Faltam os recibos da folha de {_rot(c)}: envie o PDF em Importações V2.")]
     fo = pes["folha"]
     po = sorted(fo["por_obra"].values(), key=lambda x: -x["colab"])
     if B.filtra_obra:
@@ -1439,7 +1491,7 @@ FUNCOES = {
 assert set(FUNCOES) == set(TODAS_CHAVES), set(FUNCOES) ^ set(TODAS_CHAVES)
 
 
-def texto_filtros(modo: str, mes_ini: str, mes: str, escopo: dict | None, nomes_obras: dict | None = None) -> list:
+def texto_filtros(modo: str, mes_ini: str, mes: str, escopo: dict | None, nomes_obras: dict | None = None, bases: dict | None = None) -> list:
     """Linhas de texto do que vale neste relatorio (vai na capa)."""
     esc = escopo or {}
     out = [f"Período: {PER.rotulo(mes_ini, mes)} ({modo}) · mês de referência {_rot(mes)}"]
@@ -1449,6 +1501,8 @@ def texto_filtros(modo: str, mes_ini: str, mes: str, escopo: dict | None, nomes_
         out.append("Empresa que pagou (PJ): " + ", ".join(FP.nome_empresa_curto(e) for e in esc["empresas"]))
     if esc.get("situacoes"):
         out.append("Situação (PJ): " + ", ".join(esc["situacoes"]))
+    if bases:
+        out.append("Base de data por aba: " + " · ".join(f"{a} {BD.CURTO[b]}" for a, b in bases.items()) + " (a mesma que a Diretoria vê no painel)")
     return out
 
 
@@ -1485,7 +1539,7 @@ def montar(conn, mes_ini: str, mes: str, blocos, modo: str = PER.ANO, escopo: di
             obs = str((observacoes or {}).get(a) or "").replace("\r", "").strip()[:OBS_MAX]
             abas.append({"aba": a, "rotulo": rot, "blocos": out, **({"obs": obs} if obs else {})})
     meta = {"mes": mes, "mes_ini": mes_ini, "modo": modo, "per_rot": PER.rotulo(mes_ini, mes), "gerado_em": agora_br().strftime("%d/%m/%Y %H:%M"), "usuario": usuario,
-            "filtros": texto_filtros(modo, mes_ini, mes, escopo, B.nomes_obras() if B.filtra_obra else None), "n_blocos": n_ok, "quebra_pagina": bool(quebra_pagina)}
+            "filtros": texto_filtros(modo, mes_ini, mes, escopo, B.nomes_obras() if B.filtra_obra else None, B.bases), "n_blocos": n_ok, "quebra_pagina": bool(quebra_pagina)}
     return {"meta": meta, "abas": abas}
 
 

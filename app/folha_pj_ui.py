@@ -97,7 +97,7 @@ def aba_folha_pj(conn, mes: str, carimbo: str, rotulo_mes: str, base: str = "CAI
         st.info("Falta executar o arquivo `sql/v2_folha_pj.sql` (SQL-40) no Supabase. Sem ele o painel já mostra os valores do Sienge, mas ainda não tem Flash, "
                 "mapa de colaboradores, diretoria nem o desconto dos títulos em aberto.")
     if not d["pessoas"]:
-        st.info(f"Não há contas PJ (Salários PJ, Premiações ou Multas Contratuais) " + ("emitidas" if base == "REF" else "pagas ou a pagar") + f" em {rotulo_mes}.")
+        st.info(f"Não há contas PJ (Salários PJ, Premiações ou Multas Contratuais) " + ("emitidas no mês seguinte (competência)" if base == "REF" else "pagas") + f" em {rotulo_mes}.")
         return
     rst = int(st.session_state.get("fpj_rst", 0))
     k = lambda nome: f"fpj_{nome}_{rst}"                                                   # noqa: E731
@@ -115,7 +115,7 @@ def aba_folha_pj(conn, mes: str, carimbo: str, rotulo_mes: str, base: str = "CAI
         cols = st.columns(4)
         for col, (nome, v, sub, t) in zip(cols, itens[i:i + 4]):
             col.metric(nome, _mi(v), sub, delta_color="off", border=True)
-            col.caption(_t(f"Pago {_mi(t['pago'])} · a pagar {_mi(t['a_pagar'])}"))
+            col.caption(_t(f"Pago {_mi(t['pago'])} · a pagar {_mi(t['a_pagar'])}" if base == "REF" else f"Pago {_mi(t['pago'])}"))
     kk = st.columns(7)
     for col, (rot, v) in zip(kk, (("Honorários", tot["honorarios"]), ("Premiações", tot["premiacao"]), ("Ajuda de custo (Flash)", tot["ajuda_custo"]), ("Vale alimentação (Flash)", tot["alimentacao"]),
                                   ("Multa contratual", tot["multa"]), ("Descontos", tot["desconto"]), ("Documentos", None))):
@@ -185,15 +185,15 @@ def aba_folha_pj(conn, mes: str, carimbo: str, rotulo_mes: str, base: str = "CAI
                         hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row",
                         key=_chave(k("t_pessoas"), mes, tuple(marc_o), tuple(centros_sel), tuple(obras_f), tuple(emp_f or ()), tuple(sit_f or ()), busca))
     sel_p = _marcadas(ev_p, lista)
-    base = sel_p or lista
-    tt = FP.somar([p for p in base])
-    _cap(("Marcados" if sel_p else "Total da lista") + f": {len(base)} linhas · custo total {_m(tt['custo_total'])} · pago {_m(tt['pago'])} · a pagar {_m(tt['a_pagar'])}. "
+    lin_sel = sel_p or lista                                       # (nao chamar de `base`: e' o parametro da base de data)
+    tt = FP.somar([p for p in lin_sel])
+    _cap(("Marcados" if sel_p else "Total da lista") + f": {len(lin_sel)} linhas · custo total {_m(tt['custo_total'])} · pago {_m(tt['pago'])}" + (f" · a pagar {_m(tt['a_pagar'])}" if base == "REF" else "") + ". "
          "“novo” = entrou na folha neste mês. A diretoria aparece numa linha só (“Demais credores - diretoria”), sempre por último.")
 
     # ---- documentos lancados
     _md("**Documentos lançados**")
-    sit_d = st.pills("Documentos", ["Pago", "A pagar"], selection_mode="multi", key=k("sit_doc"), label_visibility="collapsed")
-    docs = FP.filtrar_documentos(d["documentos"], base, situacoes=sit_d) if base else []
+    sit_d = st.pills("Documentos", ["Pago", "A pagar"] if base == "REF" else ["Pago"], selection_mode="multi", key=k("sit_doc"), label_visibility="collapsed")
+    docs = FP.filtrar_documentos(d["documentos"], lin_sel, situacoes=sit_d) if lin_sel else []
     if docs:
         st.dataframe(pd.DataFrame([{"Situação": x["situacao"], "Data": x["data"].strftime("%d/%m/%Y") if x["data"] else "–", "Documento": x["documento"], "Lançamento": x["lancamento"],
                                     "Colaborador": x["nome"], "Empresa": FP.nome_empresa_curto(x["empresa"]), "Conta": f"{x['plano']} {x['plano_nome']}".strip(),
@@ -208,8 +208,8 @@ def aba_folha_pj(conn, mes: str, carimbo: str, rotulo_mes: str, base: str = "CAI
             st.dataframe(pd.DataFrame([{"Lançamento": f["lancamento"], "Documento": f["documento"], "Valor": _m(f["valor"]), "Motivo": f["motivo"]} for f in d["fora"]]), hide_index=True, width="stretch")
             _cap("Títulos substitutos não entram no custo: o Sienge registra a troca (adiantamento/proforma pela nota) como outra baixa e contaria duas vezes.")
     _cap("Fonte: Sienge (contas Salários PJ, Premiações e Multas Contratuais PJ, de obra e administração), "
-         + ("títulos emitidos no mês (pelo valor do documento): “Pago” é o que já foi pago deles e “A pagar” o que falta. "
-            if base == "REF" else "pago no mês e a pagar com vencimento até o fim do mês. ")
+         + ("competência do mês = títulos emitidos no mês seguinte (o PJ emite a nota depois do trabalho), pelo valor do documento: “Pago” é o que já foi pago deles e “A pagar” o que falta. "
+            if base == "REF" else "só o que foi pago no mês (não há “a pagar” em Caixa). ")
          + "Flash e mapa de colaboradores vêm das planilhas enviadas em Importações V2 (o Flash é depositado no mesmo mês da referência e vale nas duas bases). Pago e a pagar são líquidos de desconto.")
 
 

@@ -13,6 +13,8 @@ CURTO = {REF: "Referência", CAIXA: "Caixa"}
 ABAS = ("Resultado", "Obras", "Administração", "Despesas", "Pessoas", "Folha PJ", "Folha CLT")
 # o que cada aba ja usava ANTES do seletor (continua valendo para quem nao escolher nem tiver base fixada)
 PADRAO = {"Resultado": REF, "Obras": REF, "Administração": CAIXA, "Despesas": CAIXA, "Pessoas": CAIXA, "Folha PJ": CAIXA, "Folha CLT": REF}
+# Decisao da contabilidade (Suellen, 29/10/2026): Resultado e Obras para a Diretoria sao SEMPRE Referencia/competencia (o editor ainda pode olhar o Caixa para analise)
+SO_REF = ("Resultado", "Obras")
 PREFIXO_CHAVE = "base_aba_"
 
 
@@ -38,7 +40,9 @@ def chave_config(aba: str) -> str:
 def resolver(aba: str, escolha, fixada, eh_editor: bool) -> str:
     """Base que a aba usa: o EDITOR usa a escolha do seletor (se ainda nao escolheu: a fixada para a Diretoria, senao o padrao da aba);
     o VISUALIZADOR nunca escolhe: usa a fixada (senao o padrao)."""
-    fix = valida(fixada)
+    fix = None if aba in SO_REF else valida(fixada)
+    if aba in SO_REF and not eh_editor:
+        return REF
     if eh_editor:
         return valida(escolha) or fix or padrao(aba)
     return fix or padrao(aba)

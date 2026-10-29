@@ -36,6 +36,13 @@ def _escolhe_base(chave: str):
     return b
 
 
+def _base_so_ref(o_que: str):
+    """Projecao, orcamento e recibos da folha so' existem em competencia (contabilidade, 29/10/2026): nao pergunta a base, grava como Referencia. Para voltar a perguntar,
+    trocar as chamadas por `_escolhe_base(chave)`."""
+    st.caption(f"{o_que} é sempre de **Referência (competência)**; em Caixa o painel deriva os números a partir dele quando precisa.")
+    return BD.REF
+
+
 def _ja_salvo(conn, tipo: str, conteudo: bytes, base=None) -> bool:
     """Se este arquivo ja esta salvo no banco, mostra o aviso (numero, mes, quem e quando) e devolve True: a tela nao oferece o botao Salvar de novo.
     Assim, depois de salvar (a pagina recarrega), o usuario continua vendo que gravou."""
@@ -115,7 +122,7 @@ def up_projecao(conn, usuario):
                            f"BDI previsto {F.moeda_br(lido_p['total']['bdi'])}.")
                 for av in lido_p["avisos"]:
                     st.warning(av)
-                base_p = _escolhe_base(f"pn2_proj_base_{sha_p}")
+                base_p = _base_so_ref("A projeção de receitas")
                 if not _ja_salvo(conn, "PROJECAO", b_p, base_p) and st.button(f"Salvar como projeção de {lido_p['mes'][5:]}/{lido_p['mes'][:4]}", type="primary", disabled=base_p is None, key=f"pn2_proj_salvar_{sha_p}"):
                     try:
                         res_p = P.gravar_projecao(conn, lido_p, arq_p.name, __import__("hashlib").sha256(b_p).hexdigest(), usuario, base_p)
@@ -156,7 +163,7 @@ def up_orcamento(conn, usuario):
                     st.warning(av)
                 if not lido_o["avisos"]:
                     st.caption("Conferido: cada total fecha com a soma das contas e o saldo fecha com realizado − orçado.")
-                base_o = _escolhe_base(f"pn2_orc_base_{sha_o}")
+                base_o = _base_so_ref("O orçamento da administração")
                 if not _ja_salvo(conn, "ORCAMENTO", b_o, base_o) and st.button("Salvar como Orçamento ADM", type="primary", disabled=not (P.orcamento_instalado(conn) and base_o), key=f"pn2_orc_salvar_{sha_o}"):
                     try:
                         res_o = P.gravar_orcamento(conn, lido_o, arq_o.name, __import__("hashlib").sha256(b_o).hexdigest(), usuario, base_o)
@@ -202,7 +209,7 @@ def up_folha(conn, usuario):
                 st.warning(av)
             if not lido_f["avisos"]:
                 st.caption("Conferido: em todos os recibos a soma dos eventos fecha com o total de proventos e de descontos do recibo.")
-            base_f = _escolhe_base(f"pn2_folha_base_{sha_f}")
+            base_f = _base_so_ref("A folha (recibos)")
             if not _ja_salvo(conn, "FOLHA", b_f, base_f) and st.button(f"Salvar a folha de {comp_f[5:]}/{comp_f[:4]} ({', '.join(P.EMPRESAS_FOLHA.get(e, e) for e in lido_f['empresas'])})", type="primary",
                                                                disabled=not (_folha_ok and comp_f and base_f), key=f"pn2_folha_salvar_{sha_f}"):
                 try:

@@ -27,6 +27,15 @@ def test_resolver_editor_escolhe_e_visualizador_so_ve_o_fixado():
     assert BD.resolver("Resultado", BD.CAIXA, None, False) == BD.REF                # sem fixada: padrao da aba
 
 
+def test_resultado_e_obras_sao_sempre_referencia_para_a_diretoria():
+    """Contabilidade (29/10/2026): Resultado e Obras para a Diretoria = Referencia, mesmo que alguem tenha fixado Caixa; o editor ainda pode explorar o Caixa."""
+    for aba in ("Resultado", "Obras"):
+        assert BD.resolver(aba, None, BD.CAIXA, False) == BD.REF
+        assert BD.resolver(aba, BD.CAIXA, BD.CAIXA, True) == BD.CAIXA               # editor escolhendo Caixa para analisar
+        assert BD.resolver(aba, None, BD.CAIXA, True) == BD.REF                     # editor sem escolha abre em Referencia (a fixacao e' ignorada)
+    assert BD.resolver("Despesas", None, BD.REF, False) == BD.REF                   # as outras abas seguem a base fixada
+
+
 def test_chave_de_config_sem_acento_nem_espaco():
     assert BD.chave_config("Administração") == "base_aba_administracao" and BD.chave_config("Folha PJ") == "base_aba_folha_pj"
     assert len({BD.chave_config(a) for a in BD.ABAS}) == len(BD.ABAS)
@@ -255,3 +264,17 @@ def test_folha_pj_e_folha_clt_tem_seletor_e_trocam_de_base_sem_erro(conn):
             assert not ed.exception, ed.exception
         vi_leg = [c.value for c in ed.caption if c.value.startswith("Base:")]
         assert sum("Caixa" in x for x in vi_leg) >= 1 and sum("Referência" in x for x in vi_leg) >= 1
+
+
+@pytest.mark.pg
+def test_pdf_segue_a_base_fixada_e_a_folha_clt_em_caixa_e_a_do_mes_anterior(conn):
+    """O PDF usa a base que a Diretoria ve (nao a do seletor); Folha CLT em Caixa = folha de competencia do mes anterior (paga neste mes)."""
+    import relatorio_diretoria_dados as RDD
+    B = RDD.Base(conn, "2026-09", "2026-09")
+    assert B.bases == {a: BD.padrao(a) for a in BD.ABAS} and B.comp_clt() == ("2026-09", BD.REF)       # padrao da Folha CLT: Referencia
+    acesso.definir_base_fixada(conn, "Folha CLT", BD.CAIXA, "ed@x")
+    acesso.definir_base_fixada(conn, "Resultado", BD.CAIXA, "ed@x")                                   # ignorado: Resultado e' sempre Referencia
+    B2 = RDD.Base(conn, "2026-09", "2026-09")
+    assert B2.bases["Folha CLT"] == BD.CAIXA and B2.bases["Resultado"] == BD.REF
+    assert B2.comp_clt() == ("2026-08", BD.REF)                                                       # setembro em Caixa = folha de agosto
+    assert any("Folha CLT Caixa" in f for f in RDD.texto_filtros("Mês", "2026-09", "2026-09", None, None, B2.bases))

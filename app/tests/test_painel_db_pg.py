@@ -1217,21 +1217,17 @@ def test_folha_enviada_em_cada_base_e_independente(conn):
     assert ativos == {(r2["id"], "REF"), (r1["id"], "CAIXA")}
 
 
-def test_tela_envio_de_recibos_exige_escolher_a_base(conn):
+def test_tela_envio_de_recibos_grava_sempre_como_referencia(conn):
+    """Contabilidade (29/10/2026): recibos, projecao e orcamento so' existem em competencia: a tela nao pergunta a base e grava como Referencia."""
     from folha_sintetica import pdf_folha_sintetico
     b = pdf_folha_sintetico()
     falso = SimpleNamespace(name="r.pdf", getvalue=lambda: b)
     with patch("conexao.get_conn", return_value=conn), patch("streamlit.file_uploader", side_effect=_uploader_por_chave({"pn2_pdf_folha": [falso]})):
         at = _tela(conn).run()
         assert not at.exception, at.exception
-        rad = [r for r in at.radio if r.key.startswith("pn2_folha_base_")]
-        assert len(rad) == 1 and rad[0].value is None                                         # sem resposta
+        assert not [r for r in at.radio if r.key.startswith("pn2_folha_base_")]               # sem pergunta
         salvar = [x for x in at.button if (x.key or "").startswith("pn2_folha_salvar_")]
-        assert len(salvar) == 1 and salvar[0].disabled                                        # botao travado
-        rad[0].set_value("CAIXA").run()
+        assert len(salvar) == 1 and not salvar[0].disabled
+        salvar[0].click().run()
         assert not at.exception, at.exception
-        salvar = [x for x in at.button if (x.key or "").startswith("pn2_folha_salvar_")][0]
-        assert not salvar.disabled
-        salvar.click().run()
-        assert not at.exception, at.exception
-    assert P.folha_meses(conn) == [] and len(P.folha_meses(conn, "CAIXA")) == 1                 # gravou na base escolhida
+    assert len(P.folha_meses(conn)) == 1 and P.folha_meses(conn, "CAIXA") == []                 # gravou como Referencia

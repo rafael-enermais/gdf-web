@@ -146,10 +146,13 @@ def test_so_pj_com_filtros_de_empresa_e_situacao(conn):
     assert [a["aba"] for a in d["abas"]] == ["pj"] and not any("não pôde" in t for t in _notas(d))
     txt = str(_bloco(d, "pj_colab")["els"])
     assert "Joao Teste" in txt and "Maria Teste" in txt
-    parcial = RDD.montar(conn, MES, MES, ["pj_colab", "pj_cards"], PER.MES, {"situacoes": ["Parcial"]}, None, "")
+    import acesso
+    acesso.definir_base_fixada(conn, "Folha PJ", "REF", "ed@x")                                                    # o PDF segue a base fixada para a Diretoria: Referencia tem "Parcial" (a pagar)
+    assert any("Folha PJ Referência" in f for f in RDD.montar(conn, MES, MES, ["pj_colab"], PER.MES, None, None, "")["meta"]["filtros"])
+    parcial = RDD.montar(conn, "2026-09", "2026-09", ["pj_colab", "pj_cards"], PER.MES, {"situacoes": ["Parcial"]}, None, "")        # competencia de setembro = emitidos em outubro
     txt = str(_bloco(parcial, "pj_colab")["els"])
     assert "Joao Teste" in txt and "Maria Teste" not in txt and any("Situação (PJ): Parcial" in f for f in parcial["meta"]["filtros"])
-    outra = RDD.montar(conn, MES, MES, ["pj_colab", "pj_kpis", "pj_obras"], PER.MES, {"empresas": [FP.EMPRESAS[2]]}, None, "")             # empresa sem nenhum pagamento: nao quebra
+    outra = RDD.montar(conn, "2026-09", "2026-09", ["pj_colab", "pj_kpis", "pj_obras"], PER.MES, {"empresas": [FP.EMPRESAS[2]]}, None, "")             # empresa sem nenhum pagamento: nao quebra
     assert not any("não pôde" in t for t in _notas(outra)) and "Joao Teste" not in str(_bloco(outra, "pj_colab")["els"])
 
 

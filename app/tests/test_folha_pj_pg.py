@@ -13,6 +13,7 @@ from test_painel_db_pg import _ingerir
 
 pytestmark = pytest.mark.pg
 MES = "2026-10"
+MES_COMP = "2026-09"          # competencia dos titulos emitidos em 01/10 (Referencia = mes anterior a emissao)
 SEGREDO = "segredo-de-teste"
 
 
@@ -64,10 +65,20 @@ def _por_cred(r, cred):
     return next(p for p in r["pessoas"] if p["cred_id"] == cred)
 
 
+def test_painel_em_caixa_so_conta_o_que_foi_pago(base):
+    """Contabilidade (29/10/2026): em Caixa entra somente o que foi pago; nao existe 'a pagar'."""
+    r = FP.dados_do_mes(base, MES)
+    assert {p["cred_id"] for p in r["pessoas"]} == {501, 502, 503}                      # 506 (multa so' a pagar), 2 (titulo a pagar do 501) e o resto nao entram
+    j = _por_cred(r, 501)
+    assert j["honorarios"] == 10000.0 and j["pago"] == 10000.0 and j["a_pagar"] == 0.0 and j["situacao"] == "Pago" and j["desconto"] == 0.0
+    assert r["totais"]["a_pagar"] == 0.0 and r["totais"]["pago"] == 44000.0 and r["base"] == "CAIXA"
+    assert [f["lancamento"] for f in r["fora"]] == ["5/1"]                              # a substituicao nao conta
+
+
 def test_painel_le_o_sienge_do_banco(base):
     assert FP.instalado(base)
-    r = FP.dados_do_mes(base, MES)
-    assert {p["cred_id"] for p in r["pessoas"]} == {501, 502, 503, 506}                  # 504 (abatimento), 505 (substituicao), 507 (previsao), 508 (nov) e 509 (outra conta) fora
+    r = FP.dados_do_mes(base, MES_COMP, "REF")
+    assert {p["cred_id"] for p in r["pessoas"]} == {501, 502, 503, 506, 508}              # 504 (abatimento), 505 (substituicao), 507 (previsao) e 509 (outra conta) fora; 508 vence em nov mas foi emitido em 01/10
     j = _por_cred(r, 501)
     assert j["honorarios"] == 12000.0 and j["pago"] == 10000.0 and j["situacao"] == "Parcial"
     assert j["desconto"] == -50.0 and j["a_pagar"] == 1950.0 and j["custo_total"] == 11950.0       # desconto do titulo (SQL-40) em aberto, liquido no a pagar
@@ -75,11 +86,10 @@ def test_painel_le_o_sienge_do_banco(base):
     m = _por_cred(r, 502)
     assert m["centro"] == "ENERMAIS ENERGIA - OBRAS" and m["obra"] == FP.VARIOS and m["honorarios"] == 4000.0
     assert _por_cred(r, 506)["multa"] == 16210.0 and _por_cred(r, 506)["situacao"] == "A pagar"
-    assert [f["lancamento"] for f in r["fora"]] == ["5/1"]
     t = r["totais"]
     assert t["custo_total"] == pytest.approx(t["honorarios"] + t["premiacao"] + t["multa"] + t["desconto"], abs=0.01)
     assert t["pago"] + t["a_pagar"] == pytest.approx(t["custo_total"], abs=0.01)
-    assert len(r["documentos"]) == 5 and r["sem_flash"] and r["sem_diretoria"] and r["sem_mapa"]
+    assert len(r["documentos"]) == 6 and r["sem_flash"] and r["sem_diretoria"] and r["sem_mapa"]
 
 
 def test_sem_o_sql_40_o_painel_ainda_funciona(base):
@@ -87,7 +97,7 @@ def test_sem_o_sql_40_o_painel_ainda_funciona(base):
     with base.cursor() as cur:
         cur.execute("ALTER TABLE pnl_titulo DROP COLUMN desconto_titulo")
     try:
-        r = FP.dados_do_mes(base, MES)
+        r = FP.dados_do_mes(base, MES_COMP, "REF")
         assert _por_cred(r, 501)["desconto"] == 0.0 and _por_cred(r, 501)["a_pagar"] == 2000.0
     finally:
         with base.cursor() as cur:
@@ -173,7 +183,7 @@ def test_flash_cruza_por_cpf_e_por_nome_e_entra_no_painel(base):
     assert IP.flash_existente(base, "2026-09", ["ENERMAIS ENERGIA LTDA"]) == {} and IP.flash_existente(base, MES, []) == {}
     r = FP.dados_do_mes(base, MES)
     j = _por_cred(r, 501)
-    assert j["ajuda_custo"] == 3100.0 and j["alimentacao"] == 650.0 and j["custo_total"] == pytest.approx(12000 - 50 + 3100 + 650)
+    assert j["ajuda_custo"] == 3100.0 and j["alimentacao"] == 650.0 and j["custo_total"] == pytest.approx(10000 + 3100 + 650)            # Caixa: so' o pago (10 mil) + Flash
     assert _por_cred(r, 502)["alimentacao"] == 750.0 and not r["sem_flash"]
     # reimportar troca (nao soma): o antigo fica inativo
     IP.gravar_flash(base, MES, "ENERMAIS ENERGIA LTDA", [{"credor_id": 501, "premiacao": 10.0, "alimentacao": 20.0}], "teste@x")
@@ -246,15 +256,17 @@ def test_nome_escrito_diferente_casa_so_se_for_seguro():
     assert [(x["credor_id"], x["via"]) for x in r["casadas"]] == [(1, "nome aproximado")] and r["sem_pj"] == 1
 
 
-def test_folha_pj_em_referencia_conta_o_mes_da_emissao(base):
+def test_folha_pj_em_referencia_conta_o_mes_anterior_a_emissao(base):
+    """Contabilidade (29/10/2026): Caixa = so' o pago no mes; Referencia = competencia do mes e' o mes ANTERIOR a emissao do titulo."""
     cx = FP.dados_do_mes(base, MES, "CAIXA")
-    rf = FP.dados_do_mes(base, MES, "REF")
+    rf = FP.dados_do_mes(base, MES_COMP, "REF")
     assert cx["base"] == "CAIXA" and rf["base"] == "REF"
-    # Caixa (como antes): pago em outubro + a pagar com vencimento em outubro
-    assert cx["totais"]["pago"] == 44000.0 and cx["totais"]["a_pagar"] == 18160.0
-    # Referencia: titulos EMITIDOS em outubro (todos com emissao 01/10), sem previsao, sem conta que nao e' PJ e sem titulo desfeito (abatimento/substituicao);
+    assert cx["totais"]["pago"] == 44000.0 and cx["totais"]["a_pagar"] == 0.0                       # Caixa: so' o pago em outubro
+    # Referencia de SETEMBRO: titulos emitidos em outubro (todos com emissao 01/10), sem previsao, sem conta que nao e' PJ e sem titulo desfeito (abatimento/substituicao);
     # o titulo que vence em novembro (555) entra porque foi emitido em outubro
     assert rf["totais"]["pago"] == 44000.0 and rf["totais"]["a_pagar"] == 18715.0
     creds_rf, creds_cx = {p["cred_id"] for p in rf["pessoas"]}, {p["cred_id"] for p in cx["pessoas"]}
     assert not creds_rf & {504, 505, 507, 509}                       # abatimento, substituicao, previsao e conta que nao e' PJ
     assert 508 in creds_rf and 508 not in creds_cx                    # vence em novembro, mas foi emitido em outubro
+    # titulos emitidos em outubro NAO contam na competencia de outubro (so' na de setembro)
+    assert FP.dados_do_mes(base, MES, "REF")["pessoas"] == []

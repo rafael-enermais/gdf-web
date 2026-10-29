@@ -2,7 +2,7 @@
 """GDF V2 - dados do painel "Folha PJ" (Painel da Diretoria, ao lado de Pessoas). So' leitura; o calculo e' feito em funcoes puras (sem banco, sem streamlit).
 
 Como funciona, em linguagem simples:
-- A fonte e' o Sienge que ja' esta no banco: baixas (pago no mes) e titulos em aberto (a pagar, vencimento ate o fim do mes) das contas PJ
+- A fonte e' o Sienge que ja' esta no banco: baixas (pago no mes, base Caixa) ou titulos emitidos no mes seguinte (competencia, base Referencia) das contas PJ
   (Salarios PJ, Premiacoes e Multas Contratuais, de obra e ADM). Nao precisa subir CSV.
 - Titulos substitutos nao contam: a "Substituicao" some; o "Abatimento de adiantamento" some, salvo se houver adiantamento/proforma do mesmo credor e do mesmo valor
   no mes (ai o adiantamento some e a nota fica, com a data de pagamento do adiantamento).
@@ -94,21 +94,8 @@ _SQL_PAGAS = """SELECT b.bill_id, b.installment_id, b.seq, b.tipo_oper_id, b.dat
                   AND b.tipo_oper_id = ANY(%s) AND r.plano_cod = ANY(%s)
                 ORDER BY b.bill_id, b.installment_id, b.seq, r.linha"""
 
-_SQL_ABERTAS = """SELECT t.bill_id, t.installment_id, 0, 0, t.data_vencimento, COALESCE(t.valor_original,0) - COALESCE(bx.pago,0), {desc},
-                         t.empresa_id, t.empresa_nome, t.contraparte_id, t.contraparte_nome, t.doc_id, t.numero_doc, t.data_vencimento,
-                         r.plano_cod, r.plano_nome, r.centro_custo_id, r.centro_custo_nome, r.percentual
-                  FROM pnl_titulo t
-                  LEFT JOIN (SELECT bill_id, installment_id, sum(COALESCE(bruto,0)) pago FROM pnl_v_baixa
-                             WHERE lado='P' AND data_pagamento < (%s::date + interval '1 month') GROUP BY 1, 2) bx
-                         ON bx.bill_id=t.bill_id AND bx.installment_id=t.installment_id
-                  JOIN pnl_v_rateio r ON r.lado=t.lado AND r.bill_id=t.bill_id AND r.installment_id=t.installment_id
-                  WHERE t.lado='P' AND t.data_vencimento >= %s::date AND t.data_vencimento < (%s::date + interval '1 month')
-                    AND COALESCE(upper(t.previsao),'') <> 'S'
-                    AND COALESCE(t.valor_original,0) - COALESCE(bx.pago,0) > 0.005 AND r.plano_cod = ANY(%s)
-                  ORDER BY t.bill_id, t.installment_id, r.linha"""
-
-
-# Base REFERENCIA (competencia): o titulo conta no mes da EMISSAO, pelo valor do documento. A parte ja' paga (baixas de dinheiro real) vira linha "Pago"
+# Base REFERENCIA (competencia): o titulo emitido no mes SEGUINTE conta na competencia do mes (regra da contabilidade, 29/10/2026: o PJ emite a nota no mes
+# seguinte ao trabalho), pelo valor do documento. A parte ja' paga (baixas de dinheiro real) vira linha "Pago"
 # e o resto "A pagar" (mesma tabela e mesmos cards da base Caixa; so' muda quando o titulo entra).
 _SQL_EMITIDOS = """SELECT t.bill_id, t.installment_id, 0, 1, t.data_emissao, {bruto}, {desc},
                           t.empresa_id, t.empresa_nome, t.contraparte_id, t.contraparte_nome, t.doc_id, t.numero_doc, t.data_vencimento,
@@ -118,7 +105,7 @@ _SQL_EMITIDOS = """SELECT t.bill_id, t.installment_id, 0, 1, t.data_emissao, {br
                            WHERE lado='P' AND tipo_oper_id = ANY(%s) GROUP BY 1, 2) bx
                           ON bx.bill_id=t.bill_id AND bx.installment_id=t.installment_id
                    JOIN pnl_v_rateio r ON r.lado=t.lado AND r.bill_id=t.bill_id AND r.installment_id=t.installment_id
-                   WHERE t.lado='P' AND t.data_emissao >= %s::date AND t.data_emissao < (%s::date + interval '1 month')
+                   WHERE t.lado='P' AND t.data_emissao >= (%s::date + interval '1 month') AND t.data_emissao < (%s::date + interval '2 months')
                      AND COALESCE(upper(t.previsao),'') <> 'S' AND r.plano_cod = ANY(%s) {filtro}
                    ORDER BY t.bill_id, t.installment_id, r.linha"""
 
@@ -141,7 +128,7 @@ def _consulta(conn, sql, par) -> list:
 
 
 def _buscar_linhas_ref(conn, mes: str) -> dict:
-    """Base REFERENCIA: titulos EMITIDOS no mes (sem previsao e sem titulo desfeito). Pago = baixas de dinheiro real ate' hoje; a pagar = o que falta do valor do documento."""
+    """Base REFERENCIA: competencia = titulos EMITIDOS no mes seguinte (sem previsao e sem titulo desfeito). Pago = baixas de dinheiro real ate' hoje; a pagar = o que falta do valor do documento."""
     import painel_db as _P                                                       # noqa: PLC0415  (so' para o filtro de titulos desfeitos; evita importar o painel na carga)
     import base_data as _BD                                                      # noqa: PLC0415
     ini, planos, tipos = f"{mes}-01", list(CONTAS), list(_BD.TIPOS_CAIXA["P"])
@@ -164,22 +151,13 @@ def _buscar_linhas_ref(conn, mes: str) -> dict:
 
 def buscar_linhas(conn, mes: str, base: str = "CAIXA") -> dict:
     """Linhas (uma por baixa/titulo x linha de apropriacao) das contas PJ no mes 'AAAA-MM': {'baixas': [...], 'abertas': [...]}.
-    Abertas = titulos com vencimento no mes, sem previsao, ainda nao pagos no fim do mes (saldo = valor - baixas ate o fim do mes).
-    Base 'REF': titulos emitidos no mes (ver `_buscar_linhas_ref`)."""
+    Base 'CAIXA': so' o que foi PAGO no mes (decisao da contabilidade, 29/10/2026: em caixa entra somente o que foi pago; nao ha "a pagar").
+    Base 'REF': titulos emitidos no mes seguinte (ver `_buscar_linhas_ref`)."""
     if base == "REF":
         return _buscar_linhas_ref(conn, mes)
     ini = f"{mes}-01"
-    planos = list(CONTAS)
-    baixas = _consulta(conn, _SQL_PAGAS, (ini, ini, list(TIPOS_BAIXA), planos))
-    try:
-        abertas = _consulta(conn, _SQL_ABERTAS.format(desc="COALESCE(t.desconto_titulo,0)"), (ini, ini, ini, planos))
-    except Exception:                                                        # noqa: BLE001  (SQL-40 ainda nao rodou: sem desconto do titulo)
-        try:
-            conn.rollback()
-        except Exception:                                                    # noqa: BLE001
-            pass
-        abertas = _consulta(conn, _SQL_ABERTAS.format(desc="0"), (ini, ini, ini, planos))
-    return {"baixas": baixas, "abertas": abertas}
+    baixas = _consulta(conn, _SQL_PAGAS, (ini, ini, list(TIPOS_BAIXA), list(CONTAS)))
+    return {"baixas": baixas, "abertas": []}
 
 
 def instalado(conn) -> bool:
@@ -526,7 +504,7 @@ def filtrar_documentos(docs: list, pessoas_sel: list | None = None, situacoes=No
 
 
 def dados_do_mes(conn, mes: str, base: str = "CAIXA") -> dict:
-    """Ponto de entrada da tela: le o banco e consolida o mes. base 'CAIXA' (padrao da aba: pago no mes + a pagar com vencimento no mes) ou 'REF' (emitidos no mes)."""
+    """Ponto de entrada da tela: le o banco e consolida o mes. base 'CAIXA' (padrao da aba: so' o pago no mes) ou 'REF' (competencia: titulos emitidos no mes seguinte; "A pagar" = o que falta pagar deles)."""
     linhas = buscar_linhas(conn, mes, base)
     creds = {l["cred_id"] for lst in linhas.values() for l in lst if l["cred_id"] is not None}
     apoio = carregar_apoio(conn, mes, creds)
