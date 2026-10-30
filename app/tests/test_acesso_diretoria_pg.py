@@ -222,12 +222,15 @@ def test_painel_da_diretoria_cinco_abas_com_tudo(conn):
                 at.run()
                 assert not at.exception, (chave, linhas, at.exception)
                 assert any(m.value.startswith("**Principais credores") and " · obra " in m.value for m in at.markdown), [m.value[:80] for m in at.markdown if "credores" in m.value]
+                assert 1 <= len(at.session_state["_rel_visao"]["desp"]["obras"]) <= len(linhas)             # v0.62.0: a marcacao da tabela vai para o relatorio em PDF
             at.session_state[chave] = {"selection": {"rows": [], "columns": []}}
             at.run()
             assert not at.exception, (chave, at.exception)
             assert not any(" · obra " in m.value for m in at.markdown if m.value.startswith("**Principais credores"))
+            assert "obras" not in (at.session_state["_rel_visao"].get("desp") or {})                   # desmarcou: sai do relatorio tambem
         at.text_input(key="dir_col_busca").set_value("zzzz-nao-existe").run()
         assert not at.exception, at.exception
+        assert at.session_state["_rel_visao"]["ob"]["busca_colab"] == "zzzz-nao-existe"
         assert any("Sem colaboradores para esta seleção" in c.value for c in at.caption)
     with conn.cursor() as cur:
         cur.execute("DELETE FROM pnl_regra WHERE tipo='EXCLUI_PREVISAO'")

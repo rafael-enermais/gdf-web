@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import streamlit as st
 
+import base_data as BD
 import folha_pj_dados as FP
 import relatorio_diretoria as RD
 import relatorio_diretoria_dados as RDD
+import relatorio_visao as RV
 
 _P = "rel_k_"                                           # chave das caixinhas de cada informacao
 _A = "rel_a_"                                           # chave da caixinha "marcar a aba toda"
@@ -49,8 +51,19 @@ def _sincroniza_aba(aba: str) -> None:
     st.session_state[_A + aba] = all(st.session_state.get(_P + k, False) for k, *_ in RDD.ABAS[aba][1])
 
 
-def _assinatura(blocos: list, obras: list, empresas: list, situacoes: list, mes_ini: str, mes: str, modo: str, obs: dict | None = None, quebra: bool = False) -> tuple:
-    return (tuple(blocos), tuple(obras), tuple(empresas), tuple(situacoes), mes_ini, mes, modo, tuple(sorted((obs or {}).items())), bool(quebra))
+def _assinatura(blocos: list, obras: list, empresas: list, situacoes: list, mes_ini: str, mes: str, modo: str, obs: dict | None = None, quebra: bool = False,
+                visao: dict | None = None, bases: dict | None = None) -> tuple:
+    return (tuple(blocos), tuple(obras), tuple(empresas), tuple(situacoes), mes_ini, mes, modo, tuple(sorted((obs or {}).items())), bool(quebra),
+            repr(sorted((a, sorted((k, repr(v)) for k, v in f.items())) for a, f in (visao or {}).items())), repr(sorted((bases or {}).items())))
+
+
+def _do_painel() -> tuple[dict, dict]:
+    """(filtros por aba, bases por aba) que estao no painel agora, se a caixinha 'usar o que está no painel' estiver marcada; senao ({}, {})."""
+    if not st.session_state.get("rel_usar_painel", True):
+        return {}, {}
+    vis, bases = RV.ler()
+    ok = {a for a, *_ in RDD.CATALOGO}
+    return {a: f for a, f in vis.items() if a in ok and f}, {a: b for a, b in bases.items() if a in BD.ABAS and b in BD.BASES}
 
 
 def _nome_arquivo(mes: str, obras: list) -> str:
@@ -74,6 +87,22 @@ def secao_relatorio(conn, mes_ini: str, mes: str, modo_per: str, ctx: dict, most
     with st.expander("Gerar relatório em PDF (escolha o que entra)", expanded=False):
         st.caption("PDF no layout Enermais, com todas as abas que você marcar. O período é o do topo do painel; abaixo você pode restringir a obras específicas, "
                    "à empresa que pagou ou à situação (Folha PJ). Nada fica salvo: o arquivo só existe nesta sessão.")
+        st.checkbox("Usar o que está marcado no painel (filtros de cada aba e a base Referência/Caixa de cada aba)", key="rel_usar_painel", value=True,
+                    help="Marcado: o PDF sai com os mesmos filtros e a mesma base que você deixou em cada aba do painel, para os números baterem com a tela. "
+                         "Desmarcado: o PDF ignora os filtros do painel (usa só os campos deste quadro e a base fixada para a Diretoria).")
+        vis_p, bases_p = _do_painel()
+        if st.session_state.get("rel_usar_painel", True):
+            linhas = RDD.texto_visao(vis_p)
+            if linhas:
+                st.markdown("**Filtros do painel que entram no PDF**")
+                st.caption("  \n".join(linhas))
+            else:
+                st.caption("Nenhum filtro marcado no painel agora: o PDF sai com a visão geral de cada aba.")
+            if bases_p:
+                st.caption("Base de cada aba: " + " · ".join(f"{a} {BD.CURTO[b]}" for a, b in bases_p.items()) + ". Só vale para as abas que você abriu nesta sessão; as outras seguem a base fixada para a Diretoria.")
+            if linhas or bases_p:
+                st.button("Esquecer o que ficou guardado das abas", key="rel_esquecer", on_click=RV.limpar,
+                          help="Apaga o que o gerador guardou das abas. A aba aberta agora continua valendo enquanto o filtro estiver marcado nela.")
         st.radio("Modelo", [*RDD.MODELOS.keys(), RDD.PERSONALIZADO], horizontal=True, key="rel_modelo", on_change=_aplicar_modelo,
                  help="Modelos já marcam as caixinhas certas; depois você ainda pode ligar ou desligar qualquer informação (vira Personalizado).")
         try:
@@ -102,13 +131,13 @@ def secao_relatorio(conn, mes_ini: str, mes: str, modo_per: str, ctx: dict, most
         quebra = st.checkbox("Cada informação começa em uma página nova", key="rel_quebra",
                              help="Marcado = quebra de página antes de cada informação (cada uma no topo de uma página). Desmarcado = as informações se seguem e só quebram quando não cabem. "
                                   "Textos longos nas tabelas sempre quebram em mais de uma linha, sem cortar.")
-        sig = _assinatura(blocos, obras, empresas, situacoes, mes_ini, mes, modo_per, obs, quebra)
+        sig = _assinatura(blocos, obras, empresas, situacoes, mes_ini, mes, modo_per, obs, quebra, vis_p, bases_p)
         c1, c2 = st.columns([1, 2], vertical_alignment="center")
         gerar = c1.button("Gerar relatório", key="rel_gerar", type="primary", disabled=not blocos)
         c2.caption(f"{len(blocos)} informação(ões) marcada(s) · período {mes_ini[5:]}/{mes_ini[:4]} a {mes[5:]}/{mes[:4]} · " + (f"{len(obras)} obra(s)" if obras else "todas as obras"))
         if gerar:
             with st.spinner("Montando o relatório…"):
-                dados = RDD.montar(conn, mes_ini, mes, blocos, modo_per, {"obras": obras, "empresas": empresas, "situacoes": situacoes}, ctx, str(usuario or ""), mostra_inv, observacoes=obs, quebra_pagina=quebra)
+                dados = RDD.montar(conn, mes_ini, mes, blocos, modo_per, {"obras": obras, "empresas": empresas, "situacoes": situacoes, "visao": vis_p, "bases": bases_p}, ctx, str(usuario or ""), mostra_inv, observacoes=obs, quebra_pagina=quebra)
                 S["rel_pdf"] = {"bytes": RD.gerar_pdf(dados), "sig": sig, "nome": _nome_arquivo(mes, obras), "n": dados["meta"]["n_blocos"]}
         pdf = S.get("rel_pdf")
         if pdf and pdf["sig"] == sig:

@@ -16,6 +16,7 @@ import streamlit as st
 import folha_pj_dados as FP
 import formatacao as F
 import importador_folha_pj as IP
+import relatorio_visao as RV
 
 
 # ------------------------------------------------------------------ pequenos formatadores
@@ -140,6 +141,7 @@ def aba_folha_pj(conn, mes: str, carimbo: str, rotulo_mes: str, base: str = "CAI
     emp_f = st.pills("Empresa que pagou", emp_opts, selection_mode="multi", key=k("emp"), format_func=FP.nome_empresa_curto)
     sit_f = st.pills("Situação", list(FP.SITUACOES), selection_mode="multi", key=k("sit"))
     pes = FP.filtrar(pessoas, obras=obras_f, empresas=emp_f, situacoes=sit_f, busca=busca)
+    RV.publicar("pj", obras=obras_f, empresas=emp_f, situacoes=sit_f, busca=busca)               # o relatorio em PDF herda estes filtros
     if not pes:
         st.info("Nenhum colaborador com esses filtros.")
         return

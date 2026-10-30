@@ -357,3 +357,93 @@ def test_informacao_que_cabe_numa_pagina_nao_e_partida_titulo_tabela_e_nota_junt
     d = RD._Doc(cv, 99, {"mes": "2026-09"}); d.n = 1; d.pagina("Resultado")
     d.bloco({"key": "longa", "titulo": "Longa", "els": [tab(120)]})
     assert d.n > 2
+
+
+# ------------------------------------------------------------------ v0.62.0: filtros e base do painel dentro do PDF
+def _linhas_tab(d, chave):
+    return [r[1] for e in _bloco(d, chave)["els"] if e.get("t") == "tab" for r in e["rows"]]
+
+
+def test_visao_da_obras_filtra_so_a_aba_obras_e_texto_da_capa(conn):
+    _cenario_rico(conn)
+    geral = RDD.montar(conn, "2026-01", "2026-09", ["ob_tabela", "desp_credores"], PER.ANO, None, None, "")
+    obras_geral = {r[0] for r in _linhas_tab(geral, "ob_tabela") if r[0]}
+    assert "103" in obras_geral and len(obras_geral) > 1
+    d = RDD.montar(conn, "2026-01", "2026-09", ["ob_tabela", "desp_credores"], PER.ANO, {"visao": {"ob": {"obras": ["103"]}}}, None, "")
+    assert {r[0] for r in _linhas_tab(d, "ob_tabela") if r[0]} == {"103"}                                        # tabela de obras: so' a obra marcada
+    assert _linhas_tab(d, "desp_credores") == _linhas_tab(geral, "desp_credores")                          # a marcacao da aba Obras nao vaza para a aba Despesas
+    assert any("Filtros carregados do painel" in x for x in d["meta"]["filtros"]) and any(x.strip().startswith("Obras: obras marcadas: 103") for x in d["meta"]["filtros"])
+    busca = RDD.montar(conn, "2026-01", "2026-09", ["ob_tabela"], PER.ANO, {"visao": {"ob": {"busca": "103"}}}, None, "")                     # sem obra marcada, a pesquisa filtra a tabela
+    assert {r[0] for r in _linhas_tab(busca, "ob_tabela") if r[0]} == {r[0] for r in _linhas_tab(geral, "ob_tabela") if r[0] and ("103" in r[0] or "103" in r[1])}
+
+
+def test_visao_de_despesas_conta_e_obra_seguem_as_regras_do_painel(conn):
+    _cenario_rico(conn)
+    geral = RDD.montar(conn, "2026-01", "2026-09", ["desp_kpis", "desp_top12", "desp_credores", "desp_obras"], PER.ANO, None, None, "")
+    contas = [r[0] for r in _linhas_tab(geral, "desp_top12")]
+    assert contas
+    d = RDD.montar(conn, "2026-01", "2026-09", ["desp_kpis", "desp_top12", "desp_credores", "desp_obras"], PER.ANO, {"visao": {"desp": {"contas": contas[:1]}}}, None, "")
+    assert _linhas_tab(d, "desp_kpis") == _linhas_tab(geral, "desp_kpis") and _linhas_tab(d, "desp_top12") == _linhas_tab(geral, "desp_top12")      # cartoes e Top 12 nao mudam (igual ao painel)
+    cred_g, cred_f = _linhas_tab(geral, "desp_credores"), _linhas_tab(d, "desp_credores")
+    tot = lambda rows: sum(float(r[1].replace(".", "").replace(",", ".")) for r in rows)                  # noqa: E731
+    assert cred_f and tot(cred_f) <= tot(cred_g) + 0.01
+    assert any("conta(s) " + contas[0] in n for n in _notas(d))                                         # o filtro aparece escrito no bloco
+    obras_g = _linhas_tab(geral, "desp_obras")
+    if obras_g:
+        d2 = RDD.montar(conn, "2026-01", "2026-09", ["desp_credores"], PER.ANO, {"visao": {"desp": {"obras": [obras_g[0][0]]}}}, None, "")
+        assert any("obra(s) " + obras_g[0][0] in n for n in _notas(d2))
+
+
+def test_visao_pj_clt_e_pessoas_filtram_so_a_propria_aba(conn):
+    _cenario_rico(conn)
+    sem_nada = RDD.montar(conn, "2026-01", "2026-09", ["pj_colab", "clt_lista", "pes_custos"], PER.ANO, None, None, "")
+    pj = RDD.montar(conn, "2026-01", "2026-09", ["pj_colab", "clt_lista"], PER.ANO, {"visao": {"pj": {"busca": "zzz-ninguem"}}}, None, "")
+    assert any("Nenhum colaborador PJ" in n for n in _notas(pj))                                          # pesquisa da Folha PJ sem resultado
+    assert _linhas_tab(pj, "clt_lista") == _linhas_tab(sem_nada, "clt_lista")                              # ... e a CLT segue igual
+    clt = RDD.montar(conn, "2026-01", "2026-09", ["clt_lista"], PER.ANO, {"visao": {"clt": {"busca": "zzz-ninguem"}}}, None, "")
+    assert any("Nenhum colaborador CLT" in n for n in _notas(clt))
+    top5 = RDD.montar(conn, "2026-01", "2026-09", ["pes_custos"], PER.ANO, {"visao": {"pes": {"linhas": "Top 5"}}}, None, "")
+    if _linhas_tab(sem_nada, "pes_custos"):                                                                  # (o cenario sintetico pode nao ter contas de pessoas)
+        assert len(_linhas_tab(top5, "pes_custos")) <= 5 and any("Top 5" in n for n in _notas(top5))
+
+
+def test_bases_do_painel_mandam_no_pdf_e_resultado_obras_avisam_caixa(conn):
+    _cenario_rico(conn)
+    d = RDD.montar(conn, "2026-01", "2026-09", ["desp_kpis"], PER.ANO, {"bases": {"Despesas": "CAIXA", "Pessoas": "REF"}}, None, "")
+    linha = next(x for x in d["meta"]["filtros"] if x.startswith("Base de data por aba"))
+    assert "Despesas Caixa" in linha and "Pessoas Referência" in linha and "selecionada no painel" in linha
+    d2 = RDD.montar(conn, "2026-01", "2026-09", ["desp_kpis"], PER.ANO, {"bases": {"Despesas": "REF", "Obras": "CAIXA"}}, None, "")
+    linha2 = next(x for x in d2["meta"]["filtros"] if x.startswith("Base de data por aba"))
+    assert "Despesas Referência" in linha2 and "Obras Referência" in linha2                              # Obras: o PDF so' calcula Referencia
+    assert any("aba Obras estava em Caixa" in x for x in d2["meta"]["filtros"])                        # ... e avisa na capa
+    B = RDD.Base(conn, "2026-01", "2026-09", PER.ANO, {"bases": {"Despesas": "CAIXA"}})
+    assert B.bases["Despesas"] == "CAIXA" and B.bases["Resultado"] == "REF"
+
+
+def test_painel_publica_filtros_e_pdf_sai_com_eles_e_a_caixinha_desliga(conn):
+    _cenario_rico(conn)
+    with patch("conexao.get_conn", return_value=conn):
+        at = _painel(conn)
+        at.session_state["dir_todas_abas"] = True
+        at.run()
+        assert not at.exception, at.exception
+        vis = at.session_state["_rel_visao"]
+        assert set(vis) <= {"ob", "adm", "desp", "pes", "pj", "clt"}
+        assert at.session_state["_rel_bases"].get("Despesas") in ("REF", "CAIXA")                          # bases das abas desenhadas
+        at.text_input(key="fpj_busca_0").set_value("zzz-ninguem").run()                                         # pesquisa digitada na aba Folha PJ do painel
+        assert at.session_state["_rel_visao"]["pj"] == {"busca": "zzz-ninguem"}
+        at.radio(key="rel_modelo").set_value("Só PJ").run()
+        assert any("Folha PJ: pesquisa: zzz-ninguem" in c.value for c in at.caption)                            # o gerador mostra o que vai entrar
+        at.button(key="rel_gerar").click().run()
+        assert not at.exception, at.exception
+        assert any("Relatório pronto" in s.value for s in at.success)
+        sig_com = at.session_state["rel_pdf"]["sig"]
+        if shutil.which("pdftotext"):
+            t = _texto(at.session_state["rel_pdf"]["bytes"])
+            assert "zzz-ninguem" in t and "Nenhum colaborador PJ" in t
+        at.checkbox(key="rel_usar_painel").uncheck().run()                                                   # desligado: ignora o painel; a assinatura muda (pede gerar de novo)
+        assert any("mudou desde o último relatório" in i.value for i in at.info)
+        at.button(key="rel_gerar").click().run()
+        assert at.session_state["rel_pdf"]["sig"] != sig_com
+        if shutil.which("pdftotext"):
+            assert "zzz-ninguem" not in _texto(at.session_state["rel_pdf"]["bytes"])

@@ -543,7 +543,7 @@ def _t(nome, descricao, props=None, obrigatorios=None):
 
 TOOLS = [
     _t("visao_geral", "Mostra o que existe no banco: meses com dados do Sienge, DRE confirmado, DRE oficial (PDF), folha, projecao, orcamento ADM e as ultimas sincronizacoes. Chame primeiro para saber quais meses existem."),
-    _t("resultado_periodo", "Resultado da Diretoria (Receita - Custos [padrao DRE 04+06+08+09+10+12] = BDI - Administracao = Resultado), realizado e previsto, mes a mes e somado. So' meses com DRE confirmado entram na soma.",
+    _t("resultado_periodo", "Resultado da Diretoria (Receita - Custos [padrao DRE 04+06+08+10+12] = BDI - Administracao = Resultado), realizado e previsto, mes a mes e somado. So' meses com DRE confirmado entram na soma.",
        {"mes_ini": _INI, "mes_fim": _FIM}, ["mes_ini", "mes_fim"]),
     _t("dre_mes", "DRE gerencial de UM mes (linhas e valores) e a origem do dado (confirmado, PDF oficial ou reconstruido pela API). Para varios meses use serie_mensal (receita/custo/BDI por mes) ou resultado_periodo.", {"mes": _MES}, ["mes"]),
     _t("serie_mensal", "Receita liquida (linha 03), custos (04+06+08+10+12), BDI e margem de CADA mes do periodo numa so consulta (maximo 24 meses), com a origem de cada mes (confirmado, PDF ou API a conferir). Use para graficos e comparacoes mes a mes; depois chame montar_grafico (x = mes).",

@@ -23,6 +23,7 @@ import historico as HIST
 import painel_db as P
 import periodo as PER
 import relatorio_diretoria_ui as RDU
+import relatorio_visao as RV
 import relatorio_painel_pdf as RPP
 from auth import usuario_atual
 from conexao import get_conn, sidebar_rodape
@@ -440,10 +441,7 @@ try:                                                         # editor ve tudo; v
 except Exception:
     _eh_editor, _mostra_inv = False, False
 _rotulos = ["Resultado", "Obras", "Administração", "Despesas", "Pessoas", "Folha PJ", "Folha CLT", "Indicadores financeiros", "Financiamentos"] + (["Investimentos"] if _mostra_inv else [])
-try:                                                         # v0.54.0: gerador de relatorio em PDF (so' para o EDITOR: o visualizador nao ve); falha nele nunca derruba o painel
-    RDU.secao_relatorio(conn, mes_ini, mes, modo_per, ctx, _mostra_inv, usuario, CARIMBO, eh_editor=_eh_editor)
-except Exception as _e_rel:
-    st.caption(f"O gerador de relatório não pôde ser aberto agora ({type(_e_rel).__name__}). O painel abaixo continua normal.")
+_rel_box = st.container()                                    # v0.62.0: o quadro do gerador fica aqui (acima das abas) mas e' preenchido NO FIM da tela, depois de as abas publicarem seus filtros
 _abas = st.tabs(_rotulos, key="dir_abas", on_change="rerun")
 aba_res, aba_ob, aba_adm, aba_desp, aba_pes, aba_pj, aba_clt, aba_ind, aba_fin = _abas[:9]
 aba_inv = _abas[9] if _mostra_inv else None
@@ -487,6 +485,7 @@ def _base_aba(aba: str, nota: str = "") -> str:
         else:
             st.button(f"Fixar “{BD.CURTO[b]}” para a Diretoria", key=chave + "_fixa", on_click=_fixar_base, args=(aba, b),
                       help="O login de visualização vê só o painel, sem seletor, nesta base.")
+    RV.publicar_base(aba, b)                                  # o relatorio em PDF usa a base que o editor deixou marcada em cada aba
     if st.session_state.get("dir_base_erro"):
         _warn(st.session_state.pop("dir_base_erro"))
     _cap(BD.legenda(b) + nota + (" A Diretoria vê sempre: **Referência**." if aba in BD.SO_REF else f" A Diretoria vê hoje: **{BD.CURTO[fix] if fix else BD.CURTO[BD.padrao(aba)] + ' (padrão da aba)'}**."))
@@ -769,7 +768,8 @@ def _obras_do_periodo(base: str = BD.REF):
 
 
 _ob_mes, _proj_mes = ob, proj
-if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj passam a ser os do PERIODO (e voltam ao do mes no fim)
+if aba_ob.open or _TODAS:
+    RV.publicar("ob")                                      # zera o que ficou desta aba; o que estiver marcado e' publicado de novo abaixo                               # dentro da aba, ob/proj passam a ser os do PERIODO (e voltam ao do mes no fim)
     with aba_ob:
         base_o = _base_aba("Obras")
     _CX_O = base_o == BD.CAIXA
@@ -905,7 +905,7 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
                     _cap(f"Selecionado: {_m(_soma)} ({F.pct_br(_soma / _tab_n[0]['periodo'])} do custo total) em {len(cats_sel)} linha{'s' if len(cats_sel) > 1 else ''}.")
                 _cap((f"Custos efetivamente pagos em {PER_ROT} (data do pagamento no Sienge; só dinheiro real), sem os centros da administração. " if _CX_O else
                       f"Custos dos títulos emitidos em {PER_ROT} (análise “comprometido”, como no relatório de custos por obra da contabilidade), sem previsões e títulos desfeitos e sem os centros da administração. ")
-                     + "Segue as obras marcadas na tabela acima (nenhuma marcada = todas). Valor negativo é crédito. O total acompanha a coluna “Custos” da tabela de obras (padrão da contabilidade: DRE 04+06+08+09+10+12).")
+                     + "Segue as obras marcadas na tabela acima (nenhuma marcada = todas). Valor negativo é crédito. O total acompanha a coluna “Custos” da tabela de obras (padrão da contabilidade: DRE 04+06+08+10+12).")
             else:
                 _cap("Sem custos por categoria para esta seleção (faltam títulos emitidos no período ou o de-para de centros de custo → obra).")
             _to.append(("custos por categoria", time.perf_counter()))
@@ -937,6 +937,7 @@ if aba_ob.open or _TODAS:                               # dentro da aba, ob/proj
 
             _md(f"**Colaboradores alocados nas obras — {_rot(mes)}**")
             q_col = st.text_input("Buscar nome ou função", key="dir_col_busca", placeholder="ex.: engenheiro, silva")
+            RV.publicar("ob", obras=cods_sel, cats=cats_sel, busca=busca, busca_colab=q_col)          # o relatorio em PDF herda estes filtros
             _cap("A lista segue as obras marcadas na tabela acima (nenhuma marcada = todas as obras).")
             lista = col_df if not cods_sel else col_df[col_df["dest"].isin(cods_sel)]
             lista = _busca(lista, q_col, ["Nome", "Função"]) if len(lista) else lista
@@ -965,6 +966,7 @@ ob, proj = _ob_mes, _proj_mes
 
 # ------------------------------------------------------------------ 3) ADMINISTRACAO
 if aba_adm.open or _TODAS:
+    RV.publicar("adm")
     with aba_adm:
         base_a = _base_aba("Administração")
         ap = _adm_periodo(conn, mes_ini, mes, CARIMBO, base_a)
@@ -1042,6 +1044,7 @@ if aba_adm.open or _TODAS:
                         _cap("Nenhuma conta com orçamento neste filtro.")
             if linhas_per or linhas_mes:
                 filtros_cod = list(grp_sel["Código"]) if grp_sel is not None and len(grp_sel) else []
+                RV.publicar("adm", grupos=filtros_cod, contas=contas_sel)                                   # (unidades e pesquisa de credor entram logo abaixo)
                 _no_grupo = lambda c: ((not filtros_cod) or any(c == g or c.startswith(g + ".") for g in filtros_cod)) and ((not contas_sel) or any(c == k or c.startswith(k + ".") for k in contas_sel))      # noqa: E731
                 chaves_dir = _outros_dir(conn, CARIMBO)
                 df_l = DD.marcar_outros_dir(pd.DataFrame(linhas_mes, columns=["plano_cod", "plano_nome", "credor", "unidade", "valor"]), chaves_dir)
@@ -1081,6 +1084,7 @@ if aba_adm.open or _TODAS:
                                          "% do filtro": cr["ano"].map(lambda x: F.pct_br(x / tot_c) if tot_c else "–")}).head(60)
                     ev_c = st.dataframe(cr_m, hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row", key=_chave("dir_adm_cr", filtros_cod, contas_sel, su, bc))
                     sc = list(_selecionadas(ev_c, cr)["credor"])
+                    RV.publicar("adm", grupos=filtros_cod, contas=contas_sel, unidades=su, busca_cred=bc)
                     if chaves_dir and len(df_a) and (df_a["credor_exib"] == "Outros credores/Dir").any():
                         _cap("“Outros credores/Dir” junta numa linha só os credores do grupo definido pela contabilidade (marque a caixinha da linha para ver quem são).")
                     if sc:
@@ -1106,6 +1110,7 @@ if aba_adm.open or _TODAS:
 
 # ------------------------------------------------------------------ 4) DESPESAS (acumulado do periodo, em cascata conta -> credor -> obra)
 if aba_desp.open or _TODAS:
+    RV.publicar("desp")
     with aba_desp:
         base_d = _base_aba("Despesas")
         _v_d = "Pago" if base_d == BD.CAIXA else "Emitido"                      # verbo das legendas: caixa = pago; referencia = emitido
@@ -1176,6 +1181,7 @@ if aba_desp.open or _TODAS:
                 else:
                     _cap("Sem credores para esse filtro.")
                 cred = list(cr_sel["Credor"]) or None
+                RV.publicar("desp", contas=conta, obras=obras_sel, credores=cred)
                 # 3) tabela de OBRAS (desenhada depois dos credores; marcar uma ou mais obras filtra os credores acima)
                 _md(f"**Por obra · {_txt_sel(conta or [], 'todas as contas')}**")
                 if ob_["linhas"]:
@@ -1197,6 +1203,7 @@ if aba_desp.open or _TODAS:
 
 # ------------------------------------------------------------------ 5) PESSOAS
 if aba_pes.open or _TODAS:
+    RV.publicar("pes")
     with aba_pes:
         base_p = _base_aba("Pessoas")
         dfp, _fora = _pagos_df(base_p)
@@ -1269,6 +1276,7 @@ if aba_pes.open or _TODAS:
                             _cap(("Todos os credores." if cr["n"] <= len(cr["linhas"]) else f"Top {len(cr['linhas'])} de {cr['n']} credores.") + " Marque um ou mais credores para filtrar as obras. Sem os credores do grupo ENERMAIS (as seis empresas).")
                     with d2:
                         cred_p = list(cr_sel["Credor"]) or None
+                        RV.publicar("pes", contas=conta_p, credores=cred_p, linhas=todas)
                         ob_ = DD.agrupar(DD.rotular_obras(pdf_cr, _nomes_obras(conn, CARIMBO)), "obra_rot", mes, conta=conta_p, credor=cred_p, top=25)
                         _md(f"**Por obra · {_txt_sel(cred_p or conta_p or [], 'todas as contas')}**")
                         if ob_["linhas"]:
@@ -1281,6 +1289,7 @@ if aba_pes.open or _TODAS:
 
 # ------------------------------------------------------------------ 6) FOLHA PJ (ao lado de Pessoas; Sienge + Flash + mapa de colaboradores)
 if aba_pj.open or _TODAS:
+    RV.publicar("pj")
     with aba_pj:
         if mes_ini != mes:
             _cap(f"A Folha PJ mostra sempre o mês de referência ({_rot(mes)}), não soma o período.")
@@ -1290,6 +1299,7 @@ if aba_pj.open or _TODAS:
 
 # ------------------------------------------------------------------ 6b) FOLHA CLT (ao lado de Folha PJ; recibos da folha importados)
 if aba_clt.open or _TODAS:
+    RV.publicar("clt")
     with aba_clt:
         base_c = _base_aba("Folha CLT", " Referência = recibos da folha do próprio mês; Caixa = a folha do mês anterior, paga neste mês. Histórico do painel da contabilidade e DRE são de referência.")
         if base_c == BD.CAIXA:
@@ -1335,6 +1345,7 @@ if aba_clt.open or _TODAS:
             _cant_sel = f2.multiselect("Canteiro", DD.opcoes_canteiros(_clt_todos, _obras_sel), key=_chave("dir_clt_cant", mes, tuple(_obras_sel)),
                                        placeholder="Todos os canteiros da obra" if _obras_sel else "Todos os canteiros")
             _cap("Marcar uma obra soma todos os canteiros dela; marcar um canteiro mostra só ele. O PJ está na aba Folha PJ.")
+            RV.publicar("clt", obras=_obras_sel, cants=_cant_sel)
             _clt_f = DD.filtrar_clt(_clt_todos, _obras_sel, _cant_sel)
             _tf = DD.somar_clt(_clt_f)
             kf = st.columns(5)
@@ -1347,6 +1358,7 @@ if aba_clt.open or _TODAS:
                 with st.expander(f"CLT do mês: {len(_clt_f)} colaboradores (fonte: recibos da folha)"):
                     _bus = st.text_input("Pesquisar colaborador (nome ou cargo)", key="dir_clt_clt_busca")
                     _vis = DD.filtrar_clt(_clt_f, busca=_bus)
+                    RV.publicar("clt", obras=_obras_sel, cants=_cant_sel, busca=_bus)
                     _dfc = pd.DataFrame([{"Colaborador": x["nome"], "Cargo": x["cargo"], "Empresa": x["empresa"], "Obra": x["obra"], "Canteiro": x["canteiro"], "Salário líquido": _m(x["liquido"]),
                                           "HE (horas)": DD.fmt_horas(x["he_min"]), "HE (R$)": _m(x["he"]) if x["he"] > 0.005 else "–", "DSR s/ HE (R$)": _m(x["dsr"]) if x["dsr"] > 0.005 else "–"} for x in _vis])
                     if len(_dfc):
@@ -1444,5 +1456,10 @@ if aba_inv is not None and (aba_inv.open or _TODAS):
         DI.aba_financiamentos(conn, CARIMBO, "investimentos", _controle_investimentos)
 
 
+with _rel_box:                                               # v0.54.0: gerador de relatorio em PDF (so' para o EDITOR: o visualizador nao ve); falha nele nunca derruba o painel
+    try:
+        RDU.secao_relatorio(conn, mes_ini, mes, modo_per, ctx, _mostra_inv, usuario, CARIMBO, eh_editor=_eh_editor)
+    except Exception as _e_rel:
+        st.caption(f"O gerador de relatório não pôde ser aberto agora ({type(_e_rel).__name__}). O painel abaixo continua normal.")
 if _eh_editor:
     _cap(f"Tempo para montar esta tela: {time.perf_counter() - _T0:.1f} s (cabeçalho {_T_CAB:.1f} s · dados do mês {_T_CTX:.1f} s · abas e tabelas o restante). Só quem edita vê esta linha.")
