@@ -1114,6 +1114,7 @@ if aba_desp.open or _TODAS:
             _info("Falta sincronizar as contas pagas do período." if base_d == BD.CAIXA else "Falta sincronizar os títulos emitidos do período.")
         else:
             dd = _despesas(conn, mes_ini, mes, CARIMBO, base_d)
+            ddo = DD.com_obra_grupo(dd)                                         # + coluna da obra pelo nome do centro de custo (canteiros da mesma obra juntos)
             ms = PER.meses_entre(mes_ini, mes)
             rots = [m[5:] + "/" + m[2:4] for m in ms]
             tot_ano = float(dd["valor"].sum()) if len(dd) else 0.0
@@ -1149,24 +1150,49 @@ if aba_desp.open or _TODAS:
                     dd12 = _despesas(conn, MES_INI_G, mes, CARIMBO, base_d)
                 vals = DD.serie_mensal(dd12, MESES_G, conta)
                 estilo.altair(_barras_mes([m[5:] + "/" + m[2:4] for m in MESES_G], vals, destaque=len(MESES_G) - 1), width="stretch")
-                cr = DD.agrupar(dd, "credor", mes, conta=conta)
-                _md(f"**Principais credores · {_txt_sel(conta or [], 'todas as contas')}**")
+                # 1) OBRAS (canteiros da mesma obra juntos, pelo nome): a marcacao daqui filtra os credores logo abaixo. A tabela de obras so' depende da conta, entao a marcacao
+                #    fica estavel e pode ser lida do estado da tela antes de desenhar os credores (que aparecem acima na pagina, mas dependem dela).
+                ob_ = DD.agrupar(ddo, "obra_grp", mes, conta=conta, top=30)
+                ob_df = pd.DataFrame({"Obra": [x["chave"] for x in ob_["linhas"]]})
+                _k_ob = _chave("dir_desp_ob", conta)
+                try:
+                    _rows_ob = [r for r in st.session_state[_k_ob]["selection"]["rows"] if r < len(ob_df)]
+                except Exception:
+                    _rows_ob = []
+                obras_sel = list(ob_df.iloc[_rows_ob]["Obra"]) if _rows_ob else None
+                _rot_obras = _txt_sel(obras_sel or [], "todas as obras")
+                # 2) CREDORES (da conta e das obras marcadas)
+                cr = DD.agrupar(ddo, "credor", mes, conta=conta, obra=obras_sel)
+                _md(f"**Principais credores · {_txt_sel(conta or [], 'todas as contas')}" + (f" · obra {_rot_obras}" if obras_sel else "") + "**")
                 cr_df = pd.DataFrame({"Credor": [x["chave"] for x in cr["linhas"]], "ac": [x["acumulado"] for x in cr["linhas"]], "mes": [x["mes"] for x in cr["linhas"]]})
                 cr_sel = pd.DataFrame({"Credor": []})
                 if len(cr_df):
                     ev_cr = st.dataframe(pd.DataFrame({"Credor": cr_df["Credor"], ACUM: cr_df["ac"].map(_m), "% do filtro": cr_df["ac"].map(lambda x: F.pct_br(x / cr["total"]) if cr["total"] else "–"),
                                                        _rot(mes): cr_df["mes"].map(lambda x: _m(x) if abs(x) > 0.005 else "–")}),
-                                         hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row", key=_chave("dir_desp_cr", conta))
+                                         hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row", key=_chave("dir_desp_cr", conta, tuple(obras_sel or ())))
                     cr_sel = _selecionadas(ev_cr, cr_df)
-                    _cap(("Todos os credores da conta." if cr["n"] <= len(cr["linhas"]) else f"Top {len(cr['linhas'])} de {cr['n']} credores") + " Marque um ou mais credores para filtrar as obras abaixo.")
+                    _cap(("Todos os credores" if cr["n"] <= len(cr["linhas"]) else f"Top {len(cr['linhas'])} de {cr['n']} credores") + (" das obras marcadas" if obras_sel else " da conta")
+                         + ". Marque um ou mais credores para ver, mais abaixo, em quais obras eles atuaram. Para filtrar os credores por obra, marque a obra na tabela “Por obra” (mais abaixo).")
+                else:
+                    _cap("Sem credores para esse filtro.")
                 cred = list(cr_sel["Credor"]) or None
-                ob_ = DD.agrupar(dd, "cc", mes, conta=conta, credor=cred)
-                _md(f"**Por obra / centro de custo · {_txt_sel(cred or conta or [], 'todas as contas')}**")
+                # 3) tabela de OBRAS (desenhada depois dos credores; marcar uma ou mais obras filtra os credores acima)
+                _md(f"**Por obra · {_txt_sel(conta or [], 'todas as contas')}**")
                 if ob_["linhas"]:
-                    st.dataframe(pd.DataFrame({"Obra / centro de custo": [x["chave"] for x in ob_["linhas"]], ACUM: [_m(x["acumulado"]) for x in ob_["linhas"]],
+                    st.dataframe(pd.DataFrame({"Obra": ob_df["Obra"], ACUM: [_m(x["acumulado"]) for x in ob_["linhas"]],
                                                "%": [F.pct_br(x["acumulado"] / ob_["total"]) if ob_["total"] else "–" for x in ob_["linhas"]],
-                                               _rot(mes): [_m(x["mes"]) if abs(x["mes"]) > 0.005 else "–" for x in ob_["linhas"]]}), hide_index=True, width="stretch")
-                    _cap(("Obra pelo centro de custo do lançamento no pagamento." if base_d == BD.CAIXA else "Obra pelo centro de custo do rateio do título.") + ("" if ob_["n"] <= len(ob_["linhas"]) else f" Top {len(ob_['linhas'])} de {ob_['n']}."))
+                                               _rot(mes): [_m(x["mes"]) if abs(x["mes"]) > 0.005 else "–" for x in ob_["linhas"]]}),
+                                 hide_index=True, width="stretch", on_select="rerun", selection_mode="multi-row", key=_k_ob)
+                    _cap("Os canteiros da mesma obra (EE, CON, ENG, SMG, SOL…) estão somados pelo nome da obra. Marque uma ou mais obras para ver só os credores delas. "
+                         + ("Obra pelo centro de custo do lançamento no pagamento." if base_d == BD.CAIXA else "Obra pelo centro de custo do rateio do título.")
+                         + ("" if ob_["n"] <= len(ob_["linhas"]) else f" Top {len(ob_['linhas'])} de {ob_['n']}."))
+                if cred:                                                          # credores marcados -> em que obras (mantem a leitura 'credor -> obra' de antes)
+                    ob_c = DD.agrupar(ddo, "obra_grp", mes, conta=conta, credor=cred, obra=obras_sel)
+                    _md(f"**Obras dos credores marcados · {_txt_sel(cred, '')}**")
+                    if ob_c["linhas"]:
+                        st.dataframe(pd.DataFrame({"Obra": [x["chave"] for x in ob_c["linhas"]], ACUM: [_m(x["acumulado"]) for x in ob_c["linhas"]],
+                                                   "%": [F.pct_br(x["acumulado"] / ob_c["total"]) if ob_c["total"] else "–" for x in ob_c["linhas"]],
+                                                   _rot(mes): [_m(x["mes"]) if abs(x["mes"]) > 0.005 else "–" for x in ob_c["linhas"]]}), hide_index=True, width="stretch")
 
 
 # ------------------------------------------------------------------ 5) PESSOAS

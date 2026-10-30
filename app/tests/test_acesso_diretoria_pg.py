@@ -213,6 +213,19 @@ def test_painel_da_diretoria_cinco_abas_com_tudo(conn):
             at.session_state[chave] = {"selection": {"rows": [], "columns": []}}
             at.run()
             assert not at.exception, (chave, at.exception)
+        # v0.60.0: Despesas > tabela 'Por obra' (canteiros da mesma obra juntos pelo nome) tem caixinha e filtra os credores de cima
+        import zlib
+        chaves_ob = [f"dir_desp_ob_{zlib.crc32(repr((None,)).encode()) % 100000}"]                    # chave = _chave('dir_desp_ob', conta) com nenhuma conta marcada
+        for chave in chaves_ob:
+            for linhas in ([0], [0, 1], [0, 1, 2, 3, 4, 5]):
+                at.session_state[chave] = {"selection": {"rows": linhas, "columns": []}}
+                at.run()
+                assert not at.exception, (chave, linhas, at.exception)
+                assert any(m.value.startswith("**Principais credores") and " · obra " in m.value for m in at.markdown), [m.value[:80] for m in at.markdown if "credores" in m.value]
+            at.session_state[chave] = {"selection": {"rows": [], "columns": []}}
+            at.run()
+            assert not at.exception, (chave, at.exception)
+            assert not any(" · obra " in m.value for m in at.markdown if m.value.startswith("**Principais credores"))
         at.text_input(key="dir_col_busca").set_value("zzzz-nao-existe").run()
         assert not at.exception, at.exception
         assert any("Sem colaboradores para esta seleção" in c.value for c in at.caption)

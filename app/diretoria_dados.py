@@ -198,14 +198,48 @@ def serie_mensal(df: pd.DataFrame, meses: list, conta=None) -> list:
     return [round(float(por.get(m, 0.0)), 2) for m in meses]
 
 
-def agrupar(df: pd.DataFrame, por: str, mes_ref: str, conta=None, credor=None, top: int = 15) -> dict:
-    """Acumulado do periodo e valor do mes de referencia, agrupado por `por` ('credor' ou 'cc'), filtrado por conta(s) e/ou credor(es) (texto ou lista).
+PREFIXOS_EMPRESA = ("CON", "ENG", "SMG", "EE", "SOL", "REN", "POT", "CONST", "ANAS", "FUT")      # sigla da empresa que abre o nome do centro de custo ('EE - ', 'CON - ', ...)
+_RE_PREFIXO = re.compile(r"^(?:" + "|".join(PREFIXOS_EMPRESA) + r")\s+-\s+", re.I)
+
+
+def obra_por_nome(cc) -> tuple:
+    """Obra de um centro de custo PELO NOME (os canteiros da mesma obra so' se ligam pelo nome): tira a sigla da empresa do comeco ('EE - ', 'CON - ', 'ENG - ', ...) e
+    junta o resto sem acento/maiuscula/espacos repetidos. -> (chave, rotulo). Ex.: 'EE - ELETROBRAS - OPGW II - RJ | SP | ES' e 'ENG -  ELETROBRAS - OPGW II - RJ | SP | ES'
+    dao a mesma chave. Centro vazio -> ('', '(sem centro de custo)'). E' o ponto unico da regra: se o de-para ganhar uma coluna de obra, troca-se so' esta funcao."""
+    nome = re.sub(r"\s+", " ", str(cc or "")).strip()
+    if not nome:
+        return "", "(sem centro de custo)"
+    rotulo = _RE_PREFIXO.sub("", nome).strip() or nome
+    chave = re.sub(r"\s*([|/\-])\s*", r" \1 ", _sem_acento(rotulo)).strip()
+    return chave, rotulo
+
+
+def com_obra_grupo(df: pd.DataFrame) -> pd.DataFrame:
+    """Copia de `df` com a coluna 'obra_grp' = obra pelo nome do centro de custo (varios canteiros da mesma obra somam numa linha so'). Sem coluna 'cc' ou vazio: 'obra_grp' vazia."""
+    out = df.copy()
+    if not len(out) or "cc" not in out:
+        out["obra_grp"] = pd.Series([], dtype=object) if not len(out) else ""
+        return out
+    ccs = sorted(set(out["cc"].fillna("").astype(str)))
+    por_chave: dict = {}
+    mapa = {}
+    for c in ccs:
+        ch, rot = obra_por_nome(c)
+        mapa[c] = por_chave.setdefault(ch, rot)                    # rotulo da obra = o do primeiro canteiro (ordem alfabetica) com aquela chave
+    out["obra_grp"] = out["cc"].fillna("").astype(str).map(mapa)
+    return out
+
+
+def agrupar(df: pd.DataFrame, por: str, mes_ref: str, conta=None, credor=None, top: int = 15, obra=None) -> dict:
+    """Acumulado do periodo e valor do mes de referencia, agrupado por `por` ('credor', 'cc' ou 'obra_grp'), filtrado por conta(s), credor(es) e/ou obra(s) (coluna 'obra_grp'; texto ou lista).
     -> {'linhas': [{'chave','acumulado','mes'}] (top N), 'n': total de chaves, 'total': soma do filtro}"""
     d = df
     if _lista(conta) is not None:
         d = d[d["plano_nome"].isin(_lista(conta))]
     if _lista(credor) is not None:
         d = d[d["credor"].isin(_lista(credor))]
+    if _lista(obra) is not None:
+        d = d[d["obra_grp"].isin(_lista(obra))]
     if not len(d):
         return {"linhas": [], "n": 0, "total": 0.0}
     g = d.groupby(por)["valor"].sum()

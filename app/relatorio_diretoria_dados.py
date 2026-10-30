@@ -978,12 +978,12 @@ def b_desp_credores(B: Base) -> list:
 
 def b_desp_obras(B: Base) -> list:
     dd = _desp(B)
-    ob = DD.agrupar(dd, "cc", B.mes) if len(dd) else {"linhas": [], "n": 0, "total": 0.0}
+    ob = DD.agrupar(DD.com_obra_grupo(dd), "obra_grp", B.mes, top=20) if len(dd) else {"linhas": [], "n": 0, "total": 0.0}      # canteiros da mesma obra somados pelo nome (igual ao painel)
     if not ob["linhas"]:
-        return [nota("Sem despesas por obra / centro de custo no período.")]
-    return [tab(["Obra / centro de custo", B.acum, "%", _rot(B.mes)], [("norm", [x["chave"][:160], _n0(x["acumulado"]), _pc(x["acumulado"] / ob["total"]) if ob["total"] else "–", _z0(x["mes"])]) for x in ob["linhas"]],
+        return [nota("Sem despesas por obra no período.")]
+    return [tab(["Obra", B.acum, "%", _rot(B.mes)], [("norm", [x["chave"][:160], _n0(x["acumulado"]), _pc(x["acumulado"] / ob["total"]) if ob["total"] else "–", _z0(x["mes"])]) for x in ob["linhas"]],
                 [3.8, 1.6, 0.9, 1.4]),
-            nota("Obra pelo centro de custo do lançamento no pagamento." + ("" if ob["n"] <= len(ob["linhas"]) else f" Top {len(ob['linhas'])} de {ob['n']}."))]
+            nota("Canteiros da mesma obra somados pelo nome da obra. Obra pelo centro de custo do lançamento no pagamento." + ("" if ob["n"] <= len(ob["linhas"]) else f" Top {len(ob['linhas'])} de {ob['n']}."))]
 
 
 # ------------------------------------------------------------------ PESSOAS

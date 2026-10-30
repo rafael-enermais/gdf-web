@@ -240,6 +240,34 @@ def test_agrupar_e_serie_aceitam_varias_contas_e_credores():
     assert DD.serie_mensal(df, ["2026-09"], conta=["A", "C"]) == [31.0] and DD.serie_mensal(df, ["2026-09"]) == [36.0]
 
 
+def test_obra_por_nome_junta_canteiros_da_mesma_obra():
+    """v0.60.0: canteiros da mesma obra (EE/CON/ENG/SMG/SOL...) se ligam so' pelo nome: a sigla da empresa sai e o resto compara sem acento/espacos repetidos."""
+    k = lambda n: DD.obra_por_nome(n)[0]                                                              # noqa: E731
+    assert k("EE - ELETROBRAS - OPGW II - RJ | SP | ES") == k("ENG -  ELETROBRAS - OPGW II - RJ | SP | ES") == k("CON - ELETROBRAS - OPGW II - RJ | SP | ES")
+    assert DD.obra_por_nome("CON - ISA ENERGIA - SE ARAXA 3")[1] == "ISA ENERGIA - SE ARAXA 3"
+    assert k("CON - ANASTÁCIO - LOTE 11 - 001/2024") == k("SOL - ANASTACIO - LOTE 11 - 001/2024")
+    assert k("ELETROBRAS - OPGW I - Angra | Cachoeira") == k("CON - ELETROBRAS - OPGW I - ANGRA | CACHOEIRA")     # sigla ELETROBRAS NAO e' empresa: so' casa com o mesmo nome
+    assert k("EE - ISA ENERGIA - SE ARAXA 3") != k("EE - ISA ENERGIA - SE MONTE ALEGRE DE MINAS 2")        # obras diferentes continuam separadas
+    assert DD.obra_por_nome("") == ("", "(sem centro de custo)") and DD.obra_por_nome(None)[0] == ""
+
+
+def test_agrupar_por_obra_do_nome_e_credores_filtrados_pela_obra():
+    """v0.60.0: tabela 'Por obra' soma os canteiros; marcar a obra filtra os credores dela (e varias obras somam)."""
+    df = pd.DataFrame({"plano_nome": ["A", "A", "A", "B", "A"], "credor": ["x", "y", "x", "z", "w"],
+                       "cc": ["EE - OBRA UM", "CON - OBRA UM", "CON - OBRA DOIS", "ENG - OBRA UM", "SEDE / ADM CENTRAL"],
+                       "mes": ["2026-09"] * 5, "valor": [10.0, 20.0, 5.0, 1.0, 7.0]})
+    d = DD.com_obra_grupo(df)
+    ob = DD.agrupar(d, "obra_grp", "2026-09")
+    por = {x["chave"]: x["acumulado"] for x in ob["linhas"]}
+    assert por == {"OBRA UM": 31.0, "OBRA DOIS": 5.0, "SEDE / ADM CENTRAL": 7.0}
+    cr = DD.agrupar(d, "credor", "2026-09", obra=["OBRA UM"])
+    assert {x["chave"]: x["acumulado"] for x in cr["linhas"]} == {"y": 20.0, "x": 10.0, "z": 1.0}
+    assert DD.agrupar(d, "credor", "2026-09", obra=["OBRA UM", "OBRA DOIS"])["total"] == 36.0
+    assert DD.agrupar(d, "credor", "2026-09", conta="A", obra=["OBRA UM"])["total"] == 30.0           # conta + obra
+    assert DD.agrupar(d, "credor", "2026-09", obra=[])["total"] == 43.0                                # sem marcacao = tudo
+    assert not len(DD.com_obra_grupo(df.iloc[0:0])) and "obra_grp" in DD.com_obra_grupo(df.iloc[0:0]).columns
+
+
 # ---------------------------------------------------------------- v0.49.0: Pessoas por obra e canteiro (dados FICTICIOS)
 def _p(nome, obra, cant, liq, he=0.0, dsr=0.0, mn=0, emp="CONSTRUTORA", cargo="AJUDANTE", prov=None, desc=0.0, taxa=0.0):
     return {"nome": nome, "cargo": cargo, "empresa": emp, "obra": obra, "obra_nome": "OBRA " + obra, "canteiro": cant, "liquido": liq, "he": he, "dsr": dsr, "he_min": mn,
