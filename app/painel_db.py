@@ -1214,6 +1214,37 @@ def _extras_baixa(conn, filtro: str, mes_ini: str, mes_fim: str, por_mes: bool =
 
 
 
+def _deducoes_receita(conn, filtro: str, filtro_desc: str, mes_ini: str, mes_fim: str, por_mes: bool = False) -> list:
+    """DEDUCOES da receita por obra (DRE 02), do mesmo jeito que `resultado_por_conta` calcula o total: imposto do titulo da NF (`imposto_titulo` -> 1.01.02.01, 02.02) e descontos das
+    baixas dos titulos de receita (-> 1.01.03.01, 02.01). Nenhuma das duas esta no rateio, entao sem isto a receita por obra ficava BRUTA (a tabela de Obras somava ~8% a mais que o
+    Resultado; Suellen 29/10/2026: a receita e' a liquida, linha 03). Repartido pelo percentual do rateio do titulo (centro -> obra do de-para), no mes de EMISSAO, sem centros ADM.
+    `filtro` = filtros do titulo (previsao, distrato, desfeitos); `filtro_desc` = so' previsao (igual ao total). Devolve [(obra, 'AAAA-MM' ou '', {conta: valor negativo})]."""
+    mes = "to_char(t.data_emissao,'YYYY-MM')" if por_mes else "''"
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""SELECT COALESCE(g.codigo_obra,'sem de-para'), {mes},
+                                   sum(r.percentual/100.0*COALESCE(t.imposto_titulo,0)) FILTER (WHERE TRUE {filtro}),
+                                   sum(r.percentual/100.0*COALESCE(b.d,0)) FILTER (WHERE TRUE {filtro_desc})
+                            FROM pnl_titulo t JOIN pnl_v_rateio r ON r.lado=t.lado AND r.bill_id=t.bill_id AND r.installment_id=t.installment_id
+                            LEFT JOIN pnl_centro_grupo g ON g.centro_custo_id = r.centro_custo_id
+                            LEFT JOIN (SELECT lado, bill_id, installment_id, sum(COALESCE(desconto,0)) d FROM pnl_baixa GROUP BY 1,2,3) b
+                                   ON b.lado=t.lado AND b.bill_id=t.bill_id AND b.installment_id=t.installment_id
+                            WHERE t.lado='R' AND t.data_emissao >= %s::date AND t.data_emissao < (%s::date + interval '1 month')
+                              AND COALESCE(g.grupo,'') <> 'ADM'
+                            GROUP BY 1, 2""", (f"{mes_ini}-01", f"{mes_fim}-01"))
+            saida = []
+            for o, m, imp, desc in cur.fetchall():
+                ex = {"1.01.02.01": -round(float(imp or 0), 2), "1.01.03.01": -round(float(desc or 0), 2)}
+                saida.append((o, m, {k: v for k, v in ex.items() if v}))
+            return saida
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return []
+
+
 def resultado_por_obra_api(conn, mes: str, sem_previsao: bool = False, sem_distrato: bool = True, sem_desfeitos: bool = True) -> dict:
     """Mesmo calculo do resultado_por_conta, agrupado pelo codigo da obra do de-para: {codigo_obra: {linha_dre: valor}} (+ 'sem de-para')."""
     ini = f"{mes}-01"
@@ -1235,6 +1266,11 @@ def resultado_por_obra_api(conn, mes: str, sem_previsao: bool = False, sem_distr
         c = por_obra.setdefault(cod_obra, {})
         c[plano] = round(c.get(plano, 0.0) + _sinal_resultado(lado, plano) * float(v or 0), 2)
     for cod_obra, _m, ex in _extras_baixa(conn, filtro, mes, mes):
+        c = por_obra.setdefault(cod_obra, {})
+        for plano, v in ex.items():
+            c[plano] = round(c.get(plano, 0.0) + v, 2)
+    filtro_desc = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
+    for cod_obra, _m, ex in _deducoes_receita(conn, filtro, filtro_desc, mes, mes):
         c = por_obra.setdefault(cod_obra, {})
         for plano, v in ex.items():
             c[plano] = round(c.get(plano, 0.0) + v, 2)
@@ -1276,6 +1312,12 @@ def resultado_por_obra_api_meses(conn, meses: list, sem_previsao: bool = False, 
             c = por_mes.setdefault(m, {}).setdefault(cod_obra, {})
             c[plano] = round(c.get(plano, 0.0) + _sinal_resultado(lado, plano) * float(v or 0), 2)
     for cod_obra, m, ex in _extras_baixa(conn, filtro, meses[0], meses[-1], por_mes=True):
+        if m in quer:
+            c = por_mes.setdefault(m, {}).setdefault(cod_obra, {})
+            for plano, v in ex.items():
+                c[plano] = round(c.get(plano, 0.0) + v, 2)
+    filtro_desc = "AND COALESCE(upper(t.previsao),'') <> 'S'" if sem_previsao else ""
+    for cod_obra, m, ex in _deducoes_receita(conn, filtro, filtro_desc, meses[0], meses[-1], por_mes=True):
         if m in quer:
             c = por_mes.setdefault(m, {}).setdefault(cod_obra, {})
             for plano, v in ex.items():

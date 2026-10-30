@@ -546,6 +546,26 @@ def test_resultado_traz_imposto_do_titulo_no_dre_02_02(conn):
     assert dre["valores"]["02.02"] == -150.0
 
 
+def test_receita_por_obra_e_liquida_com_as_deducoes_do_dre_total(conn):
+    """v0.61.0: a receita por obra (tabela de Obras) e' a LIQUIDA (linha 03) e a soma das obras fecha com o DRE total: o imposto da NF (02.02) e os descontos das baixas (02.01)
+    entram por obra, repartidos pelo rateio do titulo. Antes so' o total tinha deducoes e a aba Obras mostrava a receita bruta."""
+    regs = [{**income()[0], "billId": 50, "taxAmount": 150.0},
+            {**income()[0], "billId": 51, "taxAmount": 300.0, "receipts": [{"sequencialNumber": 1, "paymentDate": "2026-09-25", "netAmount": 2000.0,
+                                                                          "grossAmount": 2000.0, "operationTypeId": 7, "operationTypeName": "Distrato"}]},      # distrato: fora
+            {**income()[0], "billId": 53, "taxAmount": 50.0, "documentForecast": "S"}]                                                                    # previsao: fora
+    _ingerir(conn, regs=regs, lado="R", tipo="I")
+    with conn.cursor() as cur:
+        cur.execute("INSERT INTO pnl_centro_grupo (centro_custo_id, centro_nome, grupo, codigo_obra) VALUES (1049,'A','OBRA','121')")
+    r = P.resultado_por_obra_api(conn, "2026-09", sem_previsao=True)["121"]
+    assert r["01"] == 2000.0 and r["02.02"] == -150.0 and r["03"] == 1850.0                       # liquida = bruta - impostos da NF
+    total = P.dre_do_mes(P.resultado_por_conta(conn, "2026-09", sem_previsao=True, so_obras=True))["valores"]
+    assert total["03"] == r["03"] and total["02.02"] == r["02.02"]                                # obra = total (so' ha uma obra)
+    lote = P.resultado_por_obra_api_meses(conn, ["2026-09"], sem_previsao=True)["2026-09"]["121"]
+    assert lote["03"] == 1850.0 and lote == r                                                      # o lote (periodo) e o mes a mes dao o mesmo
+    ob = P.obras_do_mes(conn, "2026-09")
+    assert ob["total"]["receita"] == 1850.0                                                        # a tabela de Obras mostra a receita liquida
+
+
 def test_resultado_tira_nf_desfeita_por_distrato(conn):
     dois = income() + [{**income()[0], "billId": 51, "receipts": [{"sequencialNumber": 1, "paymentDate": "2026-09-25", "netAmount": 2000.0, "grossAmount": 2000.0,
                                                                   "operationTypeId": 7, "operationTypeName": "Distrato"}]},
