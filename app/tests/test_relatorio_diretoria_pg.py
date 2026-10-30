@@ -210,6 +210,7 @@ def test_botao_do_relatorio_no_painel_modelos_filtros_e_download(conn):
         pdf = at.session_state["rel_pdf"]
         assert pdf["bytes"][:5] == b"%PDF-" and pdf["nome"] == "relatorio_painel_diretoria_2026-09_obras-103.pdf" and pdf["n"] > 5
         assert any("Relatório pronto" in s.value for s in at.success)
+        assert pdf["word"][:2] == b"PK" and any(x.proto.label == "Baixar em Word (editável)" for x in at.get("download_button"))               # v0.63.0: Word editavel ao lado do PDF
         at.multiselect(key="rel_obras").set_value([]).run()                                                                                       # mudou o filtro: pede para gerar de novo
         assert not any("Relatório pronto" in s.value for s in at.success) and any("mudou desde o último relatório" in i.value for i in at.info)
         for k in [k for k in RDD.TODAS_CHAVES if at.checkbox(key="rel_k_" + k).value]:                                                              # nada marcado: botao desligado

@@ -11,6 +11,7 @@ import streamlit as st
 import base_data as BD
 import folha_pj_dados as FP
 import relatorio_diretoria as RD
+import relatorio_diretoria_docx as RDX
 import relatorio_diretoria_dados as RDD
 import relatorio_visao as RV
 
@@ -138,10 +139,18 @@ def secao_relatorio(conn, mes_ini: str, mes: str, modo_per: str, ctx: dict, most
         if gerar:
             with st.spinner("Montando o relatório…"):
                 dados = RDD.montar(conn, mes_ini, mes, blocos, modo_per, {"obras": obras, "empresas": empresas, "situacoes": situacoes, "visao": vis_p, "bases": bases_p}, ctx, str(usuario or ""), mostra_inv, observacoes=obs, quebra_pagina=quebra)
-                S["rel_pdf"] = {"bytes": RD.gerar_pdf(dados), "sig": sig, "nome": _nome_arquivo(mes, obras), "n": dados["meta"]["n_blocos"]}
+                try:
+                    word = RDX.gerar_docx(dados)                            # v0.63.0: a mesma estrutura do PDF, em Word editavel
+                except Exception:                                           # noqa: BLE001  (o PDF nunca deixa de sair por causa do Word)
+                    word = None
+                S["rel_pdf"] = {"bytes": RD.gerar_pdf(dados), "word": word, "sig": sig, "nome": _nome_arquivo(mes, obras), "n": dados["meta"]["n_blocos"]}
         pdf = S.get("rel_pdf")
         if pdf and pdf["sig"] == sig:
             st.success(f"Relatório pronto: {pdf['n']} informação(ões).")
             st.download_button("Baixar o PDF", pdf["bytes"], pdf["nome"], "application/pdf", key="rel_baixar")
+            if pdf.get("word"):
+                st.download_button("Baixar em Word (editável)", pdf["word"], pdf["nome"][:-4] + ".docx",
+                                   "application/vnd.openxmlformats-officedocument.wordprocessingml.document", key="rel_baixar_word",
+                                   help="Mesmas informações, filtros e bases do PDF, em texto que dá para editar. Os gráficos de barras vêm como tabela de valores.")
         elif pdf:
             st.info("O que está marcado mudou desde o último relatório. Clique em “Gerar relatório” de novo para atualizar o PDF.")
